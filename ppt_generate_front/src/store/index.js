@@ -1,0 +1,237 @@
+import { createStore } from 'vuex'
+import authAPI from '@/api/auth'
+import pptAPI from '@/api/ppt'
+import templatesAPI from '@/api/templates'
+import modelsAPI from '@/api/models'
+
+const savedToken = localStorage.getItem('token')
+const savedModel = localStorage.getItem('defaultModel') || 'qwen-turbo'
+
+const normalizeRequest = (item = {}) => ({
+  id: item.id ?? 0,
+  userId: item.user_id ?? item.userId ?? 0,
+  title: item.title ?? '',
+  topic: item.topic ?? item.description ?? '',
+  pages: item.pages ?? 0,
+  style: item.style ?? 'business',
+  includeImages: typeof item.includeImages === 'boolean' ? item.includeImages : Boolean(item.include_images),
+  includeCharts: typeof item.includeCharts === 'boolean' ? item.includeCharts : Boolean(item.include_charts),
+  includeNotes: typeof item.includeNotes === 'boolean' ? item.includeNotes : Boolean(item.include_notes),
+  status: item.status ?? 'completed',
+  templateId: item.templateId ?? item.template_id ?? '',
+  templateName: item.templateName ?? item.template_name ?? '',
+  createdAt: item.createdAt ?? item.created_at ?? '',
+  updatedAt: item.updatedAt ?? item.updated_at ?? ''
+})
+
+export default createStore({
+  state: {
+    user: null,
+    token: savedToken || null,
+    isAuthenticated: !!savedToken,
+    pptHistory: [],
+    templates: [],
+    models: [],
+    selectedModel: savedModel,
+    loading: {
+      user: false,
+      history: false,
+      templates: false,
+      models: false
+    }
+  },
+  mutations: {
+    setUser(state, user) {
+      state.user = user
+    },
+    setToken(state, token) {
+      state.token = token
+      state.isAuthenticated = !!token
+      if (token) {
+        localStorage.setItem('token', token)
+      } else {
+        localStorage.removeItem('token')
+      }
+    },
+    logout(state) {
+      state.user = null
+      state.token = null
+      state.isAuthenticated = false
+      state.pptHistory = []
+      localStorage.removeItem('token')
+    },
+    setPptHistory(state, items) {
+      state.pptHistory = items
+    },
+    prependPptRequest(state, request) {
+      state.pptHistory = [request, ...state.pptHistory]
+    },
+    removePptRequest(state, requestId) {
+      state.pptHistory = state.pptHistory.filter(item => item.id !== requestId)
+    },
+    setTemplates(state, templates) {
+      state.templates = templates
+    },
+    setModels(state, models) {
+      state.models = models
+    },
+    setSelectedModel(state, modelId) {
+      state.selectedModel = modelId
+      localStorage.setItem('defaultModel', modelId)
+    },
+    setLoading(state, { key, value }) {
+      if (Object.prototype.hasOwnProperty.call(state.loading, key)) {
+        state.loading[key] = value
+      }
+    }
+  },
+  actions: {
+    async bootstrapSession({ state, commit, dispatch }) {
+      const localToken = localStorage.getItem('token')
+      if (localToken && !state.token) {
+        commit('setToken', localToken)
+      }
+      if (!state.token) {
+        return
+      }
+      try {
+        if (!state.user) {
+          await dispatch('fetchCurrentUser')
+        }
+        await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+      } catch (error) {
+        commit('logout')
+        throw error
+      }
+    },
+    async fetchCurrentUser({ commit, state }) {
+      if (!state.token) {
+        return null
+      }
+      commit('setLoading', { key: 'user', value: true })
+      try {
+        const response = await authAPI.getUserInfo()
+        commit('setUser', response.data.user)
+        return response.data.user
+      } finally {
+        commit('setLoading', { key: 'user', value: false })
+      }
+    },
+    async fetchPptHistory({ commit, state }) {
+      if (!state.token) {
+        commit('setPptHistory', [])
+        return []
+      }
+      commit('setLoading', { key: 'history', value: true })
+      try {
+        const response = await pptAPI.history()
+        const items = (response.data?.items || []).map(normalizeRequest)
+        commit('setPptHistory', items)
+        return items
+      } finally {
+        commit('setLoading', { key: 'history', value: false })
+      }
+    },
+    async createPptRequest({ commit, state }, payload) {
+      const body = { ...payload }
+      if (!body.modelId) {
+        body.modelId = state.selectedModel || 'qwen-turbo'
+      }
+      const response = await pptAPI.generate(body)
+      const preview = response.data?.preview || null
+      if (response.data?.request) {
+        const normalized = normalizeRequest(response.data.request)
+        commit('prependPptRequest', normalized)
+        return { request: normalized, preview }
+      }
+      return { preview }
+    },
+    async fetchModels({ commit, state }) {
+      if (state.models.length) {
+        return state.models
+      }
+      commit('setLoading', { key: 'models', value: true })
+      try {
+        const response = await modelsAPI.list()
+        const items = response.data?.items || []
+        commit('setModels', items)
+        if (!state.selectedModel && items.length) {
+          commit('setSelectedModel', items[0].id)
+        }
+        return items
+      } finally {
+        commit('setLoading', { key: 'models', value: false })
+      }
+    },
+    updateDefaultModel({ commit }, modelId) {
+      commit('setSelectedModel', modelId)
+    },
+    async deletePptRequest({ commit }, requestId) {
+      if (!requestId) {
+        return
+      }
+      await pptAPI.remove(requestId)
+      commit('removePptRequest', requestId)
+    },
+    async fetchTemplates({ state, commit }) {
+      if (!state.token && state.templates.length) {
+        return state.templates
+      }
+      commit('setLoading', { key: 'templates', value: true })
+      try {
+        const response = await templatesAPI.list()
+        const items = response.data?.items || []
+        commit('setTemplates', items)
+        return items
+      } finally {
+        commit('setLoading', { key: 'templates', value: false })
+      }
+    },
+    async login({ commit, dispatch }, { username, password }) {
+      try {
+        const response = await authAPI.login({ username, password })
+        commit('setToken', response.data.token)
+        commit('setUser', response.data.user)
+        await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        return response
+      } catch (error) {
+        commit('setUser', null)
+        commit('setToken', null)
+        throw error
+      }
+    },
+    async register({ commit, dispatch }, userData) {
+      try {
+        const response = await authAPI.register(userData)
+        commit('setToken', response.data.token)
+        commit('setUser', response.data.user)
+        await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        return response
+      } catch (error) {
+        commit('setUser', null)
+        commit('setToken', null)
+        throw error
+      }
+    },
+    async logout({ commit }) {
+      try {
+        await authAPI.logout()
+      } catch (error) {
+        console.error('登出API调用失败:', error)
+      } finally {
+        commit('logout')
+      }
+    }
+  },
+  getters: {
+    currentUser: state => state.user,
+    isAuthenticated: state => state.isAuthenticated,
+    pptHistory: state => state.pptHistory,
+    historyLoading: state => state.loading.history,
+    templates: state => state.templates,
+    templatesLoading: state => state.loading.templates,
+    models: state => state.models,
+    modelsLoading: state => state.loading.models,
+    selectedModel: state => state.selectedModel
+  }
+})

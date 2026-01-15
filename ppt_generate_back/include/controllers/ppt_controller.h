@@ -1,0 +1,38 @@
+#pragma once
+
+#include <memory>
+#include <optional>
+
+#include <nlohmann/json.hpp>
+
+#include "http/http_types.h"
+#include "services/auth_service.h"
+#include "services/model_service.h"
+#include "services/ppt_service.h"
+#include "services/qwen_client.h"
+#include "services/template_service.h"
+
+class PptController {
+ public:
+  PptController(std::shared_ptr<AuthService> auth_service,
+                std::shared_ptr<PptService> ppt_service,
+                std::shared_ptr<ModelService> model_service,
+                std::shared_ptr<TemplateService> template_service,
+                std::shared_ptr<QwenClient> qwen_client);
+
+  HttpResponse Generate(const HttpRequest& request);
+  HttpResponse History(const HttpRequest& request);
+  HttpResponse Delete(const HttpRequest& request);
+
+ private:
+  std::optional<User> Authenticate(const HttpRequest& request, std::string& error_message) const;
+  nlohmann::json SlideToJson(const SlideContent& slide,
+                             const TemplateLayout* layout,
+                             const TemplateTheme* theme) const;
+
+  std::shared_ptr<AuthService> auth_service_;
+  std::shared_ptr<PptService> ppt_service_;
+  std::shared_ptr<ModelService> model_service_;
+  std::shared_ptr<TemplateService> template_service_;
+  std::shared_ptr<QwenClient> qwen_client_;
+};

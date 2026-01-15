@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title><%= VITE_APP_TITLE %></title>
+    <meta name="description" content="基于GenAI的PPT自动生成系统">
+    <meta name="keywords" content="PPT,AI,生成式AI,Vue3,演示文稿">
+    <meta name="author" content="PPT Generate Team">
+    
+    <!-- Open Graph Meta Tags -->
+    <meta property="og:title" content="<%= VITE_APP_TITLE %>">
+    <meta property="og:description" content="基于GenAI的PPT自动生成系统">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ppt-generate.example.com">
+    <meta property="og:image" content="/og-image.png">
+    
+    <!-- 引入字体 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- PWA 配置 -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#4f46e5">
+    
+    <!-- 移动端适配 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+    
+    <!-- 环境变量 -->
+    <script>
+      window.ENV = {
+        API_URL: '<%= VITE_API_URL %>',
+        APP_ENV: '<%= VITE_APP_ENV %>',
+        APP_VERSION: '<%= VITE_APP_VERSION %>'
+      }
+    </script>
+  </body>
+</html>
