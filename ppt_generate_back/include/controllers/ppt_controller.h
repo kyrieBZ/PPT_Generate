@@ -1,8 +1,7 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
-#include <optional>
-
 #include <nlohmann/json.hpp>
 
 #include "http/http_types.h"
@@ -22,13 +21,11 @@ class PptController {
 
   HttpResponse Generate(const HttpRequest& request);
   HttpResponse History(const HttpRequest& request);
-  HttpResponse Delete(const HttpRequest& request);
+ HttpResponse Delete(const HttpRequest& request);
 
  private:
-  std::optional<User> Authenticate(const HttpRequest& request, std::string& error_message) const;
-  nlohmann::json SlideToJson(const SlideContent& slide,
-                             const TemplateLayout* layout,
-                             const TemplateTheme* theme) const;
+  std::shared_ptr<User> Authenticate(const HttpRequest& request, std::string& error_message) const;
+  std::uint64_t ParseId(const std::string& str) const;
 
   std::shared_ptr<AuthService> auth_service_;
   std::shared_ptr<PptService> ppt_service_;

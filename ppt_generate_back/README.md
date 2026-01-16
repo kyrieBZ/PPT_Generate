@@ -72,9 +72,10 @@ Key fields:
 ## Build & run
 
 ```sh
-cmake -S . -B build
-cmake --build build -j
-./build/ppt_generate_back --config config/config.json
+cd build
+cmake ..
+make -j$(nproc)
+./ppt_generate_back --config ../config/config.json
 ```
 
 The binary listens on the configured host/port (8080 by default).

@@ -57,19 +57,19 @@ nlohmann::json TemplateController::ToJson(const RemoteTemplate& item) {
 HttpResponse TemplateController::Download(const HttpRequest& request) {
   const auto it = request.query_params.find("id");
   if (it == request.query_params.end() || it->second.empty()) {
-    return HttpResponse::Json(400, {{"message", "缺少模板ID"}});
+    return HttpResponse::Json(400, {{"message", "Template ID missing"}});
   }
   const auto template_info = service_->FindById(it->second);
   if (!template_info || !template_info->has_local_file) {
-    return HttpResponse::Json(404, {{"message", "模板文件不存在"}});
+    return HttpResponse::Json(404, {{"message", "Template file does not exist"}});
   }
   auto local_file = service_->GetLocalFile(template_info->id);
   if (!local_file) {
-    return HttpResponse::Json(404, {{"message", "模板文件缺失"}});  
+    return HttpResponse::Json(404, {{"message", "Template file is missing"}});  
   }
   std::ifstream input(*local_file, std::ios::binary);
   if (!input.is_open()) {
-    return HttpResponse::Json(500, {{"message", "无法读取模板文件"}});  
+    return HttpResponse::Json(500, {{"message", "Cannot read template file"}});  
   }
   std::ostringstream buffer;
   buffer << input.rdbuf();

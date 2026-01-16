@@ -1,101 +1,70 @@
 <template>
   <div class="register-container">
-    <div class="register-card">
+    <el-card class="register-form" :body-style="{ padding: '30px' }">
       <div class="logo-section">
-        <h1>PPT智能生成系统</h1>
-        <p class="subtitle">基于GenAI的自动化PPT生成平台</p>
+        <el-icon size="48" class="logo-icon">
+          <UserFilled />
+        </el-icon>
+        <h2 class="title">创建账户</h2>
       </div>
-      
-      <form @submit.prevent="handleRegister" class="register-form">
-        <h2>用户注册</h2>
-        
-        <div class="form-group">
-          <label for="username">用户名</label>
-          <input
-            id="username"
-            v-model="form.username"
-            type="text"
-            required
-            placeholder="请输入用户名"
-            :class="{ 'error': errors.username }"
-          />
-          <div v-if="errors.username" class="error-message">{{ errors.username }}</div>
-        </div>
-        
-        <div class="form-group">
-          <label for="email">邮箱</label>
-          <input
-            id="email"
-            v-model="form.email"
-            type="email"
-            required
-            placeholder="请输入邮箱"
-            :class="{ 'error': errors.email }"
-          />
-          <div v-if="errors.email" class="error-message">{{ errors.email }}</div>
-        </div>
-        
-        <div class="form-group">
-          <label for="password">密码</label>
-          <input
-            id="password"
-            v-model="form.password"
-            type="password"
-            required
-            placeholder="请输入密码"
-            :class="{ 'error': errors.password }"
-          />
-          <div v-if="errors.password" class="error-message">{{ errors.password }}</div>
-        </div>
-        
-        <div class="form-group">
-          <label for="confirmPassword">确认密码</label>
-          <input
-            id="confirmPassword"
-            v-model="form.confirmPassword"
-            type="password"
-            required
-            placeholder="请再次输入密码"
-            :class="{ 'error': errors.confirmPassword }"
-          />
-          <div v-if="errors.confirmPassword" class="error-message">{{ errors.confirmPassword }}</div>
-        </div>
-        
-        <button type="submit" class="register-btn" :disabled="loading">
-          <span v-if="loading">注册中...</span>
-          <span v-else>立即注册</span>
-        </button>
 
-        <div v-if="formError" class="form-error">
-          {{ formError }}
-        </div>
-        
-        <div class="login-link">
-          已有账号？ <router-link to="/login">立即登录</router-link>
-        </div>
-      </form>
-      
-      <div class="features">
-        <h3>系统特色功能</h3>
-        <div class="feature-grid">
-          <div class="feature-item">
-            <div class="feature-icon">🤖</div>
-            <h4>GenAI智能生成</h4>
-            <p>基于多维生成式AI模型，智能生成PPT内容</p>
-          </div>
-          <div class="feature-item">
-            <div class="feature-icon">🎨</div>
-            <h4>个性化定制</h4>
-            <p>支持多通道指令，满足个性化需求</p>
-          </div>
-          <div class="feature-item">
-            <div class="feature-icon">📊</div>
-            <h4>图文表生成</h4>
-            <p>支持文本、图片、表格智能生成与排版</p>
-          </div>
-        </div>
+      <el-form :model="registerForm" :rules="rules" ref="registerFormRef" label-width="0px">
+        <el-form-item prop="username">
+          <el-input 
+            v-model="registerForm.username" 
+            placeholder="请输入用户名" 
+            size="large"
+            prefix-icon="User">
+          </el-input>
+        </el-form-item>
+
+        <el-form-item prop="email">
+          <el-input 
+            v-model="registerForm.email" 
+            placeholder="请输入邮箱地址" 
+            size="large"
+            prefix-icon="Message">
+          </el-input>
+        </el-form-item>
+
+        <el-form-item prop="password">
+          <el-input 
+            v-model="registerForm.password" 
+            type="password" 
+            placeholder="请输入密码" 
+            size="large"
+            prefix-icon="Lock"
+            show-password>
+          </el-input>
+        </el-form-item>
+
+        <el-form-item prop="confirmPassword">
+          <el-input 
+            v-model="registerForm.confirmPassword" 
+            type="password" 
+            placeholder="请确认密码" 
+            size="large"
+            prefix-icon="Unlock">
+          </el-input>
+        </el-form-item>
+
+        <el-form-item>
+          <el-button 
+            type="primary" 
+            size="large" 
+            @click="handleRegister" 
+            :loading="loading"
+            style="width: 100%">
+            注册
+          </el-button>
+        </el-form-item>
+      </el-form>
+
+      <div class="login-link">
+        <span>已有账户？</span>
+        <el-link type="primary" @click="$router.push('/login')">立即登录</el-link>
       </div>
-    </div>
+    </el-card>
   </div>
 </template>
 
@@ -103,290 +72,115 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStore } from 'vuex'
+import { ElMessage } from 'element-plus'
+import { UserFilled, User, Message, Lock, Unlock } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const store = useStore()
 
 const loading = ref(false)
-const formError = ref('')
-const form = reactive({
+
+const registerForm = reactive({
   username: '',
   email: '',
   password: '',
   confirmPassword: ''
 })
 
-const errors = reactive({
-  username: '',
-  email: '',
-  password: '',
-  confirmPassword: ''
-})
-
-const validateForm = () => {
-  let isValid = true
-  
-  // 重置错误
-  Object.keys(errors).forEach(key => errors[key] = '')
-  
-  // 用户名验证
-  if (!form.username.trim()) {
-    errors.username = '用户名不能为空'
-    isValid = false
-  } else if (form.username.length < 3) {
-    errors.username = '用户名至少3个字符'
-    isValid = false
-  }
-  
-  // 邮箱验证
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-  if (!emailRegex.test(form.email)) {
-    errors.email = '请输入有效的邮箱地址'
-    isValid = false
-  }
-  
-  // 密码验证
-  if (form.password.length < 6) {
-    errors.password = '密码至少6个字符'
-    isValid = false
-  }
-  
-  // 确认密码验证
-  if (form.password !== form.confirmPassword) {
-    errors.confirmPassword = '两次输入的密码不一致'
-    isValid = false
-  }
-  
-  return isValid
+const rules = {
+  username: [
+    { required: true, message: '请输入用户名', trigger: 'blur' },
+    { min: 3, max: 15, message: '用户名长度应在3-15个字符之间', trigger: 'blur' }
+  ],
+  email: [
+    { required: true, message: '请输入邮箱地址', trigger: 'blur' },
+    { type: 'email', message: '请输入正确的邮箱地址', trigger: 'blur' }
+  ],
+  password: [
+    { required: true, message: '请输入密码', trigger: 'blur' },
+    { min: 6, message: '密码长度不能少于6个字符', trigger: 'blur' }
+  ],
+  confirmPassword: [
+    { required: true, message: '请确认密码', trigger: 'blur' },
+    { 
+      validator: (rule, value, callback) => {
+        if (value !== registerForm.password) {
+          callback(new Error('两次输入的密码不一致'))
+        } else {
+          callback()
+        }
+      }, 
+      trigger: 'blur' 
+    }
+  ]
 }
 
-const handleRegister = async () => {
-  if (!validateForm()) return
+const registerFormRef = ref(null)
 
-  formError.value = ''
+const handleRegister = async () => {
+  if (!registerFormRef.value) return
   
-  loading.value = true
-  
-  try {
-    await store.dispatch('register', {
-      username: form.username,
-      email: form.email,
-      password: form.password
-    })
-    
-    // 注册成功后跳转到主页面
-    router.push('/main')
-  } catch (error) {
-    console.error('注册失败:', error)
-    formError.value = error.response?.data?.message || '注册失败，请重试'
-  } finally {
-    loading.value = false
-  }
+  await registerFormRef.value.validate(async (valid) => {
+    if (valid) {
+      loading.value = true
+      try {
+        await store.dispatch('register', registerForm)
+        ElMessage.success('注册成功！')
+        router.push('/login')
+      } catch (error) {
+        ElMessage.error(error.message || '注册失败')
+      } finally {
+        loading.value = false
+      }
+    } else {
+      ElMessage.warning('请填写正确的注册信息')
+    }
+  })
 }
 </script>
 
 <style scoped>
 .register-container {
-  min-height: 100vh;
   display: flex;
-  align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  align-items: center;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #72c2f8, #4a90e2, #0a4db0);
   padding: 20px;
 }
 
-.register-card {
-  background: white;
-  border-radius: 20px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+.register-form {
   width: 100%;
-  max-width: 1200px;
-  overflow: hidden;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  min-height: 600px;
+  max-width: 420px;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
 .logo-section {
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
-  color: white;
-  padding: 40px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
   text-align: center;
-}
-
-.logo-section h1 {
-  font-size: 2.5rem;
-  margin-bottom: 10px;
-  font-weight: bold;
-}
-
-.subtitle {
-  font-size: 1.1rem;
-  opacity: 0.9;
-}
-
-.register-form {
-  padding: 40px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-
-.register-form h2 {
-  font-size: 2rem;
   margin-bottom: 30px;
-  color: #333;
 }
 
-.form-group {
-  margin-bottom: 20px;
+.logo-icon {
+  color: #409EFF;
+  margin-bottom: 15px;
 }
 
-.form-group label {
-  display: block;
-  margin-bottom: 8px;
-  font-weight: 500;
-  color: #555;
-}
-
-.form-group input {
-  width: 100%;
-  padding: 12px 16px;
-  border: 2px solid #e0e0e0;
-  border-radius: 10px;
-  font-size: 1rem;
-  transition: border-color 0.3s;
-}
-
-.form-group input:focus {
-  outline: none;
-  border-color: #4f46e5;
-}
-
-.form-group input.error {
-  border-color: #ef4444;
-}
-
-.error-message {
-  color: #ef4444;
-  font-size: 0.875rem;
-  margin-top: 4px;
-}
-
-.register-btn {
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
-  color: white;
-  padding: 14px;
-  border: none;
-  border-radius: 10px;
-  font-size: 1.1rem;
+.title {
+  font-size: 22px;
   font-weight: 600;
-  cursor: pointer;
-  transition: transform 0.3s, box-shadow 0.3s;
-  margin-top: 10px;
-}
-
-.register-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 10px 20px rgba(79, 70, 229, 0.3);
-}
-
-.register-btn:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
+  color: #303133;
+  margin: 0;
 }
 
 .login-link {
   text-align: center;
   margin-top: 20px;
-  color: #666;
+  font-size: 14px;
+  color: #606266;
 }
 
-.login-link a {
-  color: #4f46e5;
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.login-link a:hover {
-  text-decoration: underline;
-}
-
-.form-error {
-  background: #fef2f2;
-  color: #b91c1c;
-  border-radius: 10px;
-  padding: 10px 14px;
-  text-align: center;
-  font-size: 0.95rem;
-  margin-top: 15px;
-}
-
-.features {
-  grid-column: 1 / -1;
-  background: #f8fafc;
-  padding: 40px;
-  border-top: 1px solid #e5e7eb;
-}
-
-.features h3 {
-  text-align: center;
-  font-size: 1.5rem;
-  margin-bottom: 30px;
-  color: #333;
-}
-
-.feature-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 30px;
-}
-
-.feature-item {
-  text-align: center;
-  padding: 20px;
-  background: white;
-  border-radius: 15px;
-  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-  transition: transform 0.3s;
-}
-
-.feature-item:hover {
-  transform: translateY(-5px);
-}
-
-.feature-icon {
-  font-size: 3rem;
-  margin-bottom: 15px;
-}
-
-.feature-item h4 {
-  font-size: 1.2rem;
-  margin-bottom: 10px;
-  color: #333;
-}
-
-.feature-item p {
-  color: #666;
-  font-size: 0.9rem;
-  line-height: 1.5;
-}
-
-@media (max-width: 768px) {
-  .register-card {
-    grid-template-columns: 1fr;
-  }
-  
-  .logo-section {
-    padding: 30px 20px;
-  }
-  
-  .feature-grid {
-    grid-template-columns: 1fr;
-  }
+.login-link .el-link {
+  vertical-align: baseline;
 }
 </style>

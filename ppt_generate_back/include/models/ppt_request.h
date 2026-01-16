@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 struct PptRequestInput {
   std::string title;
   std::string topic;
@@ -13,6 +15,8 @@ struct PptRequestInput {
   bool include_notes = false;
   std::string model_id = "qwen-turbo";
   std::string template_id;
+
+  static PptRequestInput FromJson(const nlohmann::json& data);
 };
 
 struct PptRequest {
@@ -30,6 +34,7 @@ struct PptRequest {
   std::string template_id;
   std::string template_name;
   std::string status;
-  std::string created_at;
-  std::string updated_at;
+  std::uint64_t created_at = 0;
+  std::uint64_t updated_at = 0;
+  std::string output_file;
 };

@@ -34,6 +34,13 @@ struct ProviderConfig {
   std::string qwen_api_key;
 };
 
+struct GenerationConfig {
+  std::string output_dir = "assets/generated";
+  std::string python_binary = "python3";
+  std::string builder_script = "scripts/libreoffice_ppt_builder.py";
+  std::string soffice_binary = "soffice";
+};
+
 class AppConfig {
  public:
   static AppConfig Load(const std::string& path);
@@ -44,6 +51,7 @@ class AppConfig {
   const TemplateConfig& templates() const { return templates_; }
   const ModelConfig& models() const { return models_; }
   const ProviderConfig& providers() const { return providers_; }
+  const GenerationConfig& generation() const { return generation_; }
 
  private:
   ServerConfig server_{};
@@ -52,4 +60,5 @@ class AppConfig {
   TemplateConfig templates_{};
   ModelConfig models_{};
   ProviderConfig providers_{};
+  GenerationConfig generation_{};
 };

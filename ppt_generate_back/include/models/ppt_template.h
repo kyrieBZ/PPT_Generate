@@ -31,6 +31,7 @@ struct RemoteTemplate {
   std::vector<std::string> tags;
   TemplateTheme theme;
   std::vector<TemplateLayout> layouts;
+  std::string prompt;
   std::string local_file_path;
   bool has_local_file = false;
 };

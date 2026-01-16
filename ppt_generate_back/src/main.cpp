@@ -16,6 +16,12 @@
 #include "services/ppt_service.h"
 #include "services/qwen_client.h"
 #include "services/template_service.h"
+#include "services/ppt_service_interface.h"
+// 不再需要单独包含SlideContent定义，因为它在qwen_client.h中
+
+// Uncomment the desired implementation
+// #include "services/aspose_powerpoint_service.h"
+// #include "services/libreoffice_powerpoint_service.h"
 
 namespace {
 std::atomic<bool> g_should_stop{false};
@@ -46,6 +52,24 @@ int main(int argc, char* argv[]) {
     auto pool = std::make_shared<MySQLConnectionPool>(config.database());
     auto auth_service = std::make_shared<AuthService>(pool, config.auth());
     auto ppt_service = std::make_shared<PptService>(pool);
+    
+    // Conditionally set PowerPoint service factory based on availability
+    // For now, we'll leave this commented until the actual implementation is ready
+    /*
+    std::shared_ptr<IPowerPointServiceFactory> factory;
+    
+    // Try to use Aspose first, fallback to LibreOffice, or none if neither available
+    #ifdef USE_ASPOSE_SLIDES
+    factory = std::make_shared<AsposePowerPointServiceFactory>();
+    #elif USE_LIBREOFFICE_SDK
+    factory = std::make_shared<LibreOfficePowerPointServiceFactory>();
+    #endif
+    
+    if (factory) {
+        ppt_service->SetPowerPointServiceFactory(factory);
+    }
+    */
+
     auto template_service = std::make_shared<TemplateService>(config.templates().catalog_path);
     auto model_service = std::make_shared<ModelService>(config.models().catalog_path);
     std::shared_ptr<QwenClient> qwen_client;

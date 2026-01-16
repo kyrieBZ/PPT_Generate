@@ -1,11 +1,39 @@
 #include "controllers/ppt_controller.h"
 
+#include <ctime>
+#include <optional>
+#include <random>
+#include <sstream>
+
 #include "logger.h"
 
 namespace {
+
+std::string FormatTimestamp(std::uint64_t seconds) {
+  if (seconds == 0) {
+    return {};
+  }
+  std::time_t tt = static_cast<std::time_t>(seconds);
+#if defined(_WIN32)
+  std::tm tm_snapshot;
+  gmtime_s(&tm_snapshot, &tt);
+#else
+  std::tm tm_snapshot;
+  gmtime_r(&tt, &tm_snapshot);
+#endif
+
+  char buffer[32];
+  if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm_snapshot) == 0) {
+    return {};
+  }
+  return buffer;
+}
+
 nlohmann::json RequestToJson(const PptRequest& request) {
-  return {
+  const bool has_file = !request.output_file.empty();
+  nlohmann::json result = {
       {"id", request.id},
+      {"userId", request.user_id},
       {"title", request.title},
       {"topic", request.topic},
       {"pages", request.pages},
@@ -18,63 +46,74 @@ nlohmann::json RequestToJson(const PptRequest& request) {
       {"templateId", request.template_id},
       {"templateName", request.template_name},
       {"status", request.status},
-      {"createdAt", request.created_at},
-      {"updatedAt", request.updated_at}};
+      {"createdAt", FormatTimestamp(request.created_at)},
+      {"updatedAt", FormatTimestamp(request.updated_at)},
+      {"hasFile", has_file}};
+  if (has_file) {
+    result["downloadUrl"] = "/api/ppt/file?id=" + std::to_string(request.id);
+  }
+  return result;
 }
 
-std::uint64_t ParseId(const std::string& value) {
-  if (value.empty()) {
-    return 0;
+nlohmann::json SlideToJson(const SlideContent& slide,
+                           const TemplateLayout* layout = nullptr,
+                           const TemplateTheme* theme = nullptr) {
+  nlohmann::json result = {{"title", slide.title}, {"rawText", slide.raw_text}};
+
+  if (!slide.bullets.empty()) {
+    result["bullets"] = slide.bullets;
   }
-  try {
-    return std::stoull(value);
-  } catch (const std::exception&) {
-    return 0;
+
+  if (layout) {
+    result["layout"] = {
+        {"id", layout->id},
+        {"name", layout->name},
+        {"type", layout->type},
+        {"description", layout->description},
+        {"accentColor", layout->accent_color},
+        {"backgroundImage", layout->background_image}};
+  } else if (!slide.layout_hint.empty()) {
+    result["layoutHint"] = slide.layout_hint;
   }
+
+  if (theme) {
+    result["theme"] = {
+        {"primaryColor", theme->primary_color},
+        {"secondaryColor", theme->secondary_color},
+        {"accentColor", theme->accent_color},
+        {"backgroundImage", theme->background_image}};
+  }
+
+  if (!slide.image_prompts.empty()) {
+    result["imagePrompts"] = slide.image_prompts;
+  }
+  if (!slide.image_urls.empty()) {
+    result["imageUrls"] = slide.image_urls;
+  }
+  if (!slide.suggestions.empty()) {
+    result["suggestions"] = slide.suggestions;
+  }
+  if (!slide.notes.empty()) {
+    result["notes"] = slide.notes;
+  }
+  return result;
 }
 
-std::string JoinTags(const std::vector<std::string>& tags) {
-  if (tags.empty()) {
-    return {};
+std::string ExtractToken(const HttpRequest& request) {
+  auto header = request.Header("authorization");
+  if (header.rfind("Bearer ", 0) == 0 || header.rfind("bearer ", 0) == 0) {
+    return header.substr(7);
   }
-  std::string aggregated;
-  for (size_t i = 0; i < tags.size(); ++i) {
-    if (i > 0) {
-      aggregated += "、";
-    }
-    aggregated += tags[i];
-  }
-  return aggregated;
+  return header;
 }
 
-std::string BuildTemplatePrompt(const RemoteTemplate& tpl, const std::string& expected_style) {
-  std::string prompt = tpl.name + " 模板（来源：" + tpl.provider + "）。" + tpl.description;
-  const auto tags = JoinTags(tpl.tags);
-  if (!tags.empty()) {
-    prompt += " 关键词：" + tags + "。";
-  }
-  if (!expected_style.empty()) {
-    prompt += " 用户期望风格：" + expected_style + "。";
-  }
-  prompt += " 需要保持配色与布局与模板预览一致。 主色：" + tpl.theme.primary_color +
-            "，辅色：" + tpl.theme.secondary_color + "，强调色：" + tpl.theme.accent_color + "。";
-  if (!tpl.layouts.empty()) {
-    prompt += " 可用版式：";
-    for (size_t i = 0; i < tpl.layouts.size(); ++i) {
-      if (i > 0) prompt += "；";
-      prompt += tpl.layouts[i].name + "(" + tpl.layouts[i].type + ")";
-    }
-    prompt += "。";
-  }
-  return prompt;
-}
-}
+}  // namespace
 
 PptController::PptController(std::shared_ptr<AuthService> auth_service,
-                             std::shared_ptr<PptService> ppt_service,
-                             std::shared_ptr<ModelService> model_service,
-                             std::shared_ptr<TemplateService> template_service,
-                             std::shared_ptr<QwenClient> qwen_client)
+                           std::shared_ptr<PptService> ppt_service,
+                           std::shared_ptr<ModelService> model_service,
+                           std::shared_ptr<TemplateService> template_service,
+                           std::shared_ptr<QwenClient> qwen_client)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
@@ -85,41 +124,16 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
-    return HttpResponse::Json(401, {{"message", error.empty() ? "未授权" : error}});
+    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
+  }
+
+  auto model = model_service_->FindById("qwen-turbo");
+  if (!model) {
+    return HttpResponse::Json(500, {{"message", "Model not found"}});
   }
 
   try {
-    auto body = nlohmann::json::parse(request.body);
-    if (!body.contains("title") || !body.contains("topic")) {
-      return HttpResponse::Json(400, {{"message", "请填写标题和主题描述"}});
-    }
-
-    PptRequestInput input;
-    input.title = body.value("title", "");
-    input.topic = body.value("topic", "");
-    input.pages = body.value("pages", 10);
-    input.style = body.value("style", "business");
-    input.include_images = body.value("includeImages", true);
-    input.include_charts = body.value("includeCharts", true);
-    input.include_notes = body.value("includeNotes", false);
-    input.model_id = body.value("modelId", "qwen-turbo");
-    input.template_id = body.value("templateId", "");
-    auto model = model_service_->FindById(input.model_id);
-    if (!model) {
-      return HttpResponse::Json(400, {{"message", "模型不存在"}});
-    }
-
-    if (input.template_id.empty()) {
-      return HttpResponse::Json(400, {{"message", "请选择模板"}});
-    }
-    if (!template_service_) {
-      return HttpResponse::Json(500, {{"message", "模板服务未启用"}});  // shouldn't happen
-    }
-    auto template_info_opt = template_service_->FindById(input.template_id);
-    if (!template_info_opt) {
-      return HttpResponse::Json(400, {{"message", "模板不存在"}});
-    }
-    const auto template_prompt = BuildTemplatePrompt(*template_info_opt, input.style);
+    auto input = PptRequestInput::FromJson(nlohmann::json::parse(request.body));
 
     if (input.pages < 1) {
       input.pages = 1;
@@ -128,12 +142,39 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     }
 
     if (input.title.empty() || input.topic.empty()) {
-      return HttpResponse::Json(400, {{"message", "标题和主题不能为空"}});
+      return HttpResponse::Json(400, {{"message", "Title and topic cannot be empty"}});
     }
+
+    std::string template_id;
+    if (auto it = request.query_params.find("template"); it != request.query_params.end() && !it->second.empty()) {
+      template_id = it->second;
+    } else if (!input.template_id.empty()) {
+      template_id = input.template_id;
+    }
+
+    std::optional<RemoteTemplate> template_info_opt;
+    if (!template_id.empty()) {
+      template_info_opt = template_service_->FindById(template_id);
+    } else {
+      const auto& templates = template_service_->GetAll();
+      if (!templates.empty()) {
+        template_info_opt = templates.front();
+      }
+    }
+
+    if (!template_info_opt) {
+      return HttpResponse::Json(400, {{"message", "Invalid template"}});
+    }
+
+    input.template_id = template_info_opt->id;
+
+    std::string template_prompt = template_info_opt->prompt.empty()
+                                      ? template_info_opt->description
+                                      : template_info_opt->prompt;
 
     PptRequest ppt_request;
     if (!ppt_service_->CreateRequest(input, user->id, model->name, template_info_opt->name, ppt_request, error)) {
-      return HttpResponse::Json(500, {{"message", error.empty() ? "生成失败" : error}});
+      return HttpResponse::Json(500, {{"message", error.empty() ? "Generation failed" : error}});
     }
 
     nlohmann::json payload{{"request", RequestToJson(ppt_request)}};
@@ -149,13 +190,13 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
           payload["preview"].push_back(SlideToJson(slides[i], layout, theme));
         }
       } else {
-        Logger::Warn("通义千问生成失败: " + qwen_error);
+        Logger::Warn("Qwen slide generation failed: " + qwen_error);
       }
     }
     return HttpResponse::Json(201, payload);
   } catch (const std::exception& ex) {
-    Logger::Error(std::string("解析PPT请求失败: ") + ex.what());
-    return HttpResponse::Json(400, {{"message", "无效的JSON"}});
+    Logger::Error(std::string("Failed to parse PPT request: ") + ex.what());
+    return HttpResponse::Json(400, {{"message", "Invalid JSON"}});
   }
 }
 
@@ -163,7 +204,7 @@ HttpResponse PptController::History(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
-    return HttpResponse::Json(401, {{"message", error.empty() ? "未授权" : error}});
+    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
   }
 
   auto list = ppt_service_->GetHistory(user->id, error);
@@ -184,7 +225,7 @@ HttpResponse PptController::Delete(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
-    return HttpResponse::Json(401, {{"message", error.empty() ? "未授权" : error}});
+    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
   }
 
   std::uint64_t request_id = 0;
@@ -192,69 +233,37 @@ HttpResponse PptController::Delete(const HttpRequest& request) {
     request_id = ParseId(it->second);
   }
 
-  if (!request_id && !request.body.empty()) {
-    try {
-      auto body = nlohmann::json::parse(request.body);
-      request_id = body.value("id", 0ULL);
-    } catch (const std::exception&) {
-      // ignore json parse errors here, will fall through to invalid parameter response
-    }
+  if (request_id == 0) {
+    return HttpResponse::Json(400, {{"message", "Invalid request ID"}});
   }
 
-  if (!request_id) {
-    return HttpResponse::Json(400, {{"message", "缺少记录ID"}});
+  if (!ppt_service_->DeleteRequest(user->id, request_id, error)) {
+    return HttpResponse::Json(400, {{"message", error.empty() ? "Deletion failed" : error}});
   }
 
-  std::string delete_error;
-  if (!ppt_service_->DeleteRequest(user->id, request_id, delete_error)) {
-    if (delete_error == "记录不存在或无权删除") {
-      return HttpResponse::Json(404, {{"message", delete_error}});
-    }
-    if (delete_error.empty()) {
-      delete_error = "删除失败";
-    }
-    return HttpResponse::Json(500, {{"message", delete_error}});
-  }
-
-  return HttpResponse::Json(200, {{"message", "删除成功"}});
+  return HttpResponse::Json(200, {{"message", "Request deleted successfully"}});
 }
 
-std::optional<User> PptController::Authenticate(const HttpRequest& request, std::string& error_message) const {
-  auto header = request.Header("authorization");
-  if (header.rfind("Bearer ", 0) == 0 || header.rfind("bearer ", 0) == 0) {
-    header = header.substr(7);
+std::shared_ptr<User> PptController::Authenticate(const HttpRequest& request, std::string& error) const {
+  const auto token = ExtractToken(request);
+  if (token.empty()) {
+    error = "Token not provided";
+    return nullptr;
   }
-  if (header.empty()) {
-    error_message = "未提供Token";
-    return std::nullopt;
+
+  auto user = auth_service_->GetUserFromToken(token, error);
+  if (!user) {
+    error = error.empty() ? "Invalid token" : error;
+    return nullptr;
   }
-  return auth_service_->GetUserFromToken(header, error_message);
+
+  return std::make_shared<User>(*user);
 }
 
-nlohmann::json PptController::SlideToJson(const SlideContent& slide,
-                                          const TemplateLayout* layout,
-                                          const TemplateTheme* theme) const {
-  nlohmann::json payload = {
-      {"title", slide.title},
-      {"bullets", slide.bullets},
-      {"rawText", slide.raw_text},
-      {"imagePrompts", slide.image_prompts},
-      {"imageUrls", slide.image_urls}};
-  if (layout) {
-    payload["layout"] = {
-        {"id", layout->id},
-        {"name", layout->name},
-        {"type", layout->type},
-        {"description", layout->description},
-        {"accentColor", layout->accent_color},
-        {"backgroundImage", layout->background_image}};
+std::uint64_t PptController::ParseId(const std::string& str) const {
+  try {
+    return std::stoull(str);
+  } catch (...) {
+    return 0;
   }
-  if (theme) {
-    payload["theme"] = {
-        {"primaryColor", theme->primary_color},
-        {"secondaryColor", theme->secondary_color},
-        {"accentColor", theme->accent_color},
-        {"backgroundImage", theme->background_image}};
-  }
-  return payload;
 }

@@ -67,6 +67,7 @@ RemoteTemplate JsonToTemplate(const nlohmann::json& item, const std::filesystem:
   tpl.preview_image = item.value("preview_image", item.value("previewImage", ""));
   tpl.download_url = item.value("download_url", item.value("downloadUrl", tpl.provider_url));
   tpl.license = item.value("license", "");
+  tpl.prompt = item.value("prompt", "");
   if (item.contains("tags") && item["tags"].is_array()) {
     for (const auto& tag : item["tags"]) {
       if (tag.is_string()) {

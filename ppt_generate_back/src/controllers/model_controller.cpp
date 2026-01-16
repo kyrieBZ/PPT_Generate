@@ -3,24 +3,20 @@
 ModelController::ModelController(std::shared_ptr<ModelService> service)
     : service_(std::move(service)) {}
 
-HttpResponse ModelController::List(const HttpRequest& request) {
+HttpResponse ModelController::List(const HttpRequest& /*request*/) {
+  auto list = service_->GetAll();
   nlohmann::json payload;
   payload["items"] = nlohmann::json::array();
-  for (const auto& model : service_->GetAll()) {
-    payload["items"].push_back(ToJson(model));
+  for (const auto& item : list) {
+    nlohmann::json itemJson;
+    itemJson["id"] = item.id;
+    itemJson["name"] = item.name;
+    itemJson["provider"] = item.provider;
+    itemJson["description"] = item.description;
+    itemJson["enabled"] = true;  // 默认启用所有模型
+    itemJson["default"] = false; // 默认没有预设模型
+    payload["items"].push_back(itemJson);
   }
-  payload["total"] = payload["items"].size();
   return HttpResponse::Json(200, payload);
 }
 
-nlohmann::json ModelController::ToJson(const GenerationModel& model) {
-  return {
-      {"id", model.id},
-      {"name", model.name},
-      {"provider", model.provider},
-      {"locale", model.locale},
-      {"description", model.description},
-      {"latency", model.latency_level},
-      {"cost", model.cost_level},
-      {"capabilities", model.capabilities}};
-}

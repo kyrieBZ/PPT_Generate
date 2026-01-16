@@ -1,5 +1,6 @@
 #include "app_config.h"
 
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
@@ -89,6 +90,37 @@ ProviderConfig ParseProviders(const nlohmann::json& json) {
   }
   return cfg;
 }
+
+GenerationConfig ParseGeneration(const nlohmann::json& json, const std::filesystem::path& base_dir) {
+  GenerationConfig cfg;
+  if (auto it = json.find("output_dir"); it != json.end() && it->is_string()) {
+    cfg.output_dir = *it;
+  }
+  if (auto it = json.find("python_binary"); it != json.end() && it->is_string()) {
+    cfg.python_binary = *it;
+  }
+  if (auto it = json.find("builder_script"); it != json.end() && it->is_string()) {
+    cfg.builder_script = *it;
+  }
+  if (auto it = json.find("soffice_binary"); it != json.end() && it->is_string()) {
+    cfg.soffice_binary = *it;
+  }
+
+  auto make_absolute = [&](const std::string& value) {
+    if (value.empty()) {
+      return value;
+    }
+    std::filesystem::path path(value);
+    if (path.is_relative()) {
+      path = (base_dir / path).lexically_normal();
+    }
+    return path.lexically_normal().string();
+  };
+
+  cfg.output_dir = make_absolute(cfg.output_dir);
+  cfg.builder_script = make_absolute(cfg.builder_script);
+  return cfg;
+}
 }  // namespace
 
 AppConfig AppConfig::Load(const std::string& path) {
@@ -105,6 +137,10 @@ AppConfig AppConfig::Load(const std::string& path) {
   }
 
   AppConfig config;
+  const auto config_path = std::filesystem::absolute(std::filesystem::path(path));
+  const auto config_dir = config_path.parent_path();
+  const auto project_root = config_dir.parent_path();
+
   if (auto it = data.find("server"); it != data.end()) {
     config.server_ = ParseServer(*it);
   }
@@ -122,6 +158,11 @@ AppConfig AppConfig::Load(const std::string& path) {
   }
   if (auto it = data.find("providers"); it != data.end()) {
     config.providers_ = ParseProviders(*it);
+  }
+  if (auto it = data.find("generation"); it != data.end()) {
+    config.generation_ = ParseGeneration(*it, project_root);
+  } else {
+    config.generation_ = ParseGeneration(nlohmann::json::object(), project_root);
   }
 
   if (config.database_.user.empty() || config.database_.name.empty()) {
