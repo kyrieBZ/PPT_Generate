@@ -9,6 +9,19 @@ export const apiClient = axios.create({
   }
 })
 
+export const setAuthToken = (token) => {
+  if (token) {
+    apiClient.defaults.headers.common.Authorization = `Bearer ${token}`
+  } else {
+    delete apiClient.defaults.headers.common.Authorization
+  }
+}
+
+const savedToken = localStorage.getItem('token')
+if (savedToken) {
+  setAuthToken(savedToken)
+}
+
 // 请求拦截器
 apiClient.interceptors.request.use(
   config => {

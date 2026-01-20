@@ -1,11 +1,14 @@
 import { createStore } from 'vuex'
-import authAPI from '@/api/auth'
+import authAPI, { setAuthToken } from '@/api/auth'
 import pptAPI from '@/api/ppt'
 import templatesAPI from '@/api/templates'
 import modelsAPI from '@/api/models'
 
 const savedToken = localStorage.getItem('token')
 const savedModel = localStorage.getItem('defaultModel') || 'qwen-turbo'
+if (savedToken) {
+  setAuthToken(savedToken)
+}
 
 const normalizeRequest = (item = {}) => ({
   id: item.id ?? 0,
@@ -21,7 +24,9 @@ const normalizeRequest = (item = {}) => ({
   templateId: item.templateId ?? item.template_id ?? '',
   templateName: item.templateName ?? item.template_name ?? '',
   createdAt: item.createdAt ?? item.created_at ?? '',
-  updatedAt: item.updatedAt ?? item.updated_at ?? ''
+  updatedAt: item.updatedAt ?? item.updated_at ?? '',
+  hasFile: Boolean(item.hasFile ?? item.has_file),
+  downloadUrl: item.downloadUrl ?? item.download_url ?? ''
 })
 
 export default createStore({
@@ -49,8 +54,10 @@ export default createStore({
       state.isAuthenticated = !!token
       if (token) {
         localStorage.setItem('token', token)
+        setAuthToken(token)
       } else {
         localStorage.removeItem('token')
+        setAuthToken(null)
       }
     },
     logout(state) {
@@ -192,7 +199,11 @@ export default createStore({
         const response = await authAPI.login({ username, password })
         commit('setToken', response.data.token)
         commit('setUser', response.data.user)
-        await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        try {
+          await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        } catch (fetchError) {
+          console.error('登录后加载数据失败:', fetchError)
+        }
         return response
       } catch (error) {
         commit('setUser', null)
@@ -205,7 +216,11 @@ export default createStore({
         const response = await authAPI.register(userData)
         commit('setToken', response.data.token)
         commit('setUser', response.data.user)
-        await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        try {
+          await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        } catch (fetchError) {
+          console.error('注册后加载数据失败:', fetchError)
+        }
         return response
       } catch (error) {
         commit('setUser', null)

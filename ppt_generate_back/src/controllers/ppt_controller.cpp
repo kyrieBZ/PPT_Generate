@@ -1,6 +1,8 @@
 #include "controllers/ppt_controller.h"
 
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -30,7 +32,7 @@ std::string FormatTimestamp(std::uint64_t seconds) {
 }
 
 nlohmann::json RequestToJson(const PptRequest& request) {
-  const bool has_file = !request.output_file.empty();
+  const bool has_file = !request.output_path.empty();
   nlohmann::json result = {
       {"id", request.id},
       {"userId", request.user_id},
@@ -107,17 +109,27 @@ std::string ExtractToken(const HttpRequest& request) {
   return header;
 }
 
+std::string BuildOutputPath(const GenerationConfig& config, std::uint64_t request_id) {
+  std::filesystem::path output_dir(config.output_dir);
+  std::error_code ec;
+  std::filesystem::create_directories(output_dir, ec);
+  std::filesystem::path filename = "ppt_" + std::to_string(request_id) + ".pptx";
+  return (output_dir / filename).lexically_normal().string();
+}
+
 }  // namespace
 
 PptController::PptController(std::shared_ptr<AuthService> auth_service,
                            std::shared_ptr<PptService> ppt_service,
                            std::shared_ptr<ModelService> model_service,
                            std::shared_ptr<TemplateService> template_service,
+                           GenerationConfig generation_config,
                            std::shared_ptr<QwenClient> qwen_client)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
       template_service_(std::move(template_service)),
+      generation_config_(std::move(generation_config)),
       qwen_client_(std::move(qwen_client)) {}
 
 HttpResponse PptController::Generate(const HttpRequest& request) {
@@ -189,6 +201,33 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
           const TemplateLayout* layout = layouts.empty() ? nullptr : &layouts[i % layouts.size()];
           payload["preview"].push_back(SlideToJson(slides[i], layout, theme));
         }
+
+        const auto template_file = template_service_->GetLocalFile(template_info_opt->id);
+        if (!template_file) {
+          Logger::Warn("Template file missing or invalid for id: " + template_info_opt->id +
+                       ", local=" + template_info_opt->local_file_path);
+          std::string update_error;
+          ppt_request.status = "failed";
+          ppt_service_->UpdateRequestOutput(ppt_request.id, ppt_request.user_id, "", "failed", update_error);
+          payload["request"] = RequestToJson(ppt_request);
+          payload["fileError"] = "Template file missing or invalid";
+        } else {
+          std::string output_path = BuildOutputPath(generation_config_, ppt_request.id);
+          std::string generate_error;
+          if (ppt_service_->GeneratePptxFile(*template_file, slides, output_path, generate_error)) {
+            std::string update_error;
+            ppt_request.output_path = output_path;
+            ppt_request.status = "completed";
+            ppt_service_->UpdateRequestOutput(ppt_request.id, ppt_request.user_id, output_path, "completed", update_error);
+            payload["request"] = RequestToJson(ppt_request);
+          } else {
+            Logger::Warn("PPTX generation failed: " + generate_error);
+            std::string update_error;
+            ppt_request.status = "failed";
+            ppt_service_->UpdateRequestOutput(ppt_request.id, ppt_request.user_id, "", "failed", update_error);
+            payload["request"] = RequestToJson(ppt_request);
+          }
+        }
       } else {
         Logger::Warn("Qwen slide generation failed: " + qwen_error);
       }
@@ -242,6 +281,46 @@ HttpResponse PptController::Delete(const HttpRequest& request) {
   }
 
   return HttpResponse::Json(200, {{"message", "Request deleted successfully"}});
+}
+
+HttpResponse PptController::Download(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
+  }
+
+  std::uint64_t request_id = 0;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    request_id = ParseId(it->second);
+  }
+  if (request_id == 0) {
+    return HttpResponse::Json(400, {{"message", "Invalid request ID"}});
+  }
+
+  PptRequest ppt_request;
+  if (!ppt_service_->GetRequest(user->id, request_id, ppt_request, error)) {
+    return HttpResponse::Json(404, {{"message", error.empty() ? "Request not found" : error}});
+  }
+  if (ppt_request.output_path.empty()) {
+    return HttpResponse::Json(404, {{"message", "PPT file not generated"}});
+  }
+
+  std::ifstream input(ppt_request.output_path, std::ios::binary);
+  if (!input.is_open()) {
+    return HttpResponse::Json(404, {{"message", "PPT file is missing"}});
+  }
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+
+  HttpResponse response;
+  response.status_code = 200;
+  response.status_message = "OK";
+  response.headers["content-type"] = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  response.headers["content-disposition"] =
+      "attachment; filename=\"ppt_" + std::to_string(ppt_request.id) + ".pptx\"";
+  response.body = buffer.str();
+  return response;
 }
 
 std::shared_ptr<User> PptController::Authenticate(const HttpRequest& request, std::string& error) const {

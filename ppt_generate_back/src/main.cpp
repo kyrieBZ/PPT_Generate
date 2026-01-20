@@ -17,11 +17,7 @@
 #include "services/qwen_client.h"
 #include "services/template_service.h"
 #include "services/ppt_service_interface.h"
-// 不再需要单独包含SlideContent定义，因为它在qwen_client.h中
-
-// Uncomment the desired implementation
-// #include "services/aspose_powerpoint_service.h"
-// #include "services/libreoffice_powerpoint_service.h"
+#include "services/libreoffice_powerpoint_service.h"
 
 namespace {
 std::atomic<bool> g_should_stop{false};
@@ -52,23 +48,16 @@ int main(int argc, char* argv[]) {
     auto pool = std::make_shared<MySQLConnectionPool>(config.database());
     auto auth_service = std::make_shared<AuthService>(pool, config.auth());
     auto ppt_service = std::make_shared<PptService>(pool);
-    
-    // Conditionally set PowerPoint service factory based on availability
-    // For now, we'll leave this commented until the actual implementation is ready
-    /*
+
     std::shared_ptr<IPowerPointServiceFactory> factory;
-    
-    // Try to use Aspose first, fallback to LibreOffice, or none if neither available
-    #ifdef USE_ASPOSE_SLIDES
-    factory = std::make_shared<AsposePowerPointServiceFactory>();
-    #elif USE_LIBREOFFICE_SDK
-    factory = std::make_shared<LibreOfficePowerPointServiceFactory>();
-    #endif
-    
+    LibreOfficeRuntimeOptions runtime_options;
+    runtime_options.python_binary = config.generation().python_binary;
+    runtime_options.builder_script = config.generation().builder_script;
+    runtime_options.soffice_binary = config.generation().soffice_binary;
+    factory = std::make_shared<LibreOfficePowerPointServiceFactory>(runtime_options);
     if (factory) {
         ppt_service->SetPowerPointServiceFactory(factory);
     }
-    */
 
     auto template_service = std::make_shared<TemplateService>(config.templates().catalog_path);
     auto model_service = std::make_shared<ModelService>(config.models().catalog_path);
@@ -79,7 +68,7 @@ int main(int argc, char* argv[]) {
 
     Router router;
     AuthController auth_controller(auth_service);
-    PptController ppt_controller(auth_service, ppt_service, model_service, template_service, qwen_client);
+    PptController ppt_controller(auth_service, ppt_service, model_service, template_service, config.generation(), qwen_client);
     TemplateController template_controller(template_service);
     ModelController model_controller(model_service);
 
@@ -113,6 +102,9 @@ int main(int argc, char* argv[]) {
 
     router.AddRoute("DELETE", "/api/ppt/history", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Delete(request);
+    });
+    router.AddRoute("GET", "/api/ppt/file", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.Download(request);
     });
 
     router.AddRoute("GET", "/api/templates", [&template_controller](const HttpRequest& request) {

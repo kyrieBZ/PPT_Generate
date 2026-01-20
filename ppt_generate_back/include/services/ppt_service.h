@@ -28,6 +28,16 @@ class PptService {
   // Delete a PPT generation request record
   bool DeleteRequest(std::uint64_t user_id, std::uint64_t request_id, std::string& error);
 
+  // Get a single PPT generation request
+  bool GetRequest(std::uint64_t user_id, std::uint64_t request_id, PptRequest& out_request, std::string& error);
+
+  // Update output path and status for a request
+  bool UpdateRequestOutput(std::uint64_t request_id,
+                          std::uint64_t user_id,
+                          const std::string& output_path,
+                          const std::string& status,
+                          std::string& error);
+
   // Set PowerPoint service factory
   void SetPowerPointServiceFactory(std::shared_ptr<IPowerPointServiceFactory> factory);
 

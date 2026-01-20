@@ -6,34 +6,35 @@
         <p class="subtitle">基于GenAI的自动化PPT生成平台</p>
       </div>
       
-      <form @submit.prevent="handleLogin" class="login-form">
+      <el-form
+        ref="loginFormRef"
+        :model="form"
+        :rules="rules"
+        label-position="top"
+        class="login-form"
+        @submit.prevent="handleLogin"
+      >
         <h2>用户登录</h2>
         
-        <div class="form-group">
-          <label for="login-username">用户名/邮箱</label>
-          <input
+        <el-form-item class="form-group" prop="username" label="用户名/邮箱">
+          <el-input
             id="login-username"
             v-model="form.username"
-            type="text"
-            required
             placeholder="请输入用户名或邮箱"
-            :class="{ 'error': errors.username }"
+            size="large"
           />
-          <div v-if="errors.username" class="error-message">{{ errors.username }}</div>
-        </div>
+        </el-form-item>
         
-        <div class="form-group">
-          <label for="login-password">密码</label>
-          <input
+        <el-form-item class="form-group" prop="password" label="密码">
+          <el-input
             id="login-password"
             v-model="form.password"
             type="password"
-            required
             placeholder="请输入密码"
-            :class="{ 'error': errors.password }"
+            size="large"
+            show-password
           />
-          <div v-if="errors.password" class="error-message">{{ errors.password }}</div>
-        </div>
+        </el-form-item>
         
         <div class="form-options">
           <label class="remember-me">
@@ -44,8 +45,10 @@
         </div>
         
         <button type="submit" class="login-btn" :disabled="loading">
-          <span v-if="loading">登录中...</span>
-          <span v-else>登录系统</span>
+          <span class="btn-content">
+            <UserFilled class="btn-icon" />
+            <span>{{ loading ? '登录中...' : '登录系统' }}</span>
+          </span>
         </button>
 
         <div v-if="formError" class="form-error">
@@ -56,7 +59,7 @@
           还没有账号？ <router-link to="/register">立即注册</router-link>
         </div>
         
-      </form>
+      </el-form>
     </div>
   </div>
 </template>
@@ -65,6 +68,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStore } from 'vuex'
+import { UserFilled } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const store = useStore()
@@ -76,11 +80,17 @@ const form = reactive({
   password: ''
 })
 
-const errors = reactive({
-  username: '',
-  password: ''
-})
 const formError = ref('')
+const loginFormRef = ref(null)
+
+const rules = {
+  username: [
+    { required: true, message: '请输入用户名或邮箱', trigger: 'blur' }
+  ],
+  password: [
+    { required: true, message: '请输入密码', trigger: 'blur' }
+  ]
+}
 
 onMounted(() => {
   const savedUsername = localStorage.getItem('rememberedUsername')
@@ -90,26 +100,10 @@ onMounted(() => {
   }
 })
 
-const validateForm = () => {
-  let isValid = true
-  
-  Object.keys(errors).forEach(key => errors[key] = '')
-  
-  if (!form.username.trim()) {
-    errors.username = '请输入用户名或邮箱'
-    isValid = false
-  }
-  
-  if (!form.password) {
-    errors.password = '请输入密码'
-    isValid = false
-  }
-  
-  return isValid
-}
-
 const handleLogin = async () => {
-  if (!validateForm()) return
+  if (!loginFormRef.value) return
+  const valid = await loginFormRef.value.validate().catch(() => false)
+  if (!valid) return
   
   formError.value = ''
 
@@ -198,32 +192,33 @@ const handleLogin = async () => {
   margin-bottom: 20px;
 }
 
-.form-group label {
-  display: block;
-  margin-bottom: 8px;
+.login-form :deep(.el-form-item__label) {
   font-weight: 500;
   color: #555;
+  margin-bottom: 8px;
 }
 
-.form-group input {
-  width: 100%;
-  padding: 12px 16px;
+.login-form :deep(.el-input__wrapper) {
   border: 2px solid #e0e0e0;
   border-radius: 10px;
-  font-size: 1rem;
-  transition: border-color 0.3s;
+  box-shadow: none;
+  padding: 0 12px;
 }
 
-.form-group input:focus {
-  outline: none;
+.login-form :deep(.el-input__wrapper.is-focus) {
   border-color: #4f46e5;
 }
 
-.form-group input.error {
+.login-form :deep(.el-input__inner) {
+  height: 44px;
+  font-size: 1rem;
+}
+
+.login-form :deep(.el-form-item.is-error .el-input__wrapper) {
   border-color: #ef4444;
 }
 
-.error-message {
+.login-form :deep(.el-form-item__error) {
   color: #ef4444;
   font-size: 0.875rem;
   margin-top: 4px;
@@ -265,6 +260,19 @@ const handleLogin = async () => {
   cursor: pointer;
   transition: transform 0.3s, box-shadow 0.3s;
   margin-bottom: 20px;
+}
+
+.btn-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.btn-icon {
+  width: 18px;
+  height: 18px;
 }
 
 .login-btn:hover:not(:disabled) {

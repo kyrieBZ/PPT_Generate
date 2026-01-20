@@ -19,7 +19,9 @@
     "lodash-es": "^4.17.21",
     "dayjs": "^1.11.10",
     "validator": "^13.11.0",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "element-plus": "^2.13.1",
+    "@element-plus/icons-vue": "^2.3.2"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^4.5.0",

@@ -65,7 +65,12 @@
               <div class="feature-icon">🤖</div>
               <h4>智能生成</h4>
               <p>基于GenAI模型自动生成PPT内容</p>
-              <button class="feature-action" @click="showGenerateModal = true">开始生成</button>
+              <button class="feature-action" @click="showGenerateModal = true">
+                <span class="btn-content">
+                  <el-icon class="btn-icon"><MagicStick /></el-icon>
+                  <span>开始生成</span>
+                </span>
+              </button>
             </div>
             <div class="feature-card">
               <div class="feature-icon">🎨</div>
@@ -85,7 +90,7 @@
         <section v-if="activeMenu === 'generate'" class="generate-section">
           <div class="generate-panel">
             <h2>最新生成预览</h2>
-            <p>完成生成任务后将在此展示来自通义千问的纯文字PPT内容。</p>
+            <p>完成生成任务后将在此展示生成的PPT预览。</p>
             <div v-if="selectedTemplate" class="template-hint">
               <span>当前模板：{{ selectedTemplate.name }} · {{ selectedTemplate.provider }}</span>
               <a
@@ -98,16 +103,25 @@
               </a>
             </div>
             <div
-              v-if="previewSlides.length"
+              v-if="previewSlides.length || previewEmbedUrl"
               class="preview-card"
               :class="{ 'preview-has-bg': Boolean(previewCardStyle.backgroundImage) }"
               :style="previewCardStyle"
             >
               <div class="preview-header">
-                <div class="preview-label">纯文字预览</div>
-                <div class="preview-counter">第 {{ previewIndex + 1 }} / {{ previewSlides.length }} 页</div>
+                <div class="preview-label">{{ previewEmbedUrl ? 'PPT 预览' : '纯文字预览' }}</div>
+                <div v-if="!previewEmbedUrl" class="preview-counter">第 {{ previewIndex + 1 }} / {{ previewSlides.length }} 页</div>
               </div>
-              <div v-if="currentSlide" class="preview-body" :class="currentLayoutClass">
+              <div v-if="previewEmbedUrl" class="preview-embed">
+                <iframe
+                  class="preview-iframe"
+                  :src="previewEmbedUrl"
+                  title="PPT预览"
+                  frameborder="0"
+                  allowfullscreen
+                ></iframe>
+              </div>
+              <div v-else-if="currentSlide" class="preview-body" :class="currentLayoutClass">
                 <div class="layout-grid">
                   <div class="layout-text">
                     <h3>{{ currentSlide.title || '自动生成的PPT' }}</h3>
@@ -143,7 +157,7 @@
                 </div>
               </div>
               <div v-else class="preview-placeholder">未能解析当前幻灯片内容</div>
-              <div class="preview-controls">
+              <div v-if="!previewEmbedUrl" class="preview-controls">
                 <button class="preview-nav" @click="goToPrevSlide" :disabled="previewIndex === 0">
                   上一页
                 </button>
@@ -155,7 +169,7 @@
                   下一页
                 </button>
               </div>
-              <div v-if="previewSlides.length > 1" class="preview-thumbnails">
+              <div v-if="!previewEmbedUrl && previewSlides.length > 1" class="preview-thumbnails">
                 <button
                   v-for="(slide, index) in previewSlides"
                   :key="index"
@@ -198,9 +212,24 @@
                 </div>
               </div>
               <div class="history-actions">
-                <button class="action-btn" @click="editPPT(item)">编辑</button>
-                <button class="action-btn" @click="downloadPPT(item)">下载</button>
-                <button class="action-btn delete" @click="deleteHistory(item)">删除</button>
+                <el-button size="large" type="primary" @click="editPPT(item)">
+                  <span class="btn-content">
+                    <el-icon class="btn-icon"><EditPen /></el-icon>
+                    <span>编辑</span>
+                  </span>
+                </el-button>
+                <el-button size="large" type="success" @click="downloadPPT(item)">
+                  <span class="btn-content">
+                    <el-icon class="btn-icon"><Download /></el-icon>
+                    <span>下载</span>
+                  </span>
+                </el-button>
+                <el-button size="large" type="danger" @click="deleteHistory(item)">
+                  <span class="btn-content">
+                    <el-icon class="btn-icon"><Delete /></el-icon>
+                    <span>删除</span>
+                  </span>
+                </el-button>
               </div>
             </div>
           </div>
@@ -474,8 +503,11 @@
         <div class="modal-footer">
           <button class="modal-btn secondary" @click="showGenerateModal = false">取消</button>
           <button class="modal-btn primary" @click="handleGenerate" :disabled="generating">
-            <span v-if="generating">生成中...</span>
-            <span v-else>开始生成</span>
+            <span class="btn-content">
+              <el-icon class="btn-icon"><MagicStick /></el-icon>
+              <span v-if="generating">生成中...</span>
+              <span v-else>开始生成</span>
+            </span>
           </button>
         </div>
       </div>
@@ -487,6 +519,8 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { MagicStick, Download, Delete, EditPen } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -506,6 +540,7 @@ const futurePlan = reactive({
 })
 const previewSlides = ref([])
 const previewIndex = ref(0)
+const previewFileUrl = ref('')
 const currentSlide = computed(() => {
   if (!previewSlides.value.length) {
     return null
@@ -534,6 +569,22 @@ const jumpToSlide = (index) => {
     previewIndex.value = index
   }
 }
+
+const resolveAbsoluteUrl = (url) => {
+  if (!url) return ''
+  if (url.startsWith('http')) return url
+  const base = import.meta.env.VITE_API_URL || '/api'
+  if (base.startsWith('http')) {
+    return new URL(url, base).toString()
+  }
+  return new URL(url, window.location.origin).toString()
+}
+
+const previewEmbedUrl = computed(() => {
+  const absUrl = resolveAbsoluteUrl(previewFileUrl.value)
+  if (!absUrl) return ''
+  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(absUrl)}`
+})
 
 watch(
   () => previewSlides.value.length,
@@ -839,15 +890,16 @@ const resetGenerateForm = () => {
 
 const handleGenerate = async () => {
   if (!generateForm.value.title.trim() || !generateForm.value.topic.trim()) {
-    window.alert('请填写标题和主题描述')
+    ElMessage.warning('请填写标题和主题描述')
     return
   }
   if (!generateForm.value.templateId) {
-    window.alert('请选择模板样式')
+    ElMessage.warning('请选择模板样式')
     return
   }
 
   generating.value = true
+  previewFileUrl.value = ''
   try {
     const payload = {
       title: generateForm.value.title.trim(),
@@ -864,6 +916,7 @@ const handleGenerate = async () => {
     if (!result?.request) {
       throw new Error('生成请求失败')
     }
+    previewFileUrl.value = result.request?.downloadUrl || ''
     const templateInfo = selectedTemplate.value || null
     const slides = normalizePreviewSlides(result?.preview, payload.topic, templateInfo)
     previewSlides.value = slides
@@ -875,35 +928,43 @@ const handleGenerate = async () => {
   } catch (error) {
     console.error('生成失败:', error)
     const message = error.response?.data?.message || error.message || '生成失败，请重试'
-    window.alert(message)
+    ElMessage.error(message)
   } finally {
     generating.value = false
   }
 }
 
 const editPPT = (item) => {
-  window.alert(`编辑功能即将上线：${item.title}`)
+  ElMessage.info(`编辑功能即将上线：${item.title}`)
 }
 
 const downloadPPT = (item) => {
-  window.alert(`下载功能即将上线：${item.title}`)
+  ElMessage.info(`下载功能即将上线：${item.title}`)
 }
 
 const deleteHistory = async (item) => {
   if (!item?.id) {
     return
   }
-  const confirmed = window.confirm(`确定删除《${item.title || '未命名PPT'}》吗？`)
-  if (!confirmed) {
-    return
-  }
   try {
+    await ElMessageBox.confirm(
+      `确定删除《${item.title || '未命名PPT'}》吗？`,
+      '删除确认',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
     await store.dispatch('deletePptRequest', item.id)
-    window.alert('删除成功')
+    ElMessage.success('删除成功')
   } catch (error) {
+    if (error === 'cancel' || error === 'close' || error?.message === 'cancel') {
+      return
+    }
     console.error('删除失败:', error)
     const message = error.response?.data?.message || error.message || '删除失败，请稍后重试'
-    window.alert(message)
+    ElMessage.error(message)
   }
 }
 
@@ -928,10 +989,16 @@ const handleModelChange = (modelId) => {
 }
 
 const handleLogout = async () => {
-  await store.dispatch('logout')
-  previewSlides.value = []
-  previewIndex.value = 0
-  router.push('/login')
+  try {
+    await store.dispatch('logout')
+  } catch (error) {
+    console.error('退出登录失败:', error)
+  } finally {
+    previewSlides.value = []
+    previewIndex.value = 0
+    previewFileUrl.value = ''
+    router.push('/login')
+  }
 }
 
 const ensureSession = async () => {
@@ -939,15 +1006,30 @@ const ensureSession = async () => {
     if (!store.state.user) {
       await store.dispatch('fetchCurrentUser')
     }
-    await Promise.all([
-      store.dispatch('fetchPptHistory'),
-      store.dispatch('fetchTemplates'),
-      store.dispatch('fetchModels')
-    ])
   } catch (error) {
+    if (error?.response?.status === 401) {
+      router.push('/login')
+      return
+    }
     console.error('加载用户数据失败:', error)
-    router.push('/login')
+    ElMessage.warning('用户信息加载失败，将继续尝试加载数据')
   }
+
+  const results = await Promise.allSettled([
+    store.dispatch('fetchPptHistory'),
+    store.dispatch('fetchTemplates'),
+    store.dispatch('fetchModels')
+  ])
+  results.forEach((result) => {
+    if (result.status === 'rejected') {
+      const status = result.reason?.response?.status
+      if (status === 401) {
+        router.push('/login')
+      } else {
+        console.error('加载数据失败:', result.reason)
+      }
+    }
+  })
 }
 
 onMounted(() => {
@@ -1301,27 +1383,6 @@ onMounted(() => {
   gap: 10px;
 }
 
-.action-btn {
-  padding: 8px 16px;
-  border: 1px solid #e5e7eb;
-  background: white;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.3s;
-}
-
-.action-btn:hover {
-  background: #f8fafc;
-  border-color: #4f46e5;
-  color: #4f46e5;
-}
-
-.action-btn.delete:hover {
-  background: #fee2e2;
-  border-color: #ef4444;
-  color: #ef4444;
-}
-
 .history-empty {
   padding: 40px 20px;
   text-align: center;
@@ -1429,6 +1490,29 @@ onMounted(() => {
   margin-top: 12px;
   color: #94a3b8;
   font-style: italic;
+}
+
+.preview-embed {
+  margin-top: 8px;
+}
+
+.preview-iframe {
+  width: 100%;
+  height: 520px;
+  border: none;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.btn-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-icon {
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .preview-card.preview-has-bg .preview-placeholder {

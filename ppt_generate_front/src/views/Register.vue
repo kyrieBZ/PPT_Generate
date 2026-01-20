@@ -55,7 +55,10 @@
             @click="handleRegister" 
             :loading="loading"
             style="width: 100%">
-            注册
+            <span class="btn-content">
+              <UserFilled class="btn-icon" />
+              <span>注册</span>
+            </span>
           </el-button>
         </el-form-item>
       </el-form>
@@ -171,6 +174,17 @@ const handleRegister = async () => {
   font-weight: 600;
   color: #303133;
   margin: 0;
+}
+
+.btn-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-icon {
+  width: 1em;
+  height: 1em;
 }
 
 .login-link {
