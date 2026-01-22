@@ -1,28 +1,38 @@
 import { createStore } from 'vuex'
-import authAPI from '@/api/auth'
+import authAPI, { setAuthToken } from '@/api/auth'
 import pptAPI from '@/api/ppt'
 import templatesAPI from '@/api/templates'
 import modelsAPI from '@/api/models'
 
-const savedToken = localStorage.getItem('token')
+const savedToken = localStorage.getItem('token') || sessionStorage.getItem('token')
 const savedModel = localStorage.getItem('defaultModel') || 'qwen-turbo'
+if (savedToken) {
+  setAuthToken(savedToken)
+}
 
-const normalizeRequest = (item = {}) => ({
-  id: item.id ?? 0,
-  userId: item.user_id ?? item.userId ?? 0,
-  title: item.title ?? '',
-  topic: item.topic ?? item.description ?? '',
-  pages: item.pages ?? 0,
-  style: item.style ?? 'business',
-  includeImages: typeof item.includeImages === 'boolean' ? item.includeImages : Boolean(item.include_images),
-  includeCharts: typeof item.includeCharts === 'boolean' ? item.includeCharts : Boolean(item.include_charts),
-  includeNotes: typeof item.includeNotes === 'boolean' ? item.includeNotes : Boolean(item.include_notes),
-  status: item.status ?? 'completed',
-  templateId: item.templateId ?? item.template_id ?? '',
-  templateName: item.templateName ?? item.template_name ?? '',
-  createdAt: item.createdAt ?? item.created_at ?? '',
-  updatedAt: item.updatedAt ?? item.updated_at ?? ''
-})
+const normalizeRequest = (item = {}) => {
+  const id = item.id ?? 0
+  const hasFile = Boolean(item.hasFile ?? item.has_file)
+  const downloadUrl = item.downloadUrl ?? item.download_url ?? (hasFile && id ? `/api/ppt/file?id=${id}` : '')
+  return {
+    id,
+    userId: item.user_id ?? item.userId ?? 0,
+    title: item.title ?? '',
+    topic: item.topic ?? item.description ?? '',
+    pages: item.pages ?? 0,
+    style: item.style ?? 'business',
+    includeImages: typeof item.includeImages === 'boolean' ? item.includeImages : Boolean(item.include_images),
+    includeCharts: typeof item.includeCharts === 'boolean' ? item.includeCharts : Boolean(item.include_charts),
+    includeNotes: typeof item.includeNotes === 'boolean' ? item.includeNotes : Boolean(item.include_notes),
+    status: item.status ?? 'completed',
+    templateId: item.templateId ?? item.template_id ?? '',
+    templateName: item.templateName ?? item.template_name ?? '',
+    createdAt: item.createdAt ?? item.created_at ?? '',
+    updatedAt: item.updatedAt ?? item.updated_at ?? '',
+    hasFile,
+    downloadUrl
+  }
+}
 
 export default createStore({
   state: {
@@ -44,13 +54,24 @@ export default createStore({
     setUser(state, user) {
       state.user = user
     },
-    setToken(state, token) {
+    setToken(state, payload) {
+      const token = typeof payload === 'object' && payload !== null ? payload.token : payload
+      const remember = typeof payload === 'object' && payload !== null ? payload.remember : true
       state.token = token
       state.isAuthenticated = !!token
       if (token) {
-        localStorage.setItem('token', token)
+        if (remember) {
+          localStorage.setItem('token', token)
+          sessionStorage.removeItem('token')
+        } else {
+          sessionStorage.setItem('token', token)
+          localStorage.removeItem('token')
+        }
+        setAuthToken(token)
       } else {
         localStorage.removeItem('token')
+        sessionStorage.removeItem('token')
+        setAuthToken(null)
       }
     },
     logout(state) {
@@ -59,6 +80,10 @@ export default createStore({
       state.isAuthenticated = false
       state.pptHistory = []
       localStorage.removeItem('token')
+      sessionStorage.removeItem('token')
+      localStorage.removeItem('rememberedUsername')
+      localStorage.removeItem('rememberedPassword')
+      localStorage.removeItem('rememberMe')
     },
     setPptHistory(state, items) {
       state.pptHistory = items
@@ -88,8 +113,9 @@ export default createStore({
   actions: {
     async bootstrapSession({ state, commit, dispatch }) {
       const localToken = localStorage.getItem('token')
-      if (localToken && !state.token) {
-        commit('setToken', localToken)
+      const sessionToken = sessionStorage.getItem('token')
+      if (!state.token && (localToken || sessionToken)) {
+        commit('setToken', localToken ? { token: localToken, remember: true } : { token: sessionToken, remember: false })
       }
       if (!state.token) {
         return
@@ -131,6 +157,23 @@ export default createStore({
       } finally {
         commit('setLoading', { key: 'history', value: false })
       }
+    },
+    async searchPptHistory({ state }, query) {
+      if (!state.token) {
+        return []
+      }
+      const keyword = (query || '').trim()
+      if (!keyword) {
+        return []
+      }
+      const response = await pptAPI.history({ q: keyword })
+      const items = (response.data?.items || []).map(normalizeRequest)
+      const lower = keyword.toLowerCase()
+      return items.filter(item => {
+        const title = item.title?.toLowerCase() || ''
+        const topic = item.topic?.toLowerCase() || ''
+        return title.includes(lower) || topic.includes(lower)
+      })
     },
     async createPptRequest({ commit, state }, payload) {
       const body = { ...payload }
@@ -187,12 +230,16 @@ export default createStore({
         commit('setLoading', { key: 'templates', value: false })
       }
     },
-    async login({ commit, dispatch }, { username, password }) {
+    async login({ commit, dispatch }, { username, password, rememberMe = true }) {
       try {
         const response = await authAPI.login({ username, password })
-        commit('setToken', response.data.token)
+        commit('setToken', { token: response.data.token, remember: rememberMe })
         commit('setUser', response.data.user)
-        await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        try {
+          await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        } catch (fetchError) {
+          console.error('登录后加载数据失败:', fetchError)
+        }
         return response
       } catch (error) {
         commit('setUser', null)
@@ -205,7 +252,11 @@ export default createStore({
         const response = await authAPI.register(userData)
         commit('setToken', response.data.token)
         commit('setUser', response.data.user)
-        await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        try {
+          await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        } catch (fetchError) {
+          console.error('注册后加载数据失败:', fetchError)
+        }
         return response
       } catch (error) {
         commit('setUser', null)

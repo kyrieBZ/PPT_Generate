@@ -6,6 +6,9 @@ import compression from 'vite-plugin-compression'
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const allowedHosts = env.VITE_ALLOWED_HOSTS
+    ? env.VITE_ALLOWED_HOSTS.split(',').map((host) => host.trim()).filter(Boolean)
+    : []
   
   return {
     plugins: [
@@ -33,6 +36,7 @@ export default defineConfig(({ mode }) => {
       port: 3000,
       host: true,
       open: true,
+      allowedHosts: allowedHosts.length ? allowedHosts : undefined,
       proxy: {
         '/api': {
           target: 'http://localhost:8080',

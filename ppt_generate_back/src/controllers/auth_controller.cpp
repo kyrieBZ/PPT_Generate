@@ -94,6 +94,43 @@ HttpResponse AuthController::CurrentUser(const HttpRequest& request) {
   return HttpResponse::Json(200, {{"user", UserJson(*user)}});
 }
 
+HttpResponse AuthController::RequestPasswordReset(const HttpRequest& request) {
+  try {
+    auto body = nlohmann::json::parse(request.body);
+    if (!body.contains("email") || !body["email"].is_string()) {
+      return HttpResponse::Json(400, {{"message", "Email required"}});
+    }
+    std::string error;
+    if (!service_->RequestPasswordReset(body["email"].get<std::string>(), error)) {
+      return HttpResponse::Json(500, {{"message", error.empty() ? "Send code failed" : error}});
+    }
+    return HttpResponse::Json(200, {{"message", "验证码已发送"}}); 
+  } catch (const std::exception& ex) {
+    Logger::Error(std::string("Failed to parse reset request: ") + ex.what());
+    return HttpResponse::Json(400, {{"message", "Invalid JSON"}});
+  }
+}
+
+HttpResponse AuthController::ConfirmPasswordReset(const HttpRequest& request) {
+  try {
+    auto body = nlohmann::json::parse(request.body);
+    if (!body.contains("email") || !body.contains("code") || !body.contains("password")) {
+      return HttpResponse::Json(400, {{"message", "Missing required fields"}});
+    }
+    std::string error;
+    if (!service_->ResetPassword(body["email"].get<std::string>(),
+                                 body["code"].get<std::string>(),
+                                 body["password"].get<std::string>(),
+                                 error)) {
+      return HttpResponse::Json(400, {{"message", error.empty() ? "Reset failed" : error}});
+    }
+    return HttpResponse::Json(200, {{"message", "密码已重置"}}); 
+  } catch (const std::exception& ex) {
+    Logger::Error(std::string("Failed to parse reset confirm: ") + ex.what());
+    return HttpResponse::Json(400, {{"message", "Invalid JSON"}});
+  }
+}
+
 std::string AuthController::ExtractToken(const HttpRequest& request) const {
   auto header = request.Header("authorization");
   if (header.rfind("Bearer ", 0) == 0 || header.rfind("bearer ", 0) == 0) {

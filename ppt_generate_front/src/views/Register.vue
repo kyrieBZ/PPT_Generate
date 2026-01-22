@@ -8,43 +8,64 @@
         <h2 class="title">创建账户</h2>
       </div>
 
-      <el-form :model="registerForm" :rules="rules" ref="registerFormRef" label-width="0px">
+      <el-form :model="registerForm" :rules="rules" ref="registerFormRef" label-width="0px" class="register-el-form">
         <el-form-item prop="username">
-          <el-input 
-            v-model="registerForm.username" 
-            placeholder="请输入用户名" 
+          <el-input
+            v-model="registerForm.username"
+            placeholder="请输入用户名"
             size="large"
-            prefix-icon="User">
+            clearable
+          >
+            <template #prefix>
+              <span class="required-star">*</span>
+              <el-icon><User /></el-icon>
+            </template>
           </el-input>
         </el-form-item>
 
         <el-form-item prop="email">
-          <el-input 
-            v-model="registerForm.email" 
-            placeholder="请输入邮箱地址" 
+          <el-input
+            v-model="registerForm.email"
+            placeholder="请输入邮箱地址"
             size="large"
-            prefix-icon="Message">
+            clearable
+          >
+            <template #prefix>
+              <span class="required-star">*</span>
+              <el-icon><Message /></el-icon>
+            </template>
           </el-input>
         </el-form-item>
 
         <el-form-item prop="password">
-          <el-input 
-            v-model="registerForm.password" 
-            type="password" 
-            placeholder="请输入密码" 
+          <el-input
+            v-model="registerForm.password"
+            type="password"
+            placeholder="请输入密码"
             size="large"
-            prefix-icon="Lock"
-            show-password>
+            show-password
+            clearable
+          >
+            <template #prefix>
+              <span class="required-star">*</span>
+              <el-icon><Lock /></el-icon>
+            </template>
           </el-input>
         </el-form-item>
 
         <el-form-item prop="confirmPassword">
-          <el-input 
-            v-model="registerForm.confirmPassword" 
-            type="password" 
-            placeholder="请确认密码" 
+          <el-input
+            v-model="registerForm.confirmPassword"
+            type="password"
+            placeholder="请确认密码"
             size="large"
-            prefix-icon="Unlock">
+            clearable
+            show-password
+          >
+            <template #prefix>
+              <span class="required-star">*</span>
+              <el-icon><Unlock /></el-icon>
+            </template>
           </el-input>
         </el-form-item>
 
@@ -55,7 +76,10 @@
             @click="handleRegister" 
             :loading="loading"
             style="width: 100%">
-            注册
+            <span class="btn-content">
+              <UserFilled class="btn-icon" />
+              <span>注册</span>
+            </span>
           </el-button>
         </el-form-item>
       </el-form>
@@ -173,6 +197,17 @@ const handleRegister = async () => {
   margin: 0;
 }
 
+.btn-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-icon {
+  width: 1em;
+  height: 1em;
+}
+
 .login-link {
   text-align: center;
   margin-top: 20px;
@@ -182,5 +217,22 @@ const handleRegister = async () => {
 
 .login-link .el-link {
   vertical-align: baseline;
+}
+
+.required-star {
+  color: #ef4444;
+  font-weight: 600;
+  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.register-el-form :deep(.el-input__prefix-inner) {
+  gap: 6px;
+}
+
+.register-el-form :deep(.el-input__prefix-inner svg) {
+  width: 18px;
+  height: 18px;
 }
 </style>

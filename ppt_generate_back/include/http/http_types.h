@@ -13,12 +13,14 @@ inline std::string ReasonPhrase(int status) {
   switch (status) {
     case 200: return "OK";
     case 201: return "Created";
+    case 206: return "Partial Content";
     case 204: return "No Content";
     case 400: return "Bad Request";
     case 401: return "Unauthorized";
     case 403: return "Forbidden";
     case 404: return "Not Found";
     case 409: return "Conflict";
+    case 416: return "Range Not Satisfiable";
     case 422: return "Unprocessable Entity";
     case 500: return "Internal Server Error";
     default: return "OK";
@@ -69,7 +71,7 @@ struct HttpResponse {
 
   void ApplyCors() {
     headers["access-control-allow-origin"] = "*";
-    headers["access-control-allow-headers"] = "Content-Type, Authorization";
-    headers["access-control-allow-methods"] = "GET, POST, DELETE, OPTIONS";
+    headers["access-control-allow-headers"] = "Content-Type, Authorization, ngrok-skip-browser-warning";
+    headers["access-control-allow-methods"] = "GET, POST, DELETE, OPTIONS, HEAD";
   }
 };

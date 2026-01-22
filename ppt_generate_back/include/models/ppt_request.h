@@ -36,5 +36,5 @@ struct PptRequest {
   std::string status;
   std::uint64_t created_at = 0;
   std::uint64_t updated_at = 0;
-  std::string output_file;
+  std::string output_path;
 };

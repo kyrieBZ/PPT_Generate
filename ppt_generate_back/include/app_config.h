@@ -34,6 +34,17 @@ struct ProviderConfig {
   std::string qwen_api_key;
 };
 
+struct EmailConfig {
+  std::string smtp_host;
+  std::uint16_t smtp_port = 587;
+  std::string smtp_user;
+  std::string smtp_password;
+  std::string from_email;
+  std::string from_name = "PPT生成系统";
+  std::string smtp_security;
+  bool use_tls = true;
+};
+
 struct GenerationConfig {
   std::string output_dir = "assets/generated";
   std::string python_binary = "python3";
@@ -51,6 +62,7 @@ class AppConfig {
   const TemplateConfig& templates() const { return templates_; }
   const ModelConfig& models() const { return models_; }
   const ProviderConfig& providers() const { return providers_; }
+  const EmailConfig& email() const { return email_; }
   const GenerationConfig& generation() const { return generation_; }
 
  private:
@@ -60,5 +72,6 @@ class AppConfig {
   TemplateConfig templates_{};
   ModelConfig models_{};
   ProviderConfig providers_{};
+  EmailConfig email_{};
   GenerationConfig generation_{};
 };

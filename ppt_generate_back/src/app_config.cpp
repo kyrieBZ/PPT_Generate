@@ -91,6 +91,42 @@ ProviderConfig ParseProviders(const nlohmann::json& json) {
   return cfg;
 }
 
+EmailConfig ParseEmail(const nlohmann::json& json) {
+  EmailConfig cfg;
+  bool use_ssl = false;
+  if (auto it = json.find("smtp_host"); it != json.end() && it->is_string()) {
+    cfg.smtp_host = *it;
+  }
+  if (auto it = json.find("smtp_port"); it != json.end() && it->is_number_unsigned()) {
+    cfg.smtp_port = static_cast<std::uint16_t>(it->get<std::uint32_t>());
+  }
+  if (auto it = json.find("smtp_user"); it != json.end() && it->is_string()) {
+    cfg.smtp_user = *it;
+  }
+  if (auto it = json.find("smtp_password"); it != json.end() && it->is_string()) {
+    cfg.smtp_password = *it;
+  }
+  if (auto it = json.find("from_email"); it != json.end() && it->is_string()) {
+    cfg.from_email = *it;
+  }
+  if (auto it = json.find("from_name"); it != json.end() && it->is_string()) {
+    cfg.from_name = *it;
+  }
+  if (auto it = json.find("smtp_security"); it != json.end() && it->is_string()) {
+    cfg.smtp_security = *it;
+  }
+  if (auto it = json.find("use_ssl"); it != json.end() && it->is_boolean()) {
+    use_ssl = it->get<bool>();
+  }
+  if (auto it = json.find("use_tls"); it != json.end() && it->is_boolean()) {
+    cfg.use_tls = it->get<bool>();
+  }
+  if (cfg.smtp_security.empty() && use_ssl) {
+    cfg.smtp_security = "smtps";
+  }
+  return cfg;
+}
+
 GenerationConfig ParseGeneration(const nlohmann::json& json, const std::filesystem::path& base_dir) {
   GenerationConfig cfg;
   if (auto it = json.find("output_dir"); it != json.end() && it->is_string()) {
@@ -158,6 +194,9 @@ AppConfig AppConfig::Load(const std::string& path) {
   }
   if (auto it = data.find("providers"); it != data.end()) {
     config.providers_ = ParseProviders(*it);
+  }
+  if (auto it = data.find("email"); it != data.end()) {
+    config.email_ = ParseEmail(*it);
   }
   if (auto it = data.find("generation"); it != data.end()) {
     config.generation_ = ParseGeneration(*it, project_root);

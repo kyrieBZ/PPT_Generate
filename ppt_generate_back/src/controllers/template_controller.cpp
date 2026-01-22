@@ -60,7 +60,7 @@ HttpResponse TemplateController::Download(const HttpRequest& request) {
     return HttpResponse::Json(400, {{"message", "Template ID missing"}});
   }
   const auto template_info = service_->FindById(it->second);
-  if (!template_info || !template_info->has_local_file) {
+  if (!template_info) {
     return HttpResponse::Json(404, {{"message", "Template file does not exist"}});
   }
   auto local_file = service_->GetLocalFile(template_info->id);

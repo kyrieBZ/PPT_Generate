@@ -65,7 +65,12 @@
               <div class="feature-icon">🤖</div>
               <h4>智能生成</h4>
               <p>基于GenAI模型自动生成PPT内容</p>
-              <button class="feature-action" @click="showGenerateModal = true">开始生成</button>
+              <button class="feature-action" @click="showGenerateModal = true">
+                <span class="btn-content">
+                  <el-icon class="btn-icon"><MagicStick /></el-icon>
+                  <span>开始生成</span>
+                </span>
+              </button>
             </div>
             <div class="feature-card">
               <div class="feature-icon">🎨</div>
@@ -85,7 +90,7 @@
         <section v-if="activeMenu === 'generate'" class="generate-section">
           <div class="generate-panel">
             <h2>最新生成预览</h2>
-            <p>完成生成任务后将在此展示来自通义千问的纯文字PPT内容。</p>
+            <p>完成生成任务后将在此展示生成的PPT预览。</p>
             <div v-if="selectedTemplate" class="template-hint">
               <span>当前模板：{{ selectedTemplate.name }} · {{ selectedTemplate.provider }}</span>
               <a
@@ -98,92 +103,142 @@
               </a>
             </div>
             <div
-              v-if="previewSlides.length"
+              v-if="previewEmbedUrl || hasLocalPreview"
               class="preview-card"
               :class="{ 'preview-has-bg': Boolean(previewCardStyle.backgroundImage) }"
               :style="previewCardStyle"
             >
               <div class="preview-header">
-                <div class="preview-label">纯文字预览</div>
-                <div class="preview-counter">第 {{ previewIndex + 1 }} / {{ previewSlides.length }} 页</div>
-              </div>
-              <div v-if="currentSlide" class="preview-body" :class="currentLayoutClass">
-                <div class="layout-grid">
-                  <div class="layout-text">
-                    <h3>{{ currentSlide.title || '自动生成的PPT' }}</h3>
-                    <ul v-if="currentSlide.bullets?.length">
-                      <li v-for="(bullet, index) in currentSlide.bullets" :key="index">{{ bullet }}</li>
-                    </ul>
-                    <p v-else-if="currentSlide.rawText" class="preview-raw">{{ currentSlide.rawText }}</p>
-                    <p v-else class="preview-placeholder">该页暂无详细内容</p>
-                    <div v-if="currentSlide.imagePrompts?.length" class="image-prompts">
-                      <span v-for="prompt in currentSlide.imagePrompts" :key="prompt">{{ prompt }}</span>
-                    </div>
-                    <p v-if="currentLayout?.description" class="preview-placeholder">
-                      板式：{{ currentLayout.name }} · {{ currentLayout.description }}
-                    </p>
+                <div class="preview-label">PPT 预览</div>
+                <div class="preview-actions">
+                  <div v-if="previewMode === 'local' && hasLocalPreview" class="preview-counter">
+                    第 {{ previewIndex + 1 }} / {{ previewSlideCount }} 页
                   </div>
-                  <div class="layout-media" v-if="currentSlide.imageUrls?.length">
-                    <div class="preview-images">
-                      <img
-                        v-for="(imgUrl, idx) in currentSlide.imageUrls"
-                        :key="imgUrl + idx"
-                        :src="imgUrl"
-                        :alt="currentSlide.title || `配图${idx + 1}`"
-                        loading="lazy"
-                      >
-                    </div>
-                  </div>
-                  <div
-                    v-else-if="selectedTemplate?.previewImage || selectedTemplate?.preview_image"
-                    class="layout-media preview-template-fallback"
-                  >
-                    <img :src="selectedTemplate.previewImage || selectedTemplate.preview_image" :alt="selectedTemplate.name">
+                  <div class="preview-mode">
+                    <button
+                      class="preview-toggle"
+                      :class="{ active: previewMode === 'online' }"
+                      :disabled="!canUseOnlinePreview"
+                      @click="setPreviewMode('online')"
+                    >
+                      在线预览
+                    </button>
+                    <button
+                      class="preview-toggle"
+                      :class="{ active: previewMode === 'local' }"
+                      :disabled="!canUseLocalPreview"
+                      @click="setPreviewMode('local')"
+                    >
+                      本地预览
+                    </button>
                   </div>
                 </div>
               </div>
-              <div v-else class="preview-placeholder">未能解析当前幻灯片内容</div>
-              <div class="preview-controls">
-                <button class="preview-nav" @click="goToPrevSlide" :disabled="previewIndex === 0">
-                  上一页
-                </button>
-                <button
-                  class="preview-nav"
-                  @click="goToNextSlide"
-                  :disabled="previewIndex >= previewSlides.length - 1"
-                >
-                  下一页
-                </button>
+              <div v-if="previewMode === 'online'" class="preview-embed">
+                <iframe
+                  v-if="previewEmbedUrl"
+                  class="preview-iframe"
+                  :src="previewEmbedUrl"
+                  title="PPT预览"
+                  frameborder="0"
+                  allowfullscreen
+                ></iframe>
+                <div v-else class="preview-placeholder">在线预览不可用，请切换到本地预览。</div>
               </div>
-              <div v-if="previewSlides.length > 1" class="preview-thumbnails">
-                <button
-                  v-for="(slide, index) in previewSlides"
-                  :key="index"
-                  class="preview-thumb"
-                  :class="{ active: index === previewIndex }"
-                  @click="jumpToSlide(index)"
-                >
-                  <span class="thumb-index">{{ index + 1 }}</span>
-                  <span class="thumb-title">{{ slide.title || ('第' + (index + 1) + '页') }}</span>
-                </button>
+              <div v-else class="preview-body" :class="previewLayoutClass">
+                <template v-if="hasLocalPreview">
+                  <div class="layout-grid">
+                    <div class="layout-text">
+                      <h3>{{ currentPreviewSlide?.title || '未命名标题' }}</h3>
+                      <ul v-if="currentPreviewBullets.length">
+                        <li v-for="(item, index) in currentPreviewBullets" :key="`${previewIndex}-bullet-${index}`">
+                          {{ item }}
+                        </li>
+                      </ul>
+                      <div v-else-if="currentPreviewRawText" class="preview-raw">
+                        {{ currentPreviewRawText }}
+                      </div>
+                      <div v-else class="preview-placeholder">暂无正文内容</div>
+                      <div v-if="currentPreviewNotes" class="preview-raw">备注：{{ currentPreviewNotes }}</div>
+                      <div v-if="currentPreviewSuggestions.length" class="image-prompts">
+                        <span v-for="(item, index) in currentPreviewSuggestions" :key="`${previewIndex}-suggestion-${index}`">
+                          {{ item }}
+                        </span>
+                      </div>
+                    </div>
+                    <div v-if="hasPreviewMedia" class="layout-media">
+                      <div v-if="currentPreviewImages.length" class="preview-images">
+                        <img
+                          v-for="(url, index) in currentPreviewImages"
+                          :key="`${previewIndex}-img-${index}`"
+                          :src="url"
+                          alt="预览图片"
+                          loading="lazy"
+                        >
+                      </div>
+                      <div v-else-if="previewFallbackImage" class="preview-template-fallback">
+                        <img :src="previewFallbackImage" alt="模板预览">
+                      </div>
+                      <div v-if="currentPreviewPrompts.length" class="image-prompts">
+                        <span v-for="(item, index) in currentPreviewPrompts" :key="`${previewIndex}-prompt-${index}`">
+                          {{ item }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="preview-controls">
+                    <button class="preview-nav" :disabled="previewIndex === 0" @click="goPreviewPrev">上一页</button>
+                    <button class="preview-nav" :disabled="previewIndex >= previewSlideCount - 1" @click="goPreviewNext">
+                      下一页
+                    </button>
+                  </div>
+                  <div class="preview-thumbnails">
+                    <button
+                      v-for="(slide, index) in previewSlides"
+                      :key="`thumb-${index}`"
+                      class="preview-thumb"
+                      :class="{ active: index === previewIndex }"
+                      @click="selectPreviewSlide(index)"
+                    >
+                      <span class="thumb-index">{{ index + 1 }}</span>
+                      <span>{{ slide.title || '未命名' }}</span>
+                    </button>
+                  </div>
+                </template>
+                <div v-else class="preview-placeholder">本地预览暂无数据，请先生成PPT。</div>
               </div>
             </div>
-            <div v-else class="templates-empty">暂无预览，点击“新建PPT”体验生成。</div>
+            <div v-else class="preview-empty">暂无PPT预览，请先生成PPT。</div>
           </div>
         </section>
 
         <section v-if="activeMenu === 'history'" class="history-section">
           <div class="section-header">
             <h2>生成历史</h2>
-            <div class="search-box">
-              <input type="text" placeholder="搜索标题或主题..." v-model="searchQuery">
+            <div class="search-box history-search-box">
+              <el-input
+                v-model="historyQuery"
+                placeholder="搜索标题或主题..."
+                clearable
+                @keyup.enter="triggerHistorySearch"
+              >
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+              <el-button
+                class="search-icon-btn"
+                circle
+                :icon="Search"
+                @click="triggerHistorySearch"
+              />
             </div>
           </div>
 
-          <div v-if="historyLoading" class="history-empty">历史记录加载中...</div>
+          <div v-if="historyBusy" class="history-empty">{{ historyBusyLabel }}</div>
           <div v-else-if="!filteredHistory.length" class="history-empty">暂无记录，立即生成第一份PPT吧！</div>
           <div v-else class="history-list">
-            <div v-for="item in filteredHistory" :key="item.id" class="history-item">
+            <div v-for="item in pagedHistory" :key="item.id" class="history-item">
               <div class="history-preview">
                 <div class="preview-icon">📄</div>
                 <div class="preview-content">
@@ -198,27 +253,66 @@
                 </div>
               </div>
               <div class="history-actions">
-                <button class="action-btn" @click="editPPT(item)">编辑</button>
-                <button class="action-btn" @click="downloadPPT(item)">下载</button>
-                <button class="action-btn delete" @click="deleteHistory(item)">删除</button>
+                <el-button size="large" type="primary" @click="editPPT(item)">
+                  <span class="btn-content">
+                    <el-icon class="btn-icon"><EditPen /></el-icon>
+                    <span>编辑</span>
+                  </span>
+                </el-button>
+                <el-button size="large" type="success" @click="downloadPPT(item)">
+                  <span class="btn-content">
+                    <el-icon class="btn-icon"><Download /></el-icon>
+                    <span>下载</span>
+                  </span>
+                </el-button>
+                <el-button size="large" type="danger" @click="deleteHistory(item)">
+                  <span class="btn-content">
+                    <el-icon class="btn-icon"><Delete /></el-icon>
+                    <span>删除</span>
+                  </span>
+                </el-button>
               </div>
             </div>
+          </div>
+          <div v-if="showHistoryPagination && !historyBusy" class="history-pagination">
+            <el-pagination
+              background
+              layout="total, sizes, prev, pager, next"
+              :total="historyTotal"
+              :page-size="historyPageSize"
+              :page-sizes="[6, 10, 15, 20]"
+              :current-page="historyPage"
+              @current-change="handleHistoryPageChange"
+              @size-change="handleHistorySizeChange"
+            />
           </div>
         </section>
 
         <section v-if="activeMenu === 'templates'" class="templates-section">
           <div class="section-header">
             <h2>模板中心</h2>
-            <div class="search-box">
-              <input
-                type="text"
-                placeholder="搜索模板名称、标签或来源..."
+            <div class="search-box template-search-box">
+              <el-input
                 v-model="templateQuery"
+                placeholder="搜索模板名称、标签或来源..."
+                clearable
+                @keyup.enter="triggerTemplateSearch"
+              >
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+              <el-button
+                class="search-icon-btn"
+                circle
+                :icon="Search"
+                :loading="templateSearchLoading"
+                @click="triggerTemplateSearch"
               />
             </div>
           </div>
 
-          <div v-if="templatesLoading" class="templates-empty">模板加载中...</div>
+          <div v-if="templatesBusy" class="templates-empty">{{ templatesBusyLabel }}</div>
           <div v-else-if="!filteredTemplates.length" class="templates-empty">
             暂无匹配的模板，稍后再试或更换关键词。
           </div>
@@ -474,8 +568,11 @@
         <div class="modal-footer">
           <button class="modal-btn secondary" @click="showGenerateModal = false">取消</button>
           <button class="modal-btn primary" @click="handleGenerate" :disabled="generating">
-            <span v-if="generating">生成中...</span>
-            <span v-else>开始生成</span>
+            <span class="btn-content">
+              <el-icon class="btn-icon"><MagicStick /></el-icon>
+              <span v-if="generating">生成中...</span>
+              <span v-else>开始生成</span>
+            </span>
           </button>
         </div>
       </div>
@@ -484,9 +581,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch , watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { MagicStick, Download, Delete, EditPen, Search } from '@element-plus/icons-vue'
+import templatesAPI from '@/api/templates'
+import pptAPI from '@/api/ppt'
 
 const route = useRoute()
 const router = useRouter()
@@ -498,55 +599,209 @@ const selectedModel = computed(() => store.getters.selectedModel)
 
 const showGenerateModal = ref(false)
 const generating = ref(false)
-const searchQuery = ref('')
 const templateQuery = ref('')
+const historyQuery = ref('')
+const templateSearchResults = ref([])
+const templateSearchLoading = ref(false)
+let templateSearchTimer = null
+let templateSearchVersion = 0
+const historySearchResults = ref([])
+const historySearchLoading = ref(false)
+let historySearchTimer = null
+let historySearchVersion = 0
+const historyPage = ref(1)
+const historyPageSize = ref(6)
 const futurePlan = reactive({
   dataset: localStorage.getItem('futureDataset') || '',
   notes: localStorage.getItem('futureNotes') || ''
 })
+const previewFileUrl = ref('')
+const previewMode = ref('online')
 const previewSlides = ref([])
 const previewIndex = ref(0)
-const currentSlide = computed(() => {
-  if (!previewSlides.value.length) {
-    return null
+const previewRequestId = ref(0)
+const previewDownloadUrl = ref('')
+
+const resolveAbsoluteUrl = (url) => {
+  if (!url) return ''
+  if (url.startsWith('http')) return url
+  const base = import.meta.env.VITE_API_URL || '/api'
+  if (base.startsWith('http')) {
+    return new URL(url, base).toString()
   }
-  const safeIndex = Math.min(
-    Math.max(previewIndex.value, 0),
-    previewSlides.value.length - 1
-  )
-  return previewSlides.value[safeIndex]
+  return new URL(url, window.location.origin).toString()
+}
+
+const buildPreviewFileUrl = (downloadUrl) => {
+  if (!downloadUrl) return ''
+  try {
+    const apiBase = import.meta.env.VITE_API_URL || '/api'
+    const base = apiBase.startsWith('http') ? apiBase : window.location.origin
+    const url = new URL(downloadUrl, base)
+    const token = store.state.token
+    if (token) {
+      url.searchParams.set('token', token)
+    }
+    url.searchParams.set('inline', '1')
+    url.searchParams.set('ngrok-skip-browser-warning', '1')
+    return url.toString()
+  } catch (error) {
+    return downloadUrl
+  }
+}
+
+const previewEmbedUrl = computed(() => {
+  const absUrl = resolveAbsoluteUrl(previewFileUrl.value)
+  if (!absUrl) return ''
+  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(absUrl)}`
 })
 
-const goToPrevSlide = () => {
-  if (previewIndex.value > 0) {
-    previewIndex.value -= 1
+watchEffect(() => {
+  console.log('Preview Embed URL:', previewEmbedUrl.value)
+})
+
+watchEffect(() => {
+  console.log('Preview File URL:', previewFileUrl.value, 'Download URL:', previewDownloadUrl.value)
+})
+
+const hasLocalPreview = computed(() => Array.isArray(previewSlides.value) && previewSlides.value.length > 0)
+const previewSlideCount = computed(() => previewSlides.value.length)
+const currentPreviewSlide = computed(() => {
+  if (!hasLocalPreview.value) return null
+  const index = Math.min(Math.max(previewIndex.value, 0), previewSlides.value.length - 1)
+  return previewSlides.value[index]
+})
+const previewLayoutClass = computed(() => {
+  const slide = currentPreviewSlide.value
+  if (!slide) return 'layout-default'
+  const rawType = slide.layout?.type || slide.layoutHint || 'default'
+  const normalized = String(rawType)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return `layout-${normalized || 'default'}`
+})
+const currentPreviewImages = computed(() => currentPreviewSlide.value?.imageUrls || [])
+const currentPreviewPrompts = computed(() => currentPreviewSlide.value?.imagePrompts || [])
+const currentPreviewNotes = computed(() => currentPreviewSlide.value?.notes || '')
+const currentPreviewSuggestions = computed(() => currentPreviewSlide.value?.suggestions || [])
+const currentPreviewBullets = computed(() => currentPreviewSlide.value?.bullets || [])
+const currentPreviewRawText = computed(() => currentPreviewSlide.value?.rawText || '')
+const previewFallbackImage = computed(() => {
+  const template = selectedTemplate.value
+  return template?.previewImage || template?.preview_image || ''
+})
+const hasPreviewMedia = computed(() => {
+  return currentPreviewImages.value.length > 0 ||
+    currentPreviewPrompts.value.length > 0 ||
+    Boolean(previewFallbackImage.value)
+})
+const canUseOnlinePreview = computed(() => Boolean(previewEmbedUrl.value))
+const canUseLocalPreview = computed(() => hasLocalPreview.value)
+
+const setPreviewMode = (mode) => {
+  if (mode === 'online' && !canUseOnlinePreview.value) {
+    return
+  }
+  if (mode === 'local' && !canUseLocalPreview.value) {
+    return
+  }
+  previewMode.value = mode
+}
+
+const normalizePreviewSlide = (slide) => {
+  if (!slide || typeof slide !== 'object') return null
+  return {
+    title: slide.title || '',
+    bullets: Array.isArray(slide.bullets) ? slide.bullets : [],
+    rawText: slide.rawText || slide.raw_text || '',
+    imageUrls: Array.isArray(slide.imageUrls || slide.image_urls) ? (slide.imageUrls || slide.image_urls) : [],
+    imagePrompts: Array.isArray(slide.imagePrompts || slide.image_prompts) ? (slide.imagePrompts || slide.image_prompts) : [],
+    suggestions: Array.isArray(slide.suggestions) ? slide.suggestions : [],
+    notes: slide.notes || '',
+    layout: slide.layout || null,
+    layoutHint: slide.layoutHint || slide.layout_hint || ''
   }
 }
 
-const goToNextSlide = () => {
-  if (previewIndex.value < previewSlides.value.length - 1) {
-    previewIndex.value += 1
+const resolveDownloadUrl = (request) => {
+  if (!request) return ''
+  if (request.downloadUrl) return request.downloadUrl
+  if (request.id) return `/api/ppt/file?id=${request.id}`
+  return ''
+}
+
+const hydratePreviewFromRequest = async (request, { force = false } = {}) => {
+  if (!request?.id) return
+  if (!force && previewRequestId.value === request.id && (previewFileUrl.value || previewSlides.value.length)) {
+    return
+  }
+  previewRequestId.value = request.id
+  previewDownloadUrl.value = request.downloadUrl || ''
+  previewFileUrl.value = buildPreviewFileUrl(resolveDownloadUrl(request))
+  previewSlides.value = []
+  previewIndex.value = 0
+  try {
+    const response = await pptAPI.preview(request.id)
+    const slides = Array.isArray(response.data?.slides)
+      ? response.data.slides
+      : Array.isArray(response.data?.preview)
+        ? response.data.preview
+        : []
+    previewSlides.value = slides.map(normalizePreviewSlide).filter(Boolean)
+  } catch (error) {
+    previewSlides.value = []
+  } finally {
+    syncPreviewMode()
   }
 }
 
-const jumpToSlide = (index) => {
-  if (index >= 0 && index < previewSlides.value.length) {
-    previewIndex.value = index
+const applyLatestPreview = async (items, { force = false } = {}) => {
+  if (!Array.isArray(items) || !items.length) {
+    return
+  }
+  if (!force && (previewFileUrl.value || previewSlides.value.length)) {
+    return
+  }
+  const latest =
+    items.find(item => item?.hasFile && item?.downloadUrl) ||
+    items.find(item => item?.hasFile) ||
+    items[0]
+  if (latest) {
+    await hydratePreviewFromRequest(latest, { force })
   }
 }
 
-watch(
-  () => previewSlides.value.length,
-  (length) => {
-    if (!length) {
-      previewIndex.value = 0
-      return
-    }
-    if (previewIndex.value > length - 1) {
-      previewIndex.value = length - 1
-    }
+const goPreviewPrev = () => {
+  if (!hasLocalPreview.value) return
+  previewIndex.value = Math.max(0, previewIndex.value - 1)
+}
+
+const goPreviewNext = () => {
+  if (!hasLocalPreview.value) return
+  previewIndex.value = Math.min(previewSlides.value.length - 1, previewIndex.value + 1)
+}
+
+const selectPreviewSlide = (index) => {
+  if (!hasLocalPreview.value) return
+  if (index < 0 || index >= previewSlides.value.length) return
+  previewIndex.value = index
+}
+
+const syncPreviewMode = () => {
+  if (previewMode.value === 'online' && canUseOnlinePreview.value) {
+    return
   }
-)
+  if (previewMode.value === 'local' && canUseLocalPreview.value) {
+    return
+  }
+  if (canUseOnlinePreview.value) {
+    previewMode.value = 'online'
+  } else if (canUseLocalPreview.value) {
+    previewMode.value = 'local'
+  }
+}
 
 const menuItems = [
   { id: 'dashboard', text: '仪表板', icon: '📊', path: '/main', description: '系统概览与快速操作' },
@@ -607,108 +862,14 @@ watch(
   }
 )
 
-const currentLayout = computed(() => currentSlide.value?.layout || null)
-const currentLayoutClass = computed(() => currentLayout.value?.type ? `layout-${currentLayout.value.type}` : 'layout-default')
-
-const buildImageUrl = (prompt) => {
-  const value = (prompt || '').trim()
-  if (!value) {
-    return ''
-  }
-  const encoded = encodeURIComponent(`${value}, powerpoint mockup, flat illustration`)
-  return `https://image.pollinations.ai/prompt/${encoded}`
-}
-
-const mapLayout = (layout = {}) => {
-  if (!layout) return null
+const resolveTemplateTheme = (template) => {
+  const theme = template?.theme || {}
   return {
-    id: layout.id || '',
-    name: layout.name || '',
-    type: layout.type || 'default',
-    description: layout.description || '',
-    accentColor: layout.accentColor || layout.accent_color || '',
-    backgroundImage: layout.backgroundImage || layout.background_image || ''
+    primary: theme.primaryColor || theme.primary_color || '#0f172a',
+    secondary: theme.secondaryColor || theme.secondary_color || '#1d4ed8',
+    accent: theme.accentColor || theme.accent_color || '#f97316',
+    background: theme.backgroundImage || theme.background_image || ''
   }
-}
-
-const mapTheme = (theme = {}) => {
-  if (!theme) return null
-  return {
-    primaryColor: theme.primaryColor || theme.primary_color || '#0f172a',
-    secondaryColor: theme.secondaryColor || theme.secondary_color || '#1d4ed8',
-    accentColor: theme.accentColor || theme.accent_color || '#f97316',
-    backgroundImage: theme.backgroundImage || theme.background_image || ''
-  }
-}
-
-const toSlideObject = (input, topic, templateInfo, index = 0) => {
-  const templateLayouts = templateInfo?.layouts || []
-  const templateTheme = mapTheme(templateInfo?.theme || null)
-  if (typeof input === 'string') {
-    const segments = input.split(/\n+/).map(item => item.trim()).filter(Boolean)
-    const title = segments[0] || (topic ? `${topic} 概览` : '自动生成的PPT')
-    const bullets = segments.slice(1)
-    const prompts = topic ? [`${topic} 配图`] : []
-    const urls = prompts.map(buildImageUrl).filter(Boolean)
-    return {
-      title,
-      bullets,
-      rawText: input,
-      imagePrompts: prompts,
-      imageUrls: urls,
-      layout: templateLayouts.length ? mapLayout(templateLayouts[index % templateLayouts.length]) : null,
-      theme: templateTheme
-    }
-  }
-  const raw = input || {}
-  const prompts = Array.isArray(raw.imagePrompts)
-    ? raw.imagePrompts
-    : Array.isArray(raw.image_prompts)
-      ? raw.image_prompts
-      : []
-  const urls = Array.isArray(raw.imageUrls)
-    ? raw.imageUrls
-    : Array.isArray(raw.image_urls)
-      ? raw.image_urls
-      : []
-  const slide = {
-    title: raw.title || (topic ? `${topic} 大纲` : '自动生成的PPT'),
-    bullets: Array.isArray(raw.bullets) ? raw.bullets : [],
-    rawText: raw.rawText || raw.title || '',
-    imagePrompts: prompts.filter(item => typeof item === 'string' && item.trim().length),
-    imageUrls: urls.filter(item => typeof item === 'string' && item.startsWith('http')),
-    layout: raw.layout ? mapLayout(raw.layout) : null,
-    theme: raw.theme ? mapTheme(raw.theme) : templateTheme
-  }
-  if (!slide.imageUrls.length && slide.imagePrompts.length) {
-    slide.imageUrls = slide.imagePrompts.map(buildImageUrl).filter(Boolean)
-  }
-  if (!slide.layout && templateLayouts.length) {
-    slide.layout = mapLayout(templateLayouts[index % templateLayouts.length])
-  }
-  return slide
-}
-
-const normalizePreviewSlides = (preview, topic, templateInfo) => {
-  if (!preview) {
-    return []
-  }
-  if (typeof preview === 'string') {
-    try {
-      const parsed = JSON.parse(preview)
-      return normalizePreviewSlides(parsed, topic, templateInfo)
-    } catch (error) {
-      console.warn('解析预览字符串失败，将直接展示原文', error)
-      return [toSlideObject(preview, topic, templateInfo, 0)]
-    }
-  }
-  if (Array.isArray(preview)) {
-    return preview.map((item, index) => toSlideObject(item, topic, templateInfo, index)).filter(Boolean)
-  }
-  if (typeof preview === 'object') {
-    return [toSlideObject(preview, topic, templateInfo, 0)]
-  }
-  return []
 }
 
 const styles = [
@@ -732,15 +893,14 @@ const selectedTemplate = computed(() => {
   return templates.value.find(item => item.id === generateForm.value.templateId) || null
 })
 const previewCardStyle = computed(() => {
-  const slide = currentSlide.value
   const template = selectedTemplate.value
-  const layoutBg = slide?.layout?.backgroundImage || slide?.layout?.background_image
-  const themeBg = slide?.theme?.backgroundImage || slide?.theme?.background_image || template?.theme?.backgroundImage || template?.theme?.background_image
+  const theme = resolveTemplateTheme(template)
+  const themeBg = theme.background
   const fallbackBg = template?.previewImage || template?.preview_image
-  const background = layoutBg || themeBg || fallbackBg
-  const primary = slide?.theme?.primaryColor || slide?.theme?.primary_color || template?.theme?.primaryColor || template?.theme?.primary_color || '#0f172a'
-  const secondary = slide?.theme?.secondaryColor || slide?.theme?.secondary_color || template?.theme?.secondaryColor || template?.theme?.secondary_color || '#1d4ed8'
-  const accent = slide?.theme?.accentColor || slide?.theme?.accent_color || template?.theme?.accentColor || template?.theme?.accent_color || '#f97316'
+  const background = themeBg || fallbackBg
+  const primary = theme.primary
+  const secondary = theme.secondary
+  const accent = theme.accent
   const style = {
     '--preview-primary': primary,
     '--preview-secondary': secondary,
@@ -764,6 +924,14 @@ watch(
   { immediate: true }
 )
 
+watch(
+  pptHistory,
+  (items) => {
+    applyLatestPreview(items)
+  },
+  { immediate: true }
+)
+
 const statCards = computed(() => {
   const total = pptHistory.value.length
   const totalPages = pptHistory.value.reduce((acc, item) => acc + (item.pages || 0), 0)
@@ -780,31 +948,212 @@ const statCards = computed(() => {
 const activeMenuItem = computed(() => menuItems.find(item => item.id === activeMenu.value))
 
 const filteredHistory = computed(() => {
-  if (!searchQuery.value) {
+  if (!historyQuery.value) {
     return pptHistory.value
   }
-  const query = searchQuery.value.toLowerCase()
-  return pptHistory.value.filter(item => {
-    const title = item.title?.toLowerCase() || ''
-    const topic = item.topic?.toLowerCase() || ''
-    return title.includes(query) || topic.includes(query)
-  })
+  return historySearchResults.value
 })
+
+const historyTotal = computed(() => filteredHistory.value.length)
+const historyPageCount = computed(() => Math.max(1, Math.ceil(historyTotal.value / historyPageSize.value)))
+const pagedHistory = computed(() => {
+  const size = historyPageSize.value
+  const start = (historyPage.value - 1) * size
+  return filteredHistory.value.slice(start, start + size)
+})
+const showHistoryPagination = computed(() => historyTotal.value > historyPageSize.value)
 
 const filteredTemplates = computed(() => {
   if (!templateQuery.value) {
     return templates.value
   }
-  const query = templateQuery.value.toLowerCase()
-  return templates.value.filter(item => {
-    const fields = [
-      item.name || '',
-      item.description || '',
-      item.provider || '',
-      ...(item.tags || [])
-    ]
-    return fields.some(field => field.toLowerCase().includes(query))
-  })
+  return templateSearchResults.value
+})
+
+const templatesBusy = computed(() => {
+  if (templateQuery.value) {
+    return templateSearchLoading.value
+  }
+  return templatesLoading.value
+})
+
+const templatesBusyLabel = computed(() => (templateQuery.value ? '模板搜索中...' : '模板加载中...'))
+
+const historyBusy = computed(() => {
+  if (historyQuery.value) {
+    return historySearchLoading.value
+  }
+  return historyLoading.value
+})
+
+const historyBusyLabel = computed(() => (historyQuery.value ? '历史搜索中...' : '历史记录加载中...'))
+
+const performTemplateSearch = async (query) => {
+  const currentVersion = ++templateSearchVersion
+  templateSearchLoading.value = true
+  try {
+    const response = await templatesAPI.list({ q: query })
+    if (currentVersion !== templateSearchVersion) {
+      return
+    }
+    templateSearchResults.value = response.data?.items || []
+  } catch (error) {
+    if (currentVersion !== templateSearchVersion) {
+      return
+    }
+    const fallback = templates.value.filter(item => {
+      const fields = [
+        item.name || '',
+        item.description || '',
+        item.provider || '',
+        ...(item.tags || [])
+      ]
+      return fields.some(field => field.toLowerCase().includes(query.toLowerCase()))
+    })
+    templateSearchResults.value = fallback
+    ElMessage.error('模板搜索失败，请稍后重试')
+  } finally {
+    if (currentVersion === templateSearchVersion) {
+      templateSearchLoading.value = false
+    }
+  }
+}
+
+const triggerTemplateSearch = () => {
+  const query = templateQuery.value.trim()
+  if (templateSearchTimer) {
+    clearTimeout(templateSearchTimer)
+    templateSearchTimer = null
+  }
+  if (!query) {
+    templateSearchVersion += 1
+    templateSearchResults.value = []
+    templateSearchLoading.value = false
+    return
+  }
+  performTemplateSearch(query)
+}
+
+const performHistorySearch = async (query) => {
+  const currentVersion = ++historySearchVersion
+  historySearchLoading.value = true
+  try {
+    const items = await store.dispatch('searchPptHistory', query)
+    if (currentVersion !== historySearchVersion) {
+      return
+    }
+    historySearchResults.value = items
+  } catch (error) {
+    if (currentVersion !== historySearchVersion) {
+      return
+    }
+    const fallback = pptHistory.value.filter(item => {
+      const title = item.title?.toLowerCase() || ''
+      const topic = item.topic?.toLowerCase() || ''
+      return title.includes(query.toLowerCase()) || topic.includes(query.toLowerCase())
+    })
+    historySearchResults.value = fallback
+    ElMessage.error('历史搜索失败，请稍后重试')
+  } finally {
+    if (currentVersion === historySearchVersion) {
+      historySearchLoading.value = false
+    }
+  }
+}
+
+const triggerHistorySearch = () => {
+  const query = historyQuery.value.trim()
+  if (historySearchTimer) {
+    clearTimeout(historySearchTimer)
+    historySearchTimer = null
+  }
+  if (!query) {
+    historySearchVersion += 1
+    historySearchResults.value = []
+    historySearchLoading.value = false
+    return
+  }
+  historyPage.value = 1
+  performHistorySearch(query)
+}
+
+const handleHistoryPageChange = (page) => {
+  historyPage.value = page
+}
+
+const handleHistorySizeChange = (size) => {
+  historyPageSize.value = size
+  historyPage.value = 1
+}
+
+watch(
+  historyQuery,
+  (value) => {
+    const query = value.trim()
+    historyPage.value = 1
+    if (!query) {
+      historySearchResults.value = []
+      historySearchLoading.value = false
+      if (historySearchTimer) {
+        clearTimeout(historySearchTimer)
+        historySearchTimer = null
+      }
+      return
+    }
+    if (historySearchTimer) {
+      clearTimeout(historySearchTimer)
+    }
+    historySearchTimer = setTimeout(() => {
+      performHistorySearch(query)
+    }, 300)
+  }
+)
+
+watch(
+  [historyTotal, historyPageSize],
+  () => {
+    if (!historyTotal.value) {
+      historyPage.value = 1
+      return
+    }
+    const maxPage = historyPageCount.value
+    if (historyPage.value > maxPage) {
+      historyPage.value = maxPage
+    }
+  }
+)
+
+watch(
+  templateQuery,
+  (value) => {
+    const query = value.trim()
+    if (!query) {
+      templateSearchResults.value = []
+      templateSearchLoading.value = false
+      if (templateSearchTimer) {
+        clearTimeout(templateSearchTimer)
+        templateSearchTimer = null
+      }
+      return
+    }
+    if (templateSearchTimer) {
+      clearTimeout(templateSearchTimer)
+    }
+    templateSearchTimer = setTimeout(() => {
+      performTemplateSearch(query)
+    }, 300)
+  }
+)
+
+onBeforeUnmount(() => {
+  if (templateSearchTimer) {
+    clearTimeout(templateSearchTimer)
+    templateSearchTimer = null
+  }
+  if (historySearchTimer) {
+    clearTimeout(historySearchTimer)
+    historySearchTimer = null
+  }
 })
 
 const formatDate = (value) => {
@@ -839,15 +1188,18 @@ const resetGenerateForm = () => {
 
 const handleGenerate = async () => {
   if (!generateForm.value.title.trim() || !generateForm.value.topic.trim()) {
-    window.alert('请填写标题和主题描述')
+    ElMessage.warning('请填写标题和主题描述')
     return
   }
   if (!generateForm.value.templateId) {
-    window.alert('请选择模板样式')
+    ElMessage.warning('请选择模板样式')
     return
   }
 
   generating.value = true
+  previewFileUrl.value = ''
+  previewSlides.value = []
+  previewIndex.value = 0
   try {
     const payload = {
       title: generateForm.value.title.trim(),
@@ -864,10 +1216,18 @@ const handleGenerate = async () => {
     if (!result?.request) {
       throw new Error('生成请求失败')
     }
-    const templateInfo = selectedTemplate.value || null
-    const slides = normalizePreviewSlides(result?.preview, payload.topic, templateInfo)
-    previewSlides.value = slides
-    previewIndex.value = slides.length ? 0 : 0
+    previewDownloadUrl.value = result.request?.downloadUrl || ''
+    previewFileUrl.value = buildPreviewFileUrl(resolveDownloadUrl(result.request))
+    previewSlides.value = Array.isArray(result.preview)
+      ? result.preview.map(normalizePreviewSlide).filter(Boolean)
+      : []
+    previewIndex.value = 0
+    previewRequestId.value = result.request?.id || 0
+    if (!previewSlides.value.length && result.request?.id) {
+      await hydratePreviewFromRequest(result.request, { force: true })
+    } else {
+      syncPreviewMode()
+    }
     await store.dispatch('fetchPptHistory')
     resetGenerateForm()
     showGenerateModal.value = false
@@ -875,35 +1235,46 @@ const handleGenerate = async () => {
   } catch (error) {
     console.error('生成失败:', error)
     const message = error.response?.data?.message || error.message || '生成失败，请重试'
-    window.alert(message)
+    ElMessage.error(message)
   } finally {
     generating.value = false
   }
 }
 
 const editPPT = (item) => {
-  window.alert(`编辑功能即将上线：${item.title}`)
+  ElMessage.info(`编辑功能即将上线：${item.title}`)
 }
 
 const downloadPPT = (item) => {
-  window.alert(`下载功能即将上线：${item.title}`)
+  ElMessage.info(`下载功能即将上线：${item.title}`)
 }
 
 const deleteHistory = async (item) => {
   if (!item?.id) {
     return
   }
-  const confirmed = window.confirm(`确定删除《${item.title || '未命名PPT'}》吗？`)
-  if (!confirmed) {
-    return
-  }
   try {
+    await ElMessageBox.confirm(
+      `确定删除《${item.title || '未命名PPT'}》吗？`,
+      '删除确认',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
     await store.dispatch('deletePptRequest', item.id)
-    window.alert('删除成功')
+    if (historyQuery.value) {
+      historySearchResults.value = historySearchResults.value.filter(entry => entry.id !== item.id)
+    }
+    ElMessage.success('删除成功')
   } catch (error) {
+    if (error === 'cancel' || error === 'close' || error?.message === 'cancel') {
+      return
+    }
     console.error('删除失败:', error)
     const message = error.response?.data?.message || error.message || '删除失败，请稍后重试'
-    window.alert(message)
+    ElMessage.error(message)
   }
 }
 
@@ -928,10 +1299,19 @@ const handleModelChange = (modelId) => {
 }
 
 const handleLogout = async () => {
-  await store.dispatch('logout')
-  previewSlides.value = []
-  previewIndex.value = 0
-  router.push('/login')
+  try {
+    await store.dispatch('logout')
+  } catch (error) {
+    console.error('退出登录失败:', error)
+  } finally {
+    previewFileUrl.value = ''
+    previewSlides.value = []
+    previewIndex.value = 0
+    previewMode.value = 'online'
+    previewRequestId.value = 0
+    previewDownloadUrl.value = ''
+    router.push('/login')
+  }
 }
 
 const ensureSession = async () => {
@@ -939,14 +1319,33 @@ const ensureSession = async () => {
     if (!store.state.user) {
       await store.dispatch('fetchCurrentUser')
     }
-    await Promise.all([
-      store.dispatch('fetchPptHistory'),
-      store.dispatch('fetchTemplates'),
-      store.dispatch('fetchModels')
-    ])
   } catch (error) {
+    if (error?.response?.status === 401) {
+      router.push('/login')
+      return
+    }
     console.error('加载用户数据失败:', error)
-    router.push('/login')
+    ElMessage.warning('用户信息加载失败，将继续尝试加载数据')
+  }
+
+  const results = await Promise.allSettled([
+    store.dispatch('fetchPptHistory'),
+    store.dispatch('fetchTemplates'),
+    store.dispatch('fetchModels')
+  ])
+  results.forEach((result) => {
+    if (result.status === 'rejected') {
+      const status = result.reason?.response?.status
+      if (status === 401) {
+        router.push('/login')
+      } else {
+        console.error('加载数据失败:', result.reason)
+      }
+    }
+  })
+  const historyResult = results[0]
+  if (historyResult?.status === 'fulfilled') {
+    await applyLatestPreview(historyResult.value, { force: true })
   }
 }
 
@@ -1246,10 +1645,77 @@ onMounted(() => {
   width: 300px;
 }
 
+.template-search-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.template-search-box :deep(.el-input__wrapper) {
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: none;
+  padding: 0 12px;
+  width: 300px;
+}
+
+.template-search-box :deep(.el-input__wrapper.is-focus) {
+  border-color: #4f46e5;
+}
+
+.template-search-box :deep(.el-input__inner) {
+  height: 42px;
+  font-size: 1rem;
+}
+
+.template-search-box :deep(.el-input__prefix-inner svg) {
+  width: 18px;
+  height: 18px;
+}
+
+.search-icon-btn {
+  width: 42px;
+  height: 42px;
+}
+
+.history-search-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.history-search-box :deep(.el-input__wrapper) {
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: none;
+  padding: 0 12px;
+  width: 300px;
+}
+
+.history-search-box :deep(.el-input__wrapper.is-focus) {
+  border-color: #4f46e5;
+}
+
+.history-search-box :deep(.el-input__inner) {
+  height: 42px;
+  font-size: 1rem;
+}
+
+.history-search-box :deep(.el-input__prefix-inner svg) {
+  width: 18px;
+  height: 18px;
+}
+
 .history-list {
   display: flex;
   flex-direction: column;
   gap: 15px;
+}
+
+.history-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 20px;
 }
 
 .history-item {
@@ -1299,27 +1765,6 @@ onMounted(() => {
 .history-actions {
   display: flex;
   gap: 10px;
-}
-
-.action-btn {
-  padding: 8px 16px;
-  border: 1px solid #e5e7eb;
-  background: white;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.3s;
-}
-
-.action-btn:hover {
-  background: #f8fafc;
-  border-color: #4f46e5;
-  color: #4f46e5;
-}
-
-.action-btn.delete:hover {
-  background: #fee2e2;
-  border-color: #ef4444;
-  color: #ef4444;
 }
 
 .history-empty {
@@ -1376,6 +1821,16 @@ onMounted(() => {
   --preview-accent: #6366f1;
 }
 
+.preview-empty {
+  margin-top: 16px;
+  padding: 24px;
+  text-align: center;
+  border: 2px dashed #e2e8f0;
+  border-radius: 12px;
+  color: #94a3b8;
+  background: #f8fafc;
+}
+
 .preview-card.preview-has-bg {
   color: #f8fafc;
   border-color: rgba(255, 255, 255, 0.25);
@@ -1393,6 +1848,41 @@ onMounted(() => {
   font-size: 0.9rem;
   font-weight: 600;
   color: var(--preview-accent);
+}
+
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.preview-mode {
+  display: flex;
+  gap: 8px;
+}
+
+.preview-toggle {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid #cbd5f5;
+  background: #ffffff;
+  color: #334155;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.preview-toggle.active {
+  background: #eef2ff;
+  border-color: #4f46e5;
+  color: #312e81;
+}
+
+.preview-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .preview-counter {
@@ -1429,6 +1919,29 @@ onMounted(() => {
   margin-top: 12px;
   color: #94a3b8;
   font-style: italic;
+}
+
+.preview-embed {
+  margin-top: 8px;
+}
+
+.preview-iframe {
+  width: 100%;
+  height: 520px;
+  border: none;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.btn-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-icon {
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .preview-card.preview-has-bg .preview-placeholder {

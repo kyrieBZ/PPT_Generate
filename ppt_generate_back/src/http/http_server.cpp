@@ -246,7 +246,9 @@ void HttpServer::SendResponse(int client_fd, const HttpResponse& original) {
     response.headers["content-type"] = "application/json";
   }
   response.headers["connection"] = "close";
-  response.headers["content-length"] = std::to_string(response.body.size());
+  if (!response.headers.count("content-length")) {
+    response.headers["content-length"] = std::to_string(response.body.size());
+  }
 
   const std::string reason = response.status_message.empty() ? "OK" : response.status_message;
 
