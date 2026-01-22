@@ -19,6 +19,7 @@
 #include "services/template_service.h"
 #include "services/ppt_service_interface.h"
 #include "services/libreoffice_powerpoint_service.h"
+#include "services/s3_client.h"
 
 namespace {
 std::atomic<bool> g_should_stop{false};
@@ -63,6 +64,11 @@ int main(int argc, char* argv[]) {
 
     auto template_service = std::make_shared<TemplateService>(config.templates().catalog_path);
     auto model_service = std::make_shared<ModelService>(config.models().catalog_path);
+    std::shared_ptr<S3Client> s3_client;
+    if (config.s3().enabled()) {
+      s3_client = std::make_shared<S3Client>(config.s3());
+      Logger::Info("S3 upload enabled: bucket=" + config.s3().bucket);
+    }
     std::shared_ptr<QwenClient> qwen_client;
     if (!config.providers().qwen_api_key.empty()) {
       qwen_client = std::make_shared<QwenClient>(config.providers().qwen_api_key);
@@ -70,7 +76,13 @@ int main(int argc, char* argv[]) {
 
     Router router;
     AuthController auth_controller(auth_service);
-    PptController ppt_controller(auth_service, ppt_service, model_service, template_service, config.generation(), qwen_client);
+    PptController ppt_controller(auth_service,
+                                 ppt_service,
+                                 model_service,
+                                 template_service,
+                                 config.generation(),
+                                 qwen_client,
+                                 s3_client);
     TemplateController template_controller(template_service);
     ModelController model_controller(model_service);
 

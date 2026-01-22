@@ -52,6 +52,24 @@ struct GenerationConfig {
   std::string soffice_binary = "soffice";
 };
 
+struct S3Config {
+  std::string endpoint;
+  std::string public_endpoint;
+  std::string access_key;
+  std::string secret_key;
+  std::string region = "us-east-1";
+  std::string bucket;
+  std::uint32_t url_expiration_seconds = 3600;
+
+  bool enabled() const {
+    return !endpoint.empty() && !access_key.empty() && !secret_key.empty() && !bucket.empty();
+  }
+
+  std::string effective_public_endpoint() const {
+    return public_endpoint.empty() ? endpoint : public_endpoint;
+  }
+};
+
 class AppConfig {
  public:
   static AppConfig Load(const std::string& path);
@@ -64,6 +82,7 @@ class AppConfig {
   const ProviderConfig& providers() const { return providers_; }
   const EmailConfig& email() const { return email_; }
   const GenerationConfig& generation() const { return generation_; }
+  const S3Config& s3() const { return s3_; }
 
  private:
   ServerConfig server_{};
@@ -74,4 +93,5 @@ class AppConfig {
   ProviderConfig providers_{};
   EmailConfig email_{};
   GenerationConfig generation_{};
+  S3Config s3_{};
 };

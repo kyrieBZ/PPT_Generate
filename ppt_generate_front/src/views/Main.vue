@@ -635,6 +635,9 @@ const resolveAbsoluteUrl = (url) => {
 const buildPreviewFileUrl = (downloadUrl) => {
   if (!downloadUrl) return ''
   try {
+    if (downloadUrl.startsWith('http')) {
+      return downloadUrl
+    }
     const apiBase = import.meta.env.VITE_API_URL || '/api'
     const base = apiBase.startsWith('http') ? apiBase : window.location.origin
     const url = new URL(downloadUrl, base)

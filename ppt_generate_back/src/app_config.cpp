@@ -157,6 +157,38 @@ GenerationConfig ParseGeneration(const nlohmann::json& json, const std::filesyst
   cfg.builder_script = make_absolute(cfg.builder_script);
   return cfg;
 }
+
+S3Config ParseS3(const nlohmann::json& json) {
+  S3Config cfg;
+  if (auto it = json.find("endpoint"); it != json.end() && it->is_string()) {
+    cfg.endpoint = *it;
+  }
+  if (auto it = json.find("public_endpoint"); it != json.end() && it->is_string()) {
+    cfg.public_endpoint = *it;
+  }
+  if (auto it = json.find("access_key"); it != json.end() && it->is_string()) {
+    cfg.access_key = *it;
+  }
+  if (auto it = json.find("secret_key"); it != json.end() && it->is_string()) {
+    cfg.secret_key = *it;
+  }
+  if (auto it = json.find("region"); it != json.end() && it->is_string()) {
+    cfg.region = *it;
+  }
+  if (auto it = json.find("bucket"); it != json.end() && it->is_string()) {
+    cfg.bucket = *it;
+  }
+  if (auto it = json.find("url_expiration_seconds"); it != json.end() && it->is_number_unsigned()) {
+    cfg.url_expiration_seconds = it->get<std::uint32_t>();
+  }
+  if (cfg.region.empty()) {
+    cfg.region = "us-east-1";
+  }
+  if (cfg.url_expiration_seconds == 0) {
+    cfg.url_expiration_seconds = 3600;
+  }
+  return cfg;
+}
 }  // namespace
 
 AppConfig AppConfig::Load(const std::string& path) {
@@ -202,6 +234,9 @@ AppConfig AppConfig::Load(const std::string& path) {
     config.generation_ = ParseGeneration(*it, project_root);
   } else {
     config.generation_ = ParseGeneration(nlohmann::json::object(), project_root);
+  }
+  if (auto it = data.find("s3"); it != data.end()) {
+    config.s3_ = ParseS3(*it);
   }
 
   if (config.database_.user.empty() || config.database_.name.empty()) {

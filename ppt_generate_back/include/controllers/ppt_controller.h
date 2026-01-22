@@ -10,6 +10,7 @@
 #include "services/model_service.h"
 #include "services/ppt_service.h"
 #include "services/qwen_client.h"
+#include "services/s3_client.h"
 #include "services/template_service.h"
 
 class PptController {
@@ -19,7 +20,8 @@ class PptController {
                 std::shared_ptr<ModelService> model_service,
                 std::shared_ptr<TemplateService> template_service,
                 GenerationConfig generation_config,
-                std::shared_ptr<QwenClient> qwen_client);
+                std::shared_ptr<QwenClient> qwen_client,
+                std::shared_ptr<S3Client> s3_client);
 
   HttpResponse Generate(const HttpRequest& request);
   HttpResponse History(const HttpRequest& request);
@@ -37,4 +39,5 @@ class PptController {
   std::shared_ptr<TemplateService> template_service_;
   GenerationConfig generation_config_;
   std::shared_ptr<QwenClient> qwen_client_;
+  std::shared_ptr<S3Client> s3_client_;
 };

@@ -60,7 +60,7 @@ std::string SanitizeFilenamePart(const std::string& value, std::size_t max_len) 
   return result;
 }
 
-nlohmann::json RequestToJson(const PptRequest& request) {
+nlohmann::json RequestToJson(const PptRequest& request, const std::string& download_url = {}) {
   const bool has_file = !request.output_path.empty();
   nlohmann::json result = {
       {"id", request.id},
@@ -81,7 +81,9 @@ nlohmann::json RequestToJson(const PptRequest& request) {
       {"updatedAt", FormatTimestamp(request.updated_at)},
       {"hasFile", has_file}};
   if (has_file) {
-    result["downloadUrl"] = "/api/ppt/file?id=" + std::to_string(request.id);
+    result["downloadUrl"] = download_url.empty()
+                                ? "/api/ppt/file?id=" + std::to_string(request.id)
+                                : download_url;
   }
   return result;
 }
@@ -160,6 +162,35 @@ std::string BuildOutputPath(const GenerationConfig& config,
   filename += "_" + std::to_string(request_id) + ".pptx";
   std::filesystem::path filepath = filename;
   return (output_dir / filepath).lexically_normal().string();
+}
+
+std::string BuildObjectKey(const GenerationConfig& config, const std::string& output_path) {
+  if (output_path.empty()) {
+    return {};
+  }
+  std::filesystem::path base_dir(config.output_dir);
+  std::filesystem::path target_path(output_path);
+  std::error_code ec;
+  const auto base = std::filesystem::weakly_canonical(base_dir, ec);
+  if (ec) {
+    return target_path.filename().string();
+  }
+  const auto target = std::filesystem::weakly_canonical(target_path, ec);
+  if (ec) {
+    return target_path.filename().string();
+  }
+  std::filesystem::path relative;
+  if (target.string().find(base.string()) == 0) {
+    relative = std::filesystem::relative(target, base, ec);
+  }
+  if (ec || relative.empty()) {
+    relative = target.filename();
+  }
+  auto key = relative.generic_string();
+  if (key.empty()) {
+    key = target.filename().string();
+  }
+  return key;
 }
 
 std::string Trim(std::string value) {
@@ -288,13 +319,15 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
                            std::shared_ptr<ModelService> model_service,
                            std::shared_ptr<TemplateService> template_service,
                            GenerationConfig generation_config,
-                           std::shared_ptr<QwenClient> qwen_client)
+                           std::shared_ptr<QwenClient> qwen_client,
+                           std::shared_ptr<S3Client> s3_client)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
       template_service_(std::move(template_service)),
       generation_config_(std::move(generation_config)),
-      qwen_client_(std::move(qwen_client)) {}
+      qwen_client_(std::move(qwen_client)),
+      s3_client_(std::move(s3_client)) {}
 
 HttpResponse PptController::Generate(const HttpRequest& request) {
   std::string error;
@@ -384,7 +417,20 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
             ppt_request.output_path = output_path;
             ppt_request.status = "completed";
             ppt_service_->UpdateRequestOutput(ppt_request.id, ppt_request.user_id, output_path, "completed", update_error);
-            payload["request"] = RequestToJson(ppt_request);
+            std::string signed_url;
+            if (s3_client_ && s3_client_->IsEnabled()) {
+              const auto object_key = BuildObjectKey(generation_config_, output_path);
+              if (!object_key.empty()) {
+                std::string upload_error;
+                if (s3_client_->UploadFile(output_path, object_key, upload_error)) {
+                  signed_url = s3_client_->PresignGetUrl(object_key);
+                  Logger::Info("S3 upload success: key=" + object_key);
+                } else {
+                  Logger::Warn("S3 upload failed: " + upload_error);
+                }
+              }
+            }
+            payload["request"] = RequestToJson(ppt_request, signed_url);
           } else {
             Logger::Warn("PPTX generation failed: " + generate_error);
             std::string update_error;
@@ -424,7 +470,14 @@ HttpResponse PptController::History(const HttpRequest& request) {
   nlohmann::json payload;
   payload["items"] = nlohmann::json::array();
   for (const auto& item : list) {
-    payload["items"].push_back(RequestToJson(item));
+    std::string signed_url;
+    if (s3_client_ && s3_client_->IsEnabled() && !item.output_path.empty()) {
+      const auto object_key = BuildObjectKey(generation_config_, item.output_path);
+      if (!object_key.empty()) {
+        signed_url = s3_client_->PresignGetUrl(object_key);
+      }
+    }
+    payload["items"].push_back(RequestToJson(item, signed_url));
   }
 
   return HttpResponse::Json(200, payload);
