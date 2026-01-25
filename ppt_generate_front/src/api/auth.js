@@ -44,7 +44,10 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       sessionStorage.removeItem('token')
-      window.location.href = '/login'
+      const path = window.location.pathname
+      if (path !== '/login' && path !== '/register') {
+        window.location.href = '/login'
+      }
     }
     return Promise.reject(error)
   }

@@ -8,6 +8,8 @@ nlohmann::json UserJson(const User& user) {
       {"id", user.id},
       {"username", user.username},
       {"email", user.email},
+      {"isAdmin", user.is_admin},
+      {"isDisabled", user.is_disabled},
       {"createdAt", user.created_at},
       {"updatedAt", user.updated_at}};
   if (user.last_login) {

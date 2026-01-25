@@ -16,6 +16,9 @@ class S3Client {
                   const std::string& object_key,
                   std::string& error) const;
 
+  bool DeleteObject(const std::string& object_key,
+                    std::string& error) const;
+
   std::string PresignGetUrl(const std::string& object_key) const;
 
  private:

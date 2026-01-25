@@ -3,6 +3,7 @@ import authAPI, { setAuthToken } from '@/api/auth'
 import pptAPI from '@/api/ppt'
 import templatesAPI from '@/api/templates'
 import modelsAPI from '@/api/models'
+import adminAPI from '@/api/admin'
 
 const savedToken = localStorage.getItem('token') || sessionStorage.getItem('token')
 const savedModel = localStorage.getItem('defaultModel') || 'qwen-turbo'
@@ -17,6 +18,8 @@ const normalizeRequest = (item = {}) => {
   return {
     id,
     userId: item.user_id ?? item.userId ?? 0,
+    userName: item.userName ?? item.username ?? '',
+    userEmail: item.userEmail ?? item.email ?? '',
     title: item.title ?? '',
     topic: item.topic ?? item.description ?? '',
     pages: item.pages ?? 0,
@@ -40,12 +43,14 @@ export default createStore({
     token: savedToken || null,
     isAuthenticated: !!savedToken,
     pptHistory: [],
+    adminHistory: [],
     templates: [],
     models: [],
     selectedModel: savedModel,
     loading: {
       user: false,
       history: false,
+      adminHistory: false,
       templates: false,
       models: false
     }
@@ -79,6 +84,7 @@ export default createStore({
       state.token = null
       state.isAuthenticated = false
       state.pptHistory = []
+      state.adminHistory = []
       localStorage.removeItem('token')
       sessionStorage.removeItem('token')
       localStorage.removeItem('rememberedUsername')
@@ -87,6 +93,9 @@ export default createStore({
     },
     setPptHistory(state, items) {
       state.pptHistory = items
+    },
+    setAdminHistory(state, items) {
+      state.adminHistory = items
     },
     prependPptRequest(state, request) {
       state.pptHistory = [request, ...state.pptHistory]
@@ -124,7 +133,11 @@ export default createStore({
         if (!state.user) {
           await dispatch('fetchCurrentUser')
         }
-        await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+        const tasks = [dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')]
+        if (state.user?.isAdmin) {
+          tasks.push(dispatch('fetchAdminHistory'))
+        }
+        await Promise.all(tasks)
       } catch (error) {
         commit('logout')
         throw error
@@ -158,6 +171,21 @@ export default createStore({
         commit('setLoading', { key: 'history', value: false })
       }
     },
+    async fetchAdminHistory({ commit, state }) {
+      if (!state.token || !state.user?.isAdmin) {
+        commit('setAdminHistory', [])
+        return []
+      }
+      commit('setLoading', { key: 'adminHistory', value: true })
+      try {
+        const response = await adminAPI.pptHistory()
+        const items = (response.data?.items || []).map(normalizeRequest)
+        commit('setAdminHistory', items)
+        return items
+      } finally {
+        commit('setLoading', { key: 'adminHistory', value: false })
+      }
+    },
     async searchPptHistory({ state }, query) {
       if (!state.token) {
         return []
@@ -173,6 +201,25 @@ export default createStore({
         const title = item.title?.toLowerCase() || ''
         const topic = item.topic?.toLowerCase() || ''
         return title.includes(lower) || topic.includes(lower)
+      })
+    },
+    async searchAdminHistory({ state }, query) {
+      if (!state.token || !state.user?.isAdmin) {
+        return []
+      }
+      const keyword = (query || '').trim()
+      if (!keyword) {
+        return []
+      }
+      const response = await adminAPI.pptHistory({ q: keyword })
+      const items = (response.data?.items || []).map(normalizeRequest)
+      const lower = keyword.toLowerCase()
+      return items.filter(item => {
+        const title = item.title?.toLowerCase() || ''
+        const topic = item.topic?.toLowerCase() || ''
+        const userName = item.userName?.toLowerCase() || ''
+        const userEmail = item.userEmail?.toLowerCase() || ''
+        return title.includes(lower) || topic.includes(lower) || userName.includes(lower) || userEmail.includes(lower)
       })
     },
     async createPptRequest({ commit, state }, payload) {
@@ -236,7 +283,11 @@ export default createStore({
         commit('setToken', { token: response.data.token, remember: rememberMe })
         commit('setUser', response.data.user)
         try {
-          await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+          const tasks = [dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')]
+          if (response.data?.user?.isAdmin) {
+            tasks.push(dispatch('fetchAdminHistory'))
+          }
+          await Promise.all(tasks)
         } catch (fetchError) {
           console.error('登录后加载数据失败:', fetchError)
         }
@@ -253,7 +304,11 @@ export default createStore({
         commit('setToken', response.data.token)
         commit('setUser', response.data.user)
         try {
-          await Promise.all([dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')])
+          const tasks = [dispatch('fetchPptHistory'), dispatch('fetchTemplates'), dispatch('fetchModels')]
+          if (response.data?.user?.isAdmin) {
+            tasks.push(dispatch('fetchAdminHistory'))
+          }
+          await Promise.all(tasks)
         } catch (fetchError) {
           console.error('注册后加载数据失败:', fetchError)
         }
@@ -279,6 +334,8 @@ export default createStore({
     isAuthenticated: state => state.isAuthenticated,
     pptHistory: state => state.pptHistory,
     historyLoading: state => state.loading.history,
+    adminHistory: state => state.adminHistory,
+    adminHistoryLoading: state => state.loading.adminHistory,
     templates: state => state.templates,
     templatesLoading: state => state.loading.templates,
     models: state => state.models,

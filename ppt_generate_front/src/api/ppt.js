@@ -10,6 +10,9 @@ export default {
   preview(id) {
     return apiClient.get(`/ppt/preview?id=${encodeURIComponent(id)}`)
   },
+  outline(payload) {
+    return apiClient.post('/ppt/outline', payload)
+  },
   remove(id) {
     return apiClient.delete(`/ppt/history?id=${encodeURIComponent(id)}`)
   }

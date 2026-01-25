@@ -2,12 +2,20 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Login from '@/views/Login.vue'
 import Register from '@/views/Register.vue'
 import Main from '@/views/Main.vue'
+import Admin from '@/views/Admin.vue'
+import Home from '@/views/Home.vue'
 import store from '@/store'
 
 const routes = [
   {
     path: '/',
-    redirect: '/login'
+    redirect: '/home'
+  },
+  {
+    path: '/home',
+    name: 'Home',
+    component: Home,
+    meta: { requiresAuth: false }
   },
   {
     path: '/login',
@@ -26,6 +34,12 @@ const routes = [
     name: 'Main',
     component: Main,
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/admin',
+    name: 'Admin',
+    component: Admin,
+    meta: { requiresAuth: true, requiresAdmin: true }
   }
 ]
 
@@ -35,7 +49,7 @@ const router = createRouter({
 })
 
 // 导航守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const token = localStorage.getItem('token') || sessionStorage.getItem('token')
   const isAuthenticated = !!token
   const hasUser = !!store.state.user
@@ -46,16 +60,29 @@ router.beforeEach((to, from, next) => {
   }
 
   if (isAuthenticated && !hasUser) {
-    store.dispatch('fetchCurrentUser').catch((error) => {
+    try {
+      await store.dispatch('fetchCurrentUser')
+    } catch (error) {
       if (error?.response?.status === 401) {
         store.commit('logout')
         if (to.meta.requiresAuth) {
           router.replace('/login')
         }
-      } else {
-        console.error('获取用户信息失败:', error)
+        return
       }
-    })
+      console.error('获取用户信息失败:', error)
+    }
+  }
+
+  if (to.meta.requiresAdmin) {
+    if (!isAuthenticated) {
+      next('/login')
+      return
+    }
+    if (!store.state.user?.isAdmin) {
+      next('/main')
+      return
+    }
   }
 
   if ((to.path === '/login' || to.path === '/register') && hasUser) {

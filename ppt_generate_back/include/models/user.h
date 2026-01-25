@@ -13,4 +13,6 @@ struct User {
   std::string created_at;
   std::string updated_at;
   std::optional<std::string> last_login;
+  bool is_admin = false;
+  bool is_disabled = false;
 };

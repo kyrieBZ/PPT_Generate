@@ -294,3 +294,46 @@ bool S3Client::UploadFile(const std::string& local_path,
   }
   return true;
 }
+
+bool S3Client::DeleteObject(const std::string& object_key,
+                            std::string& error) const {
+  if (!IsEnabled()) {
+    error = "S3 is not configured";
+    return false;
+  }
+  if (object_key.empty()) {
+    error = "Object key is empty";
+    return false;
+  }
+  const auto delete_url = PresignUrl("DELETE", object_key, config_.url_expiration_seconds, config_.endpoint);
+  if (delete_url.empty()) {
+    error = "Failed to generate delete URL";
+    return false;
+  }
+
+  EnsureCurlInit();
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    error = "Unable to init curl";
+    return false;
+  }
+
+  curl_easy_setopt(curl, CURLOPT_URL, delete_url.c_str());
+  curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+  CURLcode res = curl_easy_perform(curl);
+  long response_code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+  curl_easy_cleanup(curl);
+
+  if (res != CURLE_OK) {
+    error = std::string("Delete failed: ") + curl_easy_strerror(res);
+    return false;
+  }
+  if (response_code < 200 || response_code >= 300) {
+    error = "Delete failed with HTTP status " + std::to_string(response_code);
+    return false;
+  }
+  return true;
+}

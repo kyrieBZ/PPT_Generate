@@ -2,8 +2,11 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "models/outline_item.h"
 
 struct PptRequestInput {
   std::string title;
@@ -15,6 +18,7 @@ struct PptRequestInput {
   bool include_notes = false;
   std::string model_id = "qwen-turbo";
   std::string template_id;
+  std::vector<OutlineItem> outline;
 
   static PptRequestInput FromJson(const nlohmann::json& data);
 };
@@ -22,6 +26,8 @@ struct PptRequestInput {
 struct PptRequest {
   std::uint64_t id = 0;
   std::uint64_t user_id = 0;
+  std::string user_name;
+  std::string user_email;
   std::string title;
   std::string topic;
   int pages = 0;

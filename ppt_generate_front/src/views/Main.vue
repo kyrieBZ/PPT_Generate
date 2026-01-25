@@ -27,6 +27,14 @@
       </nav>
 
       <div class="sidebar-footer">
+        <button
+          v-if="currentUser?.isAdmin"
+          class="admin-entry"
+          @click="router.push('/admin')"
+        >
+          <span class="admin-entry-icon">🛠️</span>
+          <span>后台管理</span>
+        </button>
         <button @click="handleLogout" class="logout-btn">
           <span class="logout-icon">🚪</span>
           <span>退出登录</span>
@@ -41,7 +49,8 @@
           <p class="page-description">{{ activeMenuItem?.description || '基于GenAI的智能PPT生成平台' }}</p>
         </div>
         <div class="header-right">
-          <button class="generate-btn" @click="showGenerateModal = true">
+          
+          <button class="generate-btn" @click="openGeneratePanel">
             <span class="btn-icon">✨</span>
             <span>新建PPT</span>
           </button>
@@ -65,7 +74,7 @@
               <div class="feature-icon">🤖</div>
               <h4>智能生成</h4>
               <p>基于GenAI模型自动生成PPT内容</p>
-              <button class="feature-action" @click="showGenerateModal = true">
+              <button class="feature-action" @click="openGeneratePanel">
                 <span class="btn-content">
                   <el-icon class="btn-icon"><MagicStick /></el-icon>
                   <span>开始生成</span>
@@ -88,127 +97,408 @@
         </section>
 
         <section v-if="activeMenu === 'generate'" class="generate-section">
-          <div class="generate-panel">
-            <h2>最新生成预览</h2>
-            <p>完成生成任务后将在此展示生成的PPT预览。</p>
-            <div v-if="selectedTemplate" class="template-hint">
-              <span>当前模板：{{ selectedTemplate.name }} · {{ selectedTemplate.provider }}</span>
-              <a
-                v-if="selectedTemplate.localDownloadUrl"
-                class="template-download-link"
-                :href="selectedTemplate.localDownloadUrl"
-                download
-              >
-                下载内置模板
-              </a>
+          <div class="generate-hero">
+            <div>
+              <h2>设计驱动的PPT生成</h2>
+              <p>先规划大纲，再填充内容，让每一页更有逻辑和节奏。</p>
             </div>
-            <div
-              v-if="previewEmbedUrl || hasLocalPreview"
-              class="preview-card"
-              :class="{ 'preview-has-bg': Boolean(previewCardStyle.backgroundImage) }"
-              :style="previewCardStyle"
-            >
-              <div class="preview-header">
-                <div class="preview-label">PPT 预览</div>
-                <div class="preview-actions">
-                  <div v-if="previewMode === 'local' && hasLocalPreview" class="preview-counter">
-                    第 {{ previewIndex + 1 }} / {{ previewSlideCount }} 页
+            <div class="generate-hero-tags">
+              <span>Outline-first</span>
+              <span>Design-led</span>
+              <span>Editable</span>
+            </div>
+          </div>
+
+          <div class="generate-layout">
+            <div class="generate-pagination">
+              <button
+                v-for="panel in generatePanels"
+                :key="panel.id"
+                class="pagination-tab"
+                :class="{ active: activeGeneratePanel === panel.id }"
+                @click="setGeneratePanel(panel.id)"
+              >
+                <span class="tab-index">{{ panel.index }}</span>
+                <span>{{ panel.label }}</span>
+              </button>
+            </div>
+
+            <div v-if="activeGeneratePanel === 'settings'" class="generate-workbench">
+              <div class="step-card">
+                <div class="step-header">
+                  <span class="step-index">01</span>
+                  <div>
+                    <h3>基础信息</h3>
+                    <p>定义主题和结构骨架，为大纲生成提供方向。</p>
                   </div>
-                  <div class="preview-mode">
-                    <button
-                      class="preview-toggle"
-                      :class="{ active: previewMode === 'online' }"
-                      :disabled="!canUseOnlinePreview"
-                      @click="setPreviewMode('online')"
-                    >
-                      在线预览
-                    </button>
-                    <button
-                      class="preview-toggle"
-                      :class="{ active: previewMode === 'local' }"
-                      :disabled="!canUseLocalPreview"
-                      @click="setPreviewMode('local')"
-                    >
-                      本地预览
-                    </button>
+                </div>
+                <div class="step-body">
+                  <div class="form-group">
+                    <label for="ppt-title">PPT标题</label>
+                    <input
+                      id="ppt-title"
+                      v-model="generateForm.title"
+                      type="text"
+                      placeholder="请输入PPT标题"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <label for="ppt-topic">主题/内容描述</label>
+                    <textarea
+                      id="ppt-topic"
+                      v-model="generateForm.topic"
+                      placeholder="请详细描述PPT的主题和内容要求..."
+                      rows="4"
+                    ></textarea>
+                  </div>
+
+                  <div class="form-group inline-group">
+                    <div>
+                      <label for="ppt-pages">期望页数</label>
+                      <input
+                        id="ppt-pages"
+                        v-model.number="generateForm.pages"
+                        type="number"
+                        min="1"
+                        max="50"
+                      />
+                    </div>
+                    <div>
+                      <label>模板风格</label>
+                      <div class="style-options">
+                        <label
+                          v-for="style in styles"
+                          :key="style.id"
+                          class="style-option"
+                          :class="{ 'selected': generateForm.style === style.id }"
+                        >
+                          <input
+                            type="radio"
+                            v-model="generateForm.style"
+                            :value="style.id"
+                            hidden
+                          />
+                          {{ style.name }}
+                        </label>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
-              <div v-if="previewMode === 'online'" class="preview-embed">
-                <iframe
-                  v-if="previewEmbedUrl"
-                  class="preview-iframe"
-                  :src="previewEmbedUrl"
-                  title="PPT预览"
-                  frameborder="0"
-                  allowfullscreen
-                ></iframe>
-                <div v-else class="preview-placeholder">在线预览不可用，请切换到本地预览。</div>
+
+              <div class="step-card">
+                <div class="step-header">
+                  <span class="step-index">02</span>
+                  <div>
+                    <h3>模板与设计基调</h3>
+                    <p>选择模板风格，让视觉节奏更统一。</p>
+                  </div>
+                </div>
+                <div class="step-body">
+                  <div class="form-group">
+                    <label>选择模板</label>
+                    <div class="template-options" v-if="!templatesLoading && templates.length">
+                      <label
+                        v-for="tpl in templates"
+                        :key="tpl.id"
+                        class="template-option"
+                        :class="{ selected: generateForm.templateId === tpl.id }"
+                      >
+                        <input
+                          type="radio"
+                          :value="tpl.id"
+                          v-model="generateForm.templateId"
+                          hidden
+                        />
+                        <div class="template-thumb">
+                          <img
+                            v-if="tpl.previewImage || tpl.preview_image"
+                            :src="tpl.previewImage || tpl.preview_image"
+                            :alt="tpl.name"
+                            loading="lazy"
+                          >
+                          <div v-else class="template-thumb-fallback">无预览</div>
+                        </div>
+                        <div class="template-option-info">
+                          <div class="template-title-row">
+                            <strong>{{ tpl.name }}</strong>
+                            <span class="template-badge" v-if="tpl.localDownloadUrl">内置模板</span>
+                          </div>
+                          <small>{{ tpl.provider }}</small>
+                          <p>{{ tpl.description }}</p>
+                          <div class="template-option-tags" v-if="tpl.tags?.length">
+                            <span v-for="tag in tpl.tags" :key="tag">#{{ tag }}</span>
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+                    <div v-else class="templates-empty">模板列表加载中...</div>
+                  </div>
+                </div>
               </div>
-              <div v-else class="preview-body" :class="previewLayoutClass">
-                <template v-if="hasLocalPreview">
-                  <div class="layout-grid">
-                    <div class="layout-text">
-                      <h3>{{ currentPreviewSlide?.title || '未命名标题' }}</h3>
-                      <ul v-if="currentPreviewBullets.length">
-                        <li v-for="(item, index) in currentPreviewBullets" :key="`${previewIndex}-bullet-${index}`">
-                          {{ item }}
-                        </li>
-                      </ul>
-                      <div v-else-if="currentPreviewRawText" class="preview-raw">
-                        {{ currentPreviewRawText }}
-                      </div>
-                      <div v-else class="preview-placeholder">暂无正文内容</div>
-                      <div v-if="currentPreviewNotes" class="preview-raw">备注：{{ currentPreviewNotes }}</div>
-                      <div v-if="currentPreviewSuggestions.length" class="image-prompts">
-                        <span v-for="(item, index) in currentPreviewSuggestions" :key="`${previewIndex}-suggestion-${index}`">
-                          {{ item }}
-                        </span>
-                      </div>
-                    </div>
-                    <div v-if="hasPreviewMedia" class="layout-media">
-                      <div v-if="currentPreviewImages.length" class="preview-images">
-                        <img
-                          v-for="(url, index) in currentPreviewImages"
-                          :key="`${previewIndex}-img-${index}`"
-                          :src="url"
-                          alt="预览图片"
-                          loading="lazy"
-                        >
-                      </div>
-                      <div v-else-if="previewFallbackImage" class="preview-template-fallback">
-                        <img :src="previewFallbackImage" alt="模板预览">
-                      </div>
-                      <div v-if="currentPreviewPrompts.length" class="image-prompts">
-                        <span v-for="(item, index) in currentPreviewPrompts" :key="`${previewIndex}-prompt-${index}`">
-                          {{ item }}
-                        </span>
-                      </div>
+
+              <div class="step-card">
+                <div class="step-header">
+                  <span class="step-index">03</span>
+                  <div>
+                    <h3>模型与生成选项</h3>
+                    <p>确定生成策略与展示能力。</p>
+                  </div>
+                </div>
+                <div class="step-body">
+                  <div class="form-group">
+                    <label>生成选项</label>
+                    <div class="generate-options">
+                      <label class="option-checkbox">
+                        <input type="checkbox" v-model="generateForm.includeImages" />
+                        包含图片
+                      </label>
+                      <label class="option-checkbox">
+                        <input type="checkbox" v-model="generateForm.includeCharts" />
+                        包含图表
+                      </label>
+                      <label class="option-checkbox">
+                        <input type="checkbox" v-model="generateForm.includeNotes" />
+                        包含演讲备注
+                      </label>
                     </div>
                   </div>
-                  <div class="preview-controls">
-                    <button class="preview-nav" :disabled="previewIndex === 0" @click="goPreviewPrev">上一页</button>
-                    <button class="preview-nav" :disabled="previewIndex >= previewSlideCount - 1" @click="goPreviewNext">
-                      下一页
-                    </button>
+
+                  <div class="form-group">
+                    <label>选择模型</label>
+                    <div class="model-options" v-if="!modelsLoading && models.length">
+                      <label
+                        v-for="model in models"
+                        :key="model.id"
+                        class="model-option"
+                        :class="{ selected: generateForm.modelId === model.id }"
+                      >
+                        <input
+                          type="radio"
+                          :value="model.id"
+                          v-model="generateForm.modelId"
+                          hidden
+                        />
+                        <div class="model-title">{{ model.name }}</div>
+                        <p class="model-desc">{{ model.description }}</p>
+                        <small>{{ model.provider }} · {{ model.locale }}</small>
+                      </label>
+                    </div>
+                    <div v-else class="templates-empty">模型列表加载中...</div>
                   </div>
-                  <div class="preview-thumbnails">
-                    <button
-                      v-for="(slide, index) in previewSlides"
-                      :key="`thumb-${index}`"
-                      class="preview-thumb"
-                      :class="{ active: index === previewIndex }"
-                      @click="selectPreviewSlide(index)"
-                    >
-                      <span class="thumb-index">{{ index + 1 }}</span>
-                      <span>{{ slide.title || '未命名' }}</span>
-                    </button>
-                  </div>
-                </template>
-                <div v-else class="preview-placeholder">本地预览暂无数据，请先生成PPT。</div>
+                </div>
+              </div>
+
+              <div class="action-bar">
+                <button class="action-secondary" @click="resetGenerateForm">重置</button>
               </div>
             </div>
-            <div v-else class="preview-empty">暂无PPT预览，请先生成PPT。</div>
+
+            <div v-if="activeGeneratePanel === 'outline'" class="outline-panel">
+              <div class="step-header">
+                <span class="step-index">OUTLINE</span>
+                <div>
+                  <h3>大纲设计实验室</h3>
+                  <p>单独调整结构，确保逻辑顺序与节奏感。</p>
+                </div>
+              </div>
+              <div class="step-body">
+                <div class="outline-actions">
+                  <button
+                    class="outline-btn primary"
+                    @click="handleGenerateOutline"
+                    :disabled="outlineLoading"
+                  >
+                    {{ outlineLoading ? '生成中...' : '生成大纲' }}
+                  </button>
+                  <button
+                    v-if="outlineReady"
+                    class="outline-btn"
+                    @click="handleGenerateOutline"
+                    :disabled="outlineLoading"
+                  >
+                    重新生成
+                  </button>
+                  <button
+                    v-if="outlineReady"
+                    class="outline-btn"
+                    @click="addOutlineItem"
+                  >
+                    新增页
+                  </button>
+                </div>
+
+                <div v-if="outlineLoading" class="outline-loading">正在生成大纲，请稍候...</div>
+                <div v-else-if="outlineReady" class="outline-list">
+                  <div v-for="(item, index) in outlineItems" :key="`outline-${index}`" class="outline-item">
+                    <div class="outline-item-header">
+                      <span>第 {{ index + 1 }} 页</span>
+                      <button class="outline-remove" @click="removeOutlineItem(index)">删除</button>
+                    </div>
+                    <input
+                      v-model="item.title"
+                      type="text"
+                      placeholder="页标题"
+                    />
+                    <textarea
+                      :value="item.keyPoints.join('\n')"
+                      rows="3"
+                      placeholder="要点（每行一个）"
+                      @input="updateOutlineKeyPoints(index, $event.target.value)"
+                    ></textarea>
+                    <input
+                      v-model="item.summary"
+                      type="text"
+                      placeholder="本页总结（可选）"
+                    />
+                  </div>
+                </div>
+                <div v-else class="outline-empty">请先生成大纲后再开始生成。</div>
+
+                <div v-if="outlineReady" class="action-bar outline-generate-bar">
+                  <button
+                    class="action-primary"
+                    @click="handleGenerate"
+                    :disabled="generating || outlineLoading"
+                  >
+                    {{ generating ? '生成中...' : '开始生成PPT' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="activeGeneratePanel === 'preview'" class="generate-preview-panel">
+              <div class="panel-title">
+                <div>
+                  <h3>最新生成预览</h3>
+                  <p>完成生成任务后将在此展示生成的PPT预览。</p>
+                </div>
+                <div v-if="selectedTemplate" class="template-hint">
+                  <span>当前模板：{{ selectedTemplate.name }} · {{ selectedTemplate.provider }}</span>
+                  <a
+                    v-if="selectedTemplate.localDownloadUrl"
+                    class="template-download-link"
+                    :href="selectedTemplate.localDownloadUrl"
+                    download
+                  >
+                    下载内置模板
+                  </a>
+                </div>
+              </div>
+              <div
+                v-if="previewEmbedUrl || hasLocalPreview"
+                class="preview-card"
+                :class="{ 'preview-has-bg': Boolean(previewCardStyle.backgroundImage) }"
+                :style="previewCardStyle"
+              >
+                <div class="preview-header">
+                  <div class="preview-label">PPT 预览</div>
+                  <div class="preview-actions">
+                    <div v-if="previewMode === 'local' && hasLocalPreview" class="preview-counter">
+                      第 {{ previewIndex + 1 }} / {{ previewSlideCount }} 页
+                    </div>
+                    <div class="preview-mode">
+                      <button
+                        class="preview-toggle"
+                        :class="{ active: previewMode === 'online' }"
+                        :disabled="!canUseOnlinePreview"
+                        @click="setPreviewMode('online')"
+                      >
+                        在线预览
+                      </button>
+                      <button
+                        class="preview-toggle"
+                        :class="{ active: previewMode === 'local' }"
+                        :disabled="!canUseLocalPreview"
+                        @click="setPreviewMode('local')"
+                      >
+                        本地预览
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="previewMode === 'online'" class="preview-embed">
+                  <iframe
+                    v-if="previewEmbedUrl"
+                    class="preview-iframe"
+                    :src="previewEmbedUrl"
+                    title="PPT预览"
+                    frameborder="0"
+                    allowfullscreen
+                  ></iframe>
+                  <div v-else class="preview-placeholder">在线预览不可用，请切换到本地预览。</div>
+                </div>
+                <div v-else class="preview-body" :class="previewLayoutClass">
+                  <template v-if="hasLocalPreview">
+                    <div class="layout-grid">
+                      <div class="layout-text">
+                        <h3>{{ currentPreviewSlide?.title || '未命名标题' }}</h3>
+                        <ul v-if="currentPreviewBullets.length">
+                          <li v-for="(item, index) in currentPreviewBullets" :key="`${previewIndex}-bullet-${index}`">
+                            {{ item }}
+                          </li>
+                        </ul>
+                        <div v-else-if="currentPreviewRawText" class="preview-raw">
+                          {{ currentPreviewRawText }}
+                        </div>
+                        <div v-else class="preview-placeholder">暂无正文内容</div>
+                        <div v-if="currentPreviewNotes" class="preview-raw">备注：{{ currentPreviewNotes }}</div>
+                        <div v-if="currentPreviewSuggestions.length" class="image-prompts">
+                          <span v-for="(item, index) in currentPreviewSuggestions" :key="`${previewIndex}-suggestion-${index}`">
+                            {{ item }}
+                          </span>
+                        </div>
+                      </div>
+                      <div v-if="hasPreviewMedia" class="layout-media">
+                        <div v-if="currentPreviewImages.length" class="preview-images">
+                          <img
+                            v-for="(url, index) in currentPreviewImages"
+                            :key="`${previewIndex}-img-${index}`"
+                            :src="url"
+                            alt="预览图片"
+                            loading="lazy"
+                          >
+                        </div>
+                        <div v-else-if="previewFallbackImage" class="preview-template-fallback">
+                          <img :src="previewFallbackImage" alt="模板预览">
+                        </div>
+                        <div v-if="currentPreviewPrompts.length" class="image-prompts">
+                          <span v-for="(item, index) in currentPreviewPrompts" :key="`${previewIndex}-prompt-${index}`">
+                            {{ item }}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="preview-controls">
+                      <button class="preview-nav" :disabled="previewIndex === 0" @click="goPreviewPrev">上一页</button>
+                      <button class="preview-nav" :disabled="previewIndex >= previewSlideCount - 1" @click="goPreviewNext">
+                        下一页
+                      </button>
+                    </div>
+                    <div class="preview-thumbnails">
+                      <button
+                        v-for="(slide, index) in previewSlides"
+                        :key="`thumb-${index}`"
+                        class="preview-thumb"
+                        :class="{ active: index === previewIndex }"
+                        @click="selectPreviewSlide(index)"
+                      >
+                        <span class="thumb-index">{{ index + 1 }}</span>
+                        <span>{{ slide.title || '未命名' }}</span>
+                      </button>
+                    </div>
+                  </template>
+                  <div v-else class="preview-placeholder">本地预览暂无数据，请先生成PPT。</div>
+                </div>
+              </div>
+              <div v-else class="preview-empty">暂无PPT预览，请先生成PPT。</div>
+            </div>
+
+            <div class="generate-nav">
+              <button class="action-secondary" :disabled="!canGoPrevPanel" @click="goPrevPanel">上一步</button>
+              <button class="action-primary" :disabled="!canGoNextPanel" @click="goNextPanel">下一步</button>
+            </div>
           </div>
         </section>
 
@@ -364,6 +654,7 @@
                 </div>
               </div>
             </div>
+
           </div>
         </section>
 
@@ -422,161 +713,6 @@
       </div>
     </main>
 
-    <div v-if="showGenerateModal" class="modal-overlay" @click.self="showGenerateModal = false">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2>智能PPT生成</h2>
-          <button class="modal-close" @click="showGenerateModal = false">×</button>
-        </div>
-
-        <div class="modal-body">
-          <div class="generate-form">
-            <div class="form-group">
-              <label for="ppt-title">PPT标题</label>
-              <input
-                id="ppt-title"
-                v-model="generateForm.title"
-                type="text"
-                placeholder="请输入PPT标题"
-              />
-            </div>
-
-            <div class="form-group">
-              <label for="ppt-topic">主题/内容描述</label>
-              <textarea
-                id="ppt-topic"
-                v-model="generateForm.topic"
-                placeholder="请详细描述PPT的主题和内容要求..."
-                rows="4"
-              ></textarea>
-            </div>
-
-            <div class="form-group">
-              <label for="ppt-pages">期望页数</label>
-              <input
-                id="ppt-pages"
-                v-model.number="generateForm.pages"
-                type="number"
-                min="1"
-                max="50"
-              />
-            </div>
-
-            <div class="form-group">
-              <label>模板风格</label>
-              <div class="style-options">
-                <label
-                  v-for="style in styles"
-                  :key="style.id"
-                  class="style-option"
-                  :class="{ 'selected': generateForm.style === style.id }"
-                >
-                  <input
-                    type="radio"
-                    v-model="generateForm.style"
-                    :value="style.id"
-                    hidden
-                  />
-                  {{ style.name }}
-                </label>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label>选择模板</label>
-              <div class="template-options" v-if="!templatesLoading && templates.length">
-                <label
-                  v-for="tpl in templates"
-                  :key="tpl.id"
-                  class="template-option"
-                  :class="{ selected: generateForm.templateId === tpl.id }"
-                >
-                  <input
-                    type="radio"
-                    :value="tpl.id"
-                    v-model="generateForm.templateId"
-                    hidden
-                  />
-                  <div class="template-thumb">
-                    <img
-                      v-if="tpl.previewImage || tpl.preview_image"
-                      :src="tpl.previewImage || tpl.preview_image"
-                      :alt="tpl.name"
-                      loading="lazy"
-                    >
-                    <div v-else class="template-thumb-fallback">无预览</div>
-                  </div>
-                  <div class="template-option-info">
-                    <div class="template-title-row">
-                      <strong>{{ tpl.name }}</strong>
-                      <span class="template-badge" v-if="tpl.localDownloadUrl">内置模板</span>
-                    </div>
-                    <small>{{ tpl.provider }}</small>
-                    <p>{{ tpl.description }}</p>
-                    <div class="template-option-tags" v-if="tpl.tags?.length">
-                      <span v-for="tag in tpl.tags" :key="tag">#{{ tag }}</span>
-                    </div>
-                  </div>
-                </label>
-              </div>
-              <div v-else class="templates-empty">模板列表加载中...</div>
-            </div>
-
-            <div class="form-group">
-              <label>生成选项</label>
-              <div class="generate-options">
-                <label class="option-checkbox">
-                  <input type="checkbox" v-model="generateForm.includeImages" />
-                  包含图片
-                </label>
-                <label class="option-checkbox">
-                  <input type="checkbox" v-model="generateForm.includeCharts" />
-                  包含图表
-                </label>
-                <label class="option-checkbox">
-                  <input type="checkbox" v-model="generateForm.includeNotes" />
-                  包含演讲备注
-                </label>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label>选择模型</label>
-              <div class="model-options" v-if="!modelsLoading && models.length">
-                <label
-                  v-for="model in models"
-                  :key="model.id"
-                  class="model-option"
-                  :class="{ selected: generateForm.modelId === model.id }"
-                >
-                  <input
-                    type="radio"
-                    :value="model.id"
-                    v-model="generateForm.modelId"
-                    hidden
-                  />
-                  <div class="model-title">{{ model.name }}</div>
-                  <p class="model-desc">{{ model.description }}</p>
-                  <small>{{ model.provider }} · {{ model.locale }}</small>
-                </label>
-              </div>
-              <div v-else class="templates-empty">模型列表加载中...</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="modal-footer">
-          <button class="modal-btn secondary" @click="showGenerateModal = false">取消</button>
-          <button class="modal-btn primary" @click="handleGenerate" :disabled="generating">
-            <span class="btn-content">
-              <el-icon class="btn-icon"><MagicStick /></el-icon>
-              <span v-if="generating">生成中...</span>
-              <span v-else>开始生成</span>
-            </span>
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -588,6 +724,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick, Download, Delete, EditPen, Search } from '@element-plus/icons-vue'
 import templatesAPI from '@/api/templates'
 import pptAPI from '@/api/ppt'
+import dayjs from 'dayjs'
 
 const route = useRoute()
 const router = useRouter()
@@ -597,7 +734,6 @@ const models = computed(() => store.getters.models || [])
 const modelsLoading = computed(() => store.getters.modelsLoading)
 const selectedModel = computed(() => store.getters.selectedModel)
 
-const showGenerateModal = ref(false)
 const generating = ref(false)
 const templateQuery = ref('')
 const historyQuery = ref('')
@@ -621,6 +757,14 @@ const previewSlides = ref([])
 const previewIndex = ref(0)
 const previewRequestId = ref(0)
 const previewDownloadUrl = ref('')
+const outlineItems = ref([])
+const outlineLoading = ref(false)
+const generatePanels = [
+  { id: 'settings', label: '生成设置', index: '01' },
+  { id: 'outline', label: '大纲设计', index: '02' },
+  { id: 'preview', label: '预览', index: '03' }
+]
+const activeGeneratePanel = ref('settings')
 
 const resolveAbsoluteUrl = (url) => {
   if (!url) return ''
@@ -728,6 +872,65 @@ const normalizePreviewSlide = (slide) => {
   }
 }
 
+const normalizeOutlineItem = (item = {}) => ({
+  title: item.title || '',
+  summary: item.summary || '',
+  keyPoints: Array.isArray(item.keyPoints || item.key_points)
+    ? (item.keyPoints || item.key_points)
+    : []
+})
+
+const outlineReady = computed(() => Array.isArray(outlineItems.value) && outlineItems.value.length > 0)
+const canGoPrevPanel = computed(() => generatePanels.findIndex(p => p.id === activeGeneratePanel.value) > 0)
+const canGoNextPanel = computed(() => {
+  const index = generatePanels.findIndex(p => p.id === activeGeneratePanel.value)
+  return index >= 0 && index < generatePanels.length - 1
+})
+
+const updateOutlineKeyPoints = (index, value) => {
+  if (!outlineItems.value[index]) return
+  outlineItems.value[index].keyPoints = value
+    .split('\n')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+const addOutlineItem = () => {
+  outlineItems.value.push({
+    title: '',
+    summary: '',
+    keyPoints: []
+  })
+}
+
+const removeOutlineItem = (index) => {
+  if (outlineItems.value.length <= 1) {
+    outlineItems.value.splice(index, 1)
+    return
+  }
+  outlineItems.value.splice(index, 1)
+}
+
+const setGeneratePanel = (panelId) => {
+  if (generatePanels.find(panel => panel.id === panelId)) {
+    activeGeneratePanel.value = panelId
+  }
+}
+
+const goPrevPanel = () => {
+  const index = generatePanels.findIndex(p => p.id === activeGeneratePanel.value)
+  if (index > 0) {
+    activeGeneratePanel.value = generatePanels[index - 1].id
+  }
+}
+
+const goNextPanel = () => {
+  const index = generatePanels.findIndex(p => p.id === activeGeneratePanel.value)
+  if (index >= 0 && index < generatePanels.length - 1) {
+    activeGeneratePanel.value = generatePanels[index + 1].id
+  }
+}
+
 const resolveDownloadUrl = (request) => {
   if (!request) return ''
   if (request.downloadUrl) return request.downloadUrl
@@ -753,6 +956,9 @@ const hydratePreviewFromRequest = async (request, { force = false } = {}) => {
         ? response.data.preview
         : []
     previewSlides.value = slides.map(normalizePreviewSlide).filter(Boolean)
+    if (!outlineReady.value && Array.isArray(response.data?.outline)) {
+      outlineItems.value = response.data.outline.map(normalizeOutlineItem)
+    }
   } catch (error) {
     previewSlides.value = []
   } finally {
@@ -806,7 +1012,13 @@ const syncPreviewMode = () => {
   }
 }
 
-const menuItems = [
+const currentUser = computed(() => store.getters.currentUser)
+const userInitials = computed(() => {
+  if (!currentUser.value?.username) return 'U'
+  return currentUser.value.username.charAt(0).toUpperCase()
+})
+
+const baseMenuItems = [
   { id: 'dashboard', text: '仪表板', icon: '📊', path: '/main', description: '系统概览与快速操作' },
   { id: 'generate', text: '智能生成', icon: '🤖', path: '/main/generate', description: 'GenAI智能PPT生成' },
   { id: 'templates', text: '模板中心', icon: '🎨', path: '/main/templates', description: '精选PPT模板库' },
@@ -814,9 +1026,11 @@ const menuItems = [
   { id: 'settings', text: '系统设置', icon: '⚙️', path: '/main/settings', description: '个性化系统配置' }
 ]
 
+const menuItems = computed(() => [...baseMenuItems])
+
 const resolveSection = (section) => {
   if (!section) return 'dashboard'
-  const exists = menuItems.find(item => item.id === section)
+  const exists = baseMenuItems.find(item => item.id === section)
   return exists ? section : 'dashboard'
 }
 
@@ -882,12 +1096,6 @@ const styles = [
   { id: 'minimal', name: '简约' }
 ]
 
-const currentUser = computed(() => store.getters.currentUser)
-const userInitials = computed(() => {
-  if (!currentUser.value?.username) return 'U'
-  return currentUser.value.username.charAt(0).toUpperCase()
-})
-
 const pptHistory = computed(() => store.getters.pptHistory)
 const historyLoading = computed(() => store.getters.historyLoading)
 const templates = computed(() => store.getters.templates || [])
@@ -948,7 +1156,7 @@ const statCards = computed(() => {
   ]
 })
 
-const activeMenuItem = computed(() => menuItems.find(item => item.id === activeMenu.value))
+const activeMenuItem = computed(() => menuItems.value.find(item => item.id === activeMenu.value))
 
 const filteredHistory = computed(() => {
   if (!historyQuery.value) {
@@ -1161,17 +1369,24 @@ onBeforeUnmount(() => {
 
 const formatDate = (value) => {
   if (!value) return '未知'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
+  const raw = String(value).trim()
+  if (/^\d+$/.test(raw)) {
+    const numeric = Number(raw)
+    const ts = numeric < 1e12 ? numeric * 1000 : numeric
+    return dayjs(ts).format('YYYY/MM/DD HH:mm')
   }
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
+  const parsed = dayjs(raw)
+  if (parsed.isValid()) {
+    const year = parsed.year()
+    if (year > 3000) {
+      return raw.replace(/-/g, '/').replace('T', ' ').replace('Z', '').slice(0, 16)
+    }
+    return parsed.format('YYYY/MM/DD HH:mm')
+  }
+  if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(raw)) {
+    return raw.replace(/-/g, '/').slice(0, 16)
+  }
+  return raw
 }
 
 const resetGenerateForm = () => {
@@ -1187,6 +1402,59 @@ const resetGenerateForm = () => {
     modelId: selectedModel.value || 'qwen-turbo',
     templateId: keepTemplateId
   }
+  outlineItems.value = []
+  activeGeneratePanel.value = 'settings'
+}
+
+const openGeneratePanel = () => {
+  activeMenu.value = 'generate'
+  activeGeneratePanel.value = 'settings'
+  if (route.params.section !== 'generate') {
+    router.push('/main/generate')
+  }
+  requestAnimationFrame(() => {
+    const target = document.querySelector('.generate-section')
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  })
+}
+
+const handleGenerateOutline = async () => {
+  if (!generateForm.value.title.trim() || !generateForm.value.topic.trim()) {
+    ElMessage.warning('请填写标题和主题描述')
+    return
+  }
+  if (!generateForm.value.templateId) {
+    ElMessage.warning('请选择模板样式')
+    return
+  }
+  outlineLoading.value = true
+  try {
+    const payload = {
+      title: generateForm.value.title.trim(),
+      topic: generateForm.value.topic.trim(),
+      pages: generateForm.value.pages,
+      style: generateForm.value.style,
+      modelId: generateForm.value.modelId || selectedModel.value,
+      templateId: generateForm.value.templateId
+    }
+    const response = await pptAPI.outline(payload)
+    const outline = Array.isArray(response.data?.outline) ? response.data.outline : []
+    outlineItems.value = outline.map(normalizeOutlineItem)
+    if (outlineItems.value.length) {
+      activeGeneratePanel.value = 'outline'
+    }
+    if (!outlineItems.value.length) {
+      ElMessage.warning('未生成大纲内容')
+    }
+  } catch (error) {
+    console.error('大纲生成失败:', error)
+    const message = error.response?.data?.message || error.message || '大纲生成失败，请重试'
+    ElMessage.error(message)
+  } finally {
+    outlineLoading.value = false
+  }
 }
 
 const handleGenerate = async () => {
@@ -1196,6 +1464,10 @@ const handleGenerate = async () => {
   }
   if (!generateForm.value.templateId) {
     ElMessage.warning('请选择模板样式')
+    return
+  }
+  if (!outlineReady.value) {
+    ElMessage.warning('请先生成并确认大纲')
     return
   }
 
@@ -1213,7 +1485,12 @@ const handleGenerate = async () => {
       includeCharts: generateForm.value.includeCharts,
       includeNotes: generateForm.value.includeNotes,
       modelId: generateForm.value.modelId || selectedModel.value,
-      templateId: generateForm.value.templateId
+      templateId: generateForm.value.templateId,
+      outline: outlineItems.value.map(item => ({
+        title: item.title || '',
+        summary: item.summary || '',
+        key_points: item.keyPoints || []
+      }))
     }
     const result = await store.dispatch('createPptRequest', payload)
     if (!result?.request) {
@@ -1232,9 +1509,8 @@ const handleGenerate = async () => {
       syncPreviewMode()
     }
     await store.dispatch('fetchPptHistory')
-    resetGenerateForm()
-    showGenerateModal.value = false
     activeMenu.value = 'generate'
+    activeGeneratePanel.value = 'preview'
   } catch (error) {
     console.error('生成失败:', error)
     const message = error.response?.data?.message || error.message || '生成失败，请重试'
@@ -1290,10 +1566,7 @@ const useTemplate = (template) => {
   if (template.id) {
     generateForm.value.templateId = template.id
   }
-  showGenerateModal.value = true
-  if (route.params.section !== 'generate') {
-    router.push('/main/generate')
-  }
+  openGeneratePanel()
 }
 
 const handleModelChange = (modelId) => {
@@ -1313,6 +1586,7 @@ const handleLogout = async () => {
     previewMode.value = 'online'
     previewRequestId.value = 0
     previewDownloadUrl.value = ''
+    outlineItems.value = []
     router.push('/login')
   }
 }
@@ -1331,11 +1605,15 @@ const ensureSession = async () => {
     ElMessage.warning('用户信息加载失败，将继续尝试加载数据')
   }
 
-  const results = await Promise.allSettled([
+  const tasks = [
     store.dispatch('fetchPptHistory'),
     store.dispatch('fetchTemplates'),
     store.dispatch('fetchModels')
-  ])
+  ]
+  if (store.state.user?.isAdmin) {
+    tasks.push(store.dispatch('fetchAdminHistory'))
+  }
+  const results = await Promise.allSettled(tasks)
   results.forEach((result) => {
     if (result.status === 'rejected') {
       const status = result.reason?.response?.status
@@ -1362,10 +1640,42 @@ onMounted(() => {
 </script>
 
 <style scoped>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+
+.main-container {
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: radial-gradient(circle at 15% 20%, rgba(236, 254, 255, 0.8), transparent 35%),
+    radial-gradient(circle at 85% 0%, rgba(255, 237, 213, 0.6), transparent 35%),
+    linear-gradient(120deg, #f8fafc 0%, #f1f5f9 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.main-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle at 1px 1px, rgba(15, 23, 42, 0.05) 1px, transparent 0);
+  background-size: 32px 32px;
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.main-container > * {
+  position: relative;
+  z-index: 1;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
+  letter-spacing: -0.02em;
+}
 .main-container {
   display: flex;
   min-height: 100vh;
-  background: #f8fafc;
 }
 
 .sidebar {
@@ -1460,6 +1770,34 @@ onMounted(() => {
 .sidebar-footer {
   padding: 20px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.admin-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px;
+  background: rgba(79, 70, 229, 0.18);
+  color: #c7d2fe;
+  border: 1px solid rgba(129, 140, 248, 0.5);
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.admin-entry:hover {
+  background: rgba(79, 70, 229, 0.3);
+  border-color: rgba(165, 180, 252, 0.9);
+  color: #eef2ff;
+}
+
+.admin-entry-icon {
+  font-size: 1.05rem;
 }
 
 .logout-btn {
@@ -1494,6 +1832,13 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.header-right {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .header-left h1 {
@@ -1634,6 +1979,7 @@ onMounted(() => {
   padding: 25px;
 }
 
+
 .section-header {
   display: flex;
   justify-content: space-between;
@@ -1687,6 +2033,7 @@ onMounted(() => {
   gap: 10px;
 }
 
+
 .history-search-box :deep(.el-input__wrapper) {
   border: 2px solid #e5e7eb;
   border-radius: 8px;
@@ -1720,6 +2067,7 @@ onMounted(() => {
   justify-content: center;
   margin-top: 20px;
 }
+
 
 .history-item {
   display: flex;
@@ -2411,6 +2759,318 @@ onMounted(() => {
   gap: 25px;
 }
 
+.generate-section {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.generate-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 24px 28px;
+  border-radius: 20px;
+  background: linear-gradient(120deg, rgba(30, 41, 59, 0.9), rgba(79, 70, 229, 0.9));
+  color: #f8fafc;
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.2);
+  animation: fadeUp 0.6s ease;
+}
+
+.generate-hero h2 {
+  font-size: 1.8rem;
+  margin-bottom: 8px;
+}
+
+.generate-hero-tags {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.generate-hero-tags span {
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+}
+
+.generate-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.generate-pagination {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pagination-tab {
+  flex: 1;
+  min-width: 140px;
+  padding: 10px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(255, 255, 255, 0.8);
+  font-weight: 600;
+  color: #475569;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.pagination-tab .tab-index {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #4338ca;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+
+.pagination-tab.active {
+  color: #1e1b4b;
+  border-color: rgba(99, 102, 241, 0.6);
+  background: linear-gradient(135deg, rgba(224, 231, 255, 0.8), rgba(255, 255, 255, 0.95));
+  box-shadow: 0 12px 26px rgba(99, 102, 241, 0.2);
+}
+
+.generate-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0 0;
+}
+
+.generate-preview-panel,
+.generate-workbench,
+.outline-panel {
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 20px;
+  padding: 22px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(8px);
+}
+
+.panel-title {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.panel-title h3 {
+  margin-bottom: 6px;
+}
+
+.generate-workbench {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.outline-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: linear-gradient(135deg, rgba(224, 231, 255, 0.6), rgba(255, 255, 255, 0.95));
+}
+
+.step-card {
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 18px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+  animation: fadeUp 0.6s ease;
+}
+
+.step-header {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.step-index {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  color: #312e81;
+  background: #e0e7ff;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+}
+
+.step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.inline-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.action-bar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 10px 0 0;
+}
+
+.action-primary,
+.action-secondary {
+  padding: 12px 20px;
+  border-radius: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.action-primary {
+  background: linear-gradient(120deg, #4f46e5, #6366f1);
+  color: #ffffff;
+  box-shadow: 0 12px 24px rgba(79, 70, 229, 0.3);
+}
+
+.action-secondary {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.action-primary:hover:not(:disabled),
+.action-secondary:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.action-primary:disabled,
+.action-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.outline-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.outline-btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid #cbd5f5;
+  background: #ffffff;
+  color: #334155;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.outline-btn.primary {
+  background: #4f46e5;
+  color: #ffffff;
+  border-color: #4f46e5;
+}
+
+.outline-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.outline-loading {
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.outline-empty {
+  margin-top: 8px;
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+.outline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.outline-item {
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-left: 4px solid #6366f1;
+  border-radius: 12px;
+  padding: 14px;
+  background: linear-gradient(135deg, rgba(224, 231, 255, 0.55), rgba(255, 255, 255, 0.9));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 10px 22px rgba(99, 102, 241, 0.08);
+}
+
+.outline-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  color: #334155;
+}
+
+.outline-item-header span {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.12);
+  color: #3730a3;
+  font-size: 0.85rem;
+}
+
+.outline-item input,
+.outline-item textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 0.9rem;
+}
+
+.outline-remove {
+  background: transparent;
+  border: none;
+  color: #ef4444;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .form-group label {
   display: block;
   margin-bottom: 8px;
@@ -2661,6 +3321,20 @@ onMounted(() => {
     grid-template-columns: 1fr;
   }
 
+  .generate-hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .inline-group {
+    grid-template-columns: 1fr;
+  }
+
+  .generate-options {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
   .main-container {
     flex-direction: column;
   }
@@ -2695,9 +3369,5 @@ onMounted(() => {
     text-align: center;
   }
 
-  .modal-content {
-    width: 95%;
-    margin: 10px;
-  }
 }
 </style>

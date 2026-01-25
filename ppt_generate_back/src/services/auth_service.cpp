@@ -3,11 +3,13 @@
 
 #include <sstream>
 #include <iomanip>
+#include <vector>
 
 #include <openssl/rand.h>
 
 #include "logger.h"
 #include "utils/crypto.h"
+#include "utils/string_utils.h"
 
 namespace {
 std::string EscapeString(MYSQL* connection, const std::string& value) {
@@ -18,12 +20,11 @@ std::string EscapeString(MYSQL* connection, const std::string& value) {
   return escaped;
 }
 
-std::optional<User> ExtractUser(MYSQL_RES* result) {
-  MYSQL_ROW row = mysql_fetch_row(result);
-  if (!row) {
-    return std::nullopt;
-  }
+User ReadUserRow(MYSQL_ROW row) {
   User user;
+  if (!row) {
+    return user;
+  }
   user.id = row[0] ? std::strtoull(row[0], nullptr, 10) : 0;
   user.username = row[1] ? row[1] : "";
   user.email = row[2] ? row[2] : "";
@@ -34,7 +35,16 @@ std::optional<User> ExtractUser(MYSQL_RES* result) {
   if (row[7]) {
     user.last_login = std::string(row[7]);
   }
+  user.is_disabled = row[8] ? (std::atoi(row[8]) != 0) : false;
   return user;
+}
+
+std::optional<User> ExtractUser(MYSQL_RES* result) {
+  MYSQL_ROW row = mysql_fetch_row(result);
+  if (!row) {
+    return std::nullopt;
+  }
+  return ReadUserRow(row);
 }
 
 constexpr int kResetCodeTtlMinutes = 5;
@@ -53,10 +63,37 @@ std::string GenerateResetCode() {
 
 AuthService::AuthService(std::shared_ptr<MySQLConnectionPool> pool,
                          AuthConfig auth_config,
+                         AdminConfig admin_config,
                          std::shared_ptr<EmailService> email_service)
     : pool_(std::move(pool)),
       auth_config_(auth_config),
-      email_service_(std::move(email_service)) {}
+      email_service_(std::move(email_service)) {
+  for (const auto& username : admin_config.usernames) {
+    const auto normalized = string_utils::ToLower(string_utils::Trim(username));
+    if (!normalized.empty()) {
+      admin_usernames_.insert(normalized);
+    }
+  }
+  for (const auto& email : admin_config.emails) {
+    const auto normalized = string_utils::ToLower(string_utils::Trim(email));
+    if (!normalized.empty()) {
+      admin_emails_.insert(normalized);
+    }
+  }
+}
+
+bool AuthService::IsAdmin(const User& user) const {
+  if (admin_usernames_.empty() && admin_emails_.empty()) {
+    return false;
+  }
+  const auto username = string_utils::ToLower(user.username);
+  const auto email = string_utils::ToLower(user.email);
+  return admin_usernames_.count(username) > 0 || admin_emails_.count(email) > 0;
+}
+
+void AuthService::ApplyAdmin(User& user) const {
+  user.is_admin = IsAdmin(user);
+}
 
 bool AuthService::RegisterUser(const std::string& username,
                                const std::string& email,
@@ -89,6 +126,7 @@ bool AuthService::RegisterUser(const std::string& username,
     return false;
   }
 
+  ApplyAdmin(out_user);
   return true;
 }
 
@@ -111,6 +149,10 @@ bool AuthService::Login(const std::string& identifier,
     error_message = "密码错误";
     return false;
   }
+  if (user->is_disabled) {
+    error_message = "账号已禁用";
+    return false;
+  }
 
   const std::string update_query = "UPDATE users SET last_login = NOW() WHERE id = " + std::to_string(user->id) + " LIMIT 1";
   if (mysql_query(conn, update_query.c_str()) != 0) {
@@ -122,6 +164,7 @@ bool AuthService::Login(const std::string& identifier,
     return false;
   }
 
+  ApplyAdmin(*user);
   out_user = *user;
   return true;
 }
@@ -138,6 +181,13 @@ std::optional<User> AuthService::GetUserFromToken(const std::string& token, std:
   auto user = FindUserByToken(conn, token);
   if (!user) {
     error_message = "Token无效或已过期";
+  }
+  if (user) {
+    if (user->is_disabled) {
+      error_message = "账号已被禁用";
+      return std::nullopt;
+    }
+    ApplyAdmin(*user);
   }
   return user;
 }
@@ -227,7 +277,7 @@ bool AuthService::ResetPassword(const std::string& email,
 std::optional<User> AuthService::FindUserByIdentifier(MYSQL* connection, const std::string& identifier) const {
   const auto escaped = EscapeString(connection, identifier);
   const std::string query =
-      "SELECT id, username, email, password_hash, salt, created_at, updated_at, last_login "
+      "SELECT id, username, email, password_hash, salt, created_at, updated_at, last_login, is_disabled "
       "FROM users WHERE username='" +
       escaped + "' OR email='" + escaped + "' LIMIT 1";
 
@@ -249,7 +299,7 @@ std::optional<User> AuthService::FindUserByIdentifier(MYSQL* connection, const s
 std::optional<User> AuthService::FindUserByEmail(MYSQL* connection, const std::string& email) const {
   const auto escaped = EscapeString(connection, email);
   const std::string query =
-      "SELECT id, username, email, password_hash, salt, created_at, updated_at, last_login "
+      "SELECT id, username, email, password_hash, salt, created_at, updated_at, last_login, is_disabled "
       "FROM users WHERE email='" +
       escaped + "' LIMIT 1";
 
@@ -324,7 +374,7 @@ bool AuthService::InsertUser(MYSQL* connection,
 
   const auto user_id = mysql_insert_id(connection);
   const std::string select_query =
-      "SELECT id, username, email, password_hash, salt, created_at, updated_at, last_login FROM users WHERE id = " +
+      "SELECT id, username, email, password_hash, salt, created_at, updated_at, last_login, is_disabled FROM users WHERE id = " +
       std::to_string(user_id) + " LIMIT 1";
 
   if (mysql_query(connection, select_query.c_str()) != 0) {
@@ -441,7 +491,7 @@ bool AuthService::RemoveToken(MYSQL* connection, const std::string& token, std::
 std::optional<User> AuthService::FindUserByToken(MYSQL* connection, const std::string& token) const {
   const auto escaped = EscapeString(connection, token);
   const std::string query =
-      "SELECT u.id, u.username, u.email, u.password_hash, u.salt, u.created_at, u.updated_at, u.last_login "
+      "SELECT u.id, u.username, u.email, u.password_hash, u.salt, u.created_at, u.updated_at, u.last_login, u.is_disabled "
       "FROM auth_tokens t INNER JOIN users u ON t.user_id = u.id "
       "WHERE t.token='" +
       escaped + "' AND t.expires_at > NOW() LIMIT 1";
@@ -457,4 +507,65 @@ std::optional<User> AuthService::FindUserByToken(MYSQL* connection, const std::s
   auto user = ExtractUser(result);
   mysql_free_result(result);
   return user;
+}
+
+std::vector<User> AuthService::ListUsers(const std::string& query, std::string& error_message) const {
+  std::vector<User> users;
+  auto connection = pool_->GetConnection();
+  MYSQL* conn = connection.Get();
+  if (!conn) {
+    error_message = "无法获取数据库连接";
+    return users;
+  }
+
+  std::ostringstream sql;
+  sql << "SELECT id, username, email, password_hash, salt, created_at, updated_at, last_login, is_disabled "
+         "FROM users";
+  if (!query.empty()) {
+    const auto escaped = EscapeString(conn, query);
+    sql << " WHERE username LIKE '%" << escaped << "%' OR email LIKE '%" << escaped << "%'";
+  }
+  sql << " ORDER BY created_at DESC LIMIT 200";
+
+  if (mysql_query(conn, sql.str().c_str()) != 0) {
+    error_message = "查询用户失败: " + std::string(mysql_error(conn));
+    return users;
+  }
+
+  MYSQL_RES* result = mysql_store_result(conn);
+  if (!result) {
+    error_message = "读取用户结果失败";
+    return users;
+  }
+
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result))) {
+    User user = ReadUserRow(row);
+    ApplyAdmin(user);
+    users.push_back(user);
+  }
+  mysql_free_result(result);
+  return users;
+}
+
+bool AuthService::UpdateUserStatus(std::uint64_t user_id, bool disabled, std::string& error_message) const {
+  auto connection = pool_->GetConnection();
+  MYSQL* conn = connection.Get();
+  if (!conn) {
+    error_message = "无法获取数据库连接";
+    return false;
+  }
+
+  std::ostringstream query;
+  query << "UPDATE users SET is_disabled=" << (disabled ? 1 : 0)
+        << ", updated_at=NOW() WHERE id=" << user_id << " LIMIT 1";
+  if (mysql_query(conn, query.str().c_str()) != 0) {
+    error_message = "更新用户状态失败: " + std::string(mysql_error(conn));
+    return false;
+  }
+  if (mysql_affected_rows(conn) == 0) {
+    error_message = "用户不存在或状态未变化";
+    return false;
+  }
+  return true;
 }

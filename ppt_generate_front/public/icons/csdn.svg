@@ -1,0 +1,28 @@
+<svg width="300" height="100" viewBox="0 0 300 100" xmlns="http://www.w3.org/2000/svg">
+  <!-- 定义渐变（CSDN官方蓝红渐变，贴合原版视觉） -->
+  <defs>
+    <!-- 左侧 CSDN 文字渐变（蓝→红过渡） -->
+    <linearGradient id="csdnTextGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#007ACC" />
+      <stop offset="50%" stop-color="#DC4405" />
+      <stop offset="100%" stop-color="#DC4405" />
+    </linearGradient>
+    <!-- 右侧 标语文字灰色（官方标准色） -->
+    <solidColor id="sloganColor" solid-color="#666666" />
+  </defs>
+  
+  <!-- 1. 核心：CSDN 粗体文字（水平居中，官方字体风格） -->
+  <text x="150" y="65" font-family="Arial, Helvetica, sans-serif" font-size="70" font-weight="900" 
+        fill="url(#csdnTextGradient)" text-anchor="middle">
+    CSDN
+  </text>
+  
+  <!-- 2. 补充：CSDN 官方标语（跟随CSDN文字右移，保持相对位置） -->
+  <text x="230" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" 
+        fill="url(#sloganColor)">
+    专业开发者社区
+  </text>
+  
+  <!-- 3. 细节：底部装饰线（跟随CSDN文字居中，调整长度和位置） -->
+  <line x1="70" y1="85" x2="230" y2="85" stroke="#DC4405" stroke-width="2" opacity="0.8" />
+</svg>

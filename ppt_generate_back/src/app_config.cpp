@@ -61,6 +61,25 @@ AuthConfig ParseAuth(const nlohmann::json& json) {
   return cfg;
 }
 
+AdminConfig ParseAdmin(const nlohmann::json& json) {
+  AdminConfig cfg;
+  if (auto it = json.find("usernames"); it != json.end() && it->is_array()) {
+    for (const auto& item : *it) {
+      if (item.is_string()) {
+        cfg.usernames.push_back(item.get<std::string>());
+      }
+    }
+  }
+  if (auto it = json.find("emails"); it != json.end() && it->is_array()) {
+    for (const auto& item : *it) {
+      if (item.is_string()) {
+        cfg.emails.push_back(item.get<std::string>());
+      }
+    }
+  }
+  return cfg;
+}
+
 TemplateConfig ParseTemplates(const nlohmann::json& json) {
   TemplateConfig cfg;
   if (auto it = json.find("catalog_path"); it != json.end() && it->is_string()) {
@@ -217,6 +236,9 @@ AppConfig AppConfig::Load(const std::string& path) {
   }
   if (auto it = data.find("auth"); it != data.end()) {
     config.auth_ = ParseAuth(*it);
+  }
+  if (auto it = data.find("admin"); it != data.end()) {
+    config.admin_ = ParseAdmin(*it);
   }
   if (auto it = data.find("templates"); it != data.end()) {
     config.templates_ = ParseTemplates(*it);

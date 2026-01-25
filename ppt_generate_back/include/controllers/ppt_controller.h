@@ -25,9 +25,12 @@ class PptController {
 
   HttpResponse Generate(const HttpRequest& request);
   HttpResponse History(const HttpRequest& request);
+  HttpResponse AdminHistory(const HttpRequest& request);
+  HttpResponse AdminMetrics(const HttpRequest& request);
   HttpResponse Delete(const HttpRequest& request);
   HttpResponse Download(const HttpRequest& request);
   HttpResponse Preview(const HttpRequest& request);
+  HttpResponse Outline(const HttpRequest& request);
 
  private:
   std::shared_ptr<User> Authenticate(const HttpRequest& request, std::string& error_message) const;

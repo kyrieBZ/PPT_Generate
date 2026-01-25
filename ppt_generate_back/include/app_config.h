@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 struct ServerConfig {
   std::string host = "0.0.0.0";
@@ -20,6 +21,11 @@ struct DatabaseConfig {
 
 struct AuthConfig {
   std::uint32_t token_ttl_minutes = 120;
+};
+
+struct AdminConfig {
+  std::vector<std::string> usernames;
+  std::vector<std::string> emails;
 };
 
 struct TemplateConfig {
@@ -77,6 +83,7 @@ class AppConfig {
   const ServerConfig& server() const { return server_; }
   const DatabaseConfig& database() const { return database_; }
   const AuthConfig& auth() const { return auth_; }
+  const AdminConfig& admin() const { return admin_; }
   const TemplateConfig& templates() const { return templates_; }
   const ModelConfig& models() const { return models_; }
   const ProviderConfig& providers() const { return providers_; }
@@ -88,6 +95,7 @@ class AppConfig {
   ServerConfig server_{};
   DatabaseConfig database_{};
   AuthConfig auth_{};
+  AdminConfig admin_{};
   TemplateConfig templates_{};
   ModelConfig models_{};
   ProviderConfig providers_{};

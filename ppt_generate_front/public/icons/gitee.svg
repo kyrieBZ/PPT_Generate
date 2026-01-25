@@ -1,0 +1,11 @@
+<svg width="300" height="120" viewBox="0 0 300 120" xmlns="http://www.w3.org/2000/svg">
+  <!-- 放大后的红色圆形背景（Gitee标准红） -->
+  <circle cx="60" cy="60" r="55" fill="#F03838"/>
+  
+  <!-- 标准G字母 - 完全居中且尺寸适配放大后的圆形 -->
+  <text x="60" y="60" font-family="Arial, sans-serif" font-size="80" font-weight="bold" fill="white" 
+        text-anchor="middle" dominant-baseline="middle">G</text>
+  
+  <!-- 放大后的右侧gitee文字 -->
+  <text x="130" y="72" font-family="Arial, sans-serif" font-size="60" font-weight="bold" fill="#333333">gitee</text>
+</svg>

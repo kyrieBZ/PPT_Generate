@@ -1,5 +1,8 @@
 <template>
   <div class="login-container">
+    <button class="back-home" @click="router.push('/home')" aria-label="返回主页">
+      <el-icon><ArrowLeft /></el-icon>
+    </button>
     <div class="login-card">
       <div class="logo-section">
         <h1>PPT智能生成系统</h1>
@@ -155,8 +158,8 @@
 import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStore } from 'vuex'
-import { ElMessage } from 'element-plus'
-import { UserFilled, User, Message, Key, Lock } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { UserFilled, User, Message, Key, Lock, ArrowLeft } from '@element-plus/icons-vue'
 import authApi from '@/api/auth'
 
 const router = useRouter()
@@ -223,6 +226,7 @@ const resetRules = {
 let cooldownTimer = null
 
 onMounted(() => {
+  ElMessage.info('欢迎进入PPT自动生成系统，请登录继续')
   const savedUsername = localStorage.getItem('rememberedUsername')
   const savedRemember = localStorage.getItem('rememberMe')
   if (savedRemember === 'true') {
@@ -252,16 +256,32 @@ const handleLogin = async () => {
   loading.value = true
   
   try {
-    await store.dispatch('login', {
+    const response = await store.dispatch('login', {
       username: form.username,
       password: form.password,
       rememberMe: rememberMe.value
     })
-    
-    router.push('/main')
+    const user = response?.data?.user || store.getters.currentUser
+    if (user?.isAdmin) {
+      router.push('/admin')
+    } else {
+      router.push('/main')
+    }
   } catch (error) {
     console.error('登录失败:', error)
-    formError.value = error.response?.data?.message || '登录失败，请检查用户名和密码'
+    const message = error.response?.data?.message || '登录失败，请检查用户名和密码'
+    formError.value = message
+    if (message.includes('禁用')) {
+      ElMessage.error('账号已被禁用！')
+      await ElMessageBox.alert(
+        '请联系管理员处理：bk2898453810@gmail.com',
+        '账号已被禁用',
+        {
+          confirmButtonText: '我知道了',
+          type: 'warning'
+        }
+      )
+    }
   } finally {
     loading.value = false
   }
@@ -352,6 +372,7 @@ onBeforeUnmount(() => {
   justify-content: center;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   padding: 20px;
+  position: relative;
 }
 
 .login-card {
@@ -364,6 +385,27 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   min-height: 500px;
+}
+
+.back-home {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(15, 23, 42, 0.15);
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(6px);
+}
+
+.back-home:hover {
+  background: rgba(15, 23, 42, 0.3);
 }
 
 .logo-section {

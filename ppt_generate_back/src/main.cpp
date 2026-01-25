@@ -6,6 +6,7 @@
 
 #include "app_config.h"
 #include "controllers/auth_controller.h"
+#include "controllers/admin_controller.h"
 #include "controllers/ppt_controller.h"
 #include "controllers/template_controller.h"
 #include "controllers/model_controller.h"
@@ -49,7 +50,7 @@ int main(int argc, char* argv[]) {
 
     auto pool = std::make_shared<MySQLConnectionPool>(config.database());
     auto email_service = std::make_shared<EmailService>(config.email());
-    auto auth_service = std::make_shared<AuthService>(pool, config.auth(), email_service);
+    auto auth_service = std::make_shared<AuthService>(pool, config.auth(), config.admin(), email_service);
     auto ppt_service = std::make_shared<PptService>(pool);
 
     std::shared_ptr<IPowerPointServiceFactory> factory;
@@ -76,6 +77,7 @@ int main(int argc, char* argv[]) {
 
     Router router;
     AuthController auth_controller(auth_service);
+    AdminController admin_controller(auth_service);
     PptController ppt_controller(auth_service,
                                  ppt_service,
                                  model_service,
@@ -123,6 +125,19 @@ int main(int argc, char* argv[]) {
       return ppt_controller.History(request);
     });
 
+    router.AddRoute("GET", "/api/admin/ppt/history", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.AdminHistory(request);
+    });
+    router.AddRoute("GET", "/api/admin/ppt/metrics", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.AdminMetrics(request);
+    });
+    router.AddRoute("GET", "/api/admin/users", [&admin_controller](const HttpRequest& request) {
+      return admin_controller.ListUsers(request);
+    });
+    router.AddRoute("POST", "/api/admin/users/status", [&admin_controller](const HttpRequest& request) {
+      return admin_controller.UpdateUserStatus(request);
+    });
+
     router.AddRoute("DELETE", "/api/ppt/history", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Delete(request);
     });
@@ -145,6 +160,9 @@ int main(int argc, char* argv[]) {
 
     router.AddRoute("GET", "/api/models", [&model_controller](const HttpRequest& request) {
       return model_controller.List(request);
+    });
+    router.AddRoute("POST", "/api/ppt/outline", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.Outline(request);
     });
 
     HttpServer server(config.server(), router);
