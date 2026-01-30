@@ -262,6 +262,8 @@ const handleLogin = async () => {
       rememberMe: rememberMe.value
     })
     const user = response?.data?.user || store.getters.currentUser
+    ElMessage.success('登录成功，正在跳转...')
+    await new Promise(resolve => setTimeout(resolve, 600))
     if (user?.isAdmin) {
       router.push('/admin')
     } else {

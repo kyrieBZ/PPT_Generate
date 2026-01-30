@@ -549,7 +549,12 @@
                     <span>编辑</span>
                   </span>
                 </el-button>
-                <el-button size="large" type="success" @click="downloadPPT(item)">
+                <el-button
+                  size="large"
+                  type="success"
+                  :disabled="!item?.hasFile"
+                  @click="downloadPPT(item)"
+                >
                   <span class="btn-content">
                     <el-icon class="btn-icon"><Download /></el-icon>
                     <span>下载</span>
@@ -936,6 +941,30 @@ const resolveDownloadUrl = (request) => {
   if (request.downloadUrl) return request.downloadUrl
   if (request.id) return `/api/ppt/file?id=${request.id}`
   return ''
+}
+
+const buildDownloadUrl = (request) => {
+  const raw = resolveDownloadUrl(request)
+  if (!raw) return ''
+  try {
+    if (raw.startsWith('http')) {
+      const parsed = new URL(raw)
+      if (!parsed.pathname.includes('/ppt/file')) {
+        return raw
+      }
+    }
+    const apiBase = import.meta.env.VITE_API_URL || '/api'
+    const base = apiBase.startsWith('http') ? apiBase : window.location.origin
+    const url = new URL(raw, base)
+    const token = store.state.token
+    if (token) {
+      url.searchParams.set('token', token)
+    }
+    url.searchParams.set('ngrok-skip-browser-warning', '1')
+    return url.toString()
+  } catch (error) {
+    return raw
+  }
 }
 
 const hydratePreviewFromRequest = async (request, { force = false } = {}) => {
@@ -1525,7 +1554,23 @@ const editPPT = (item) => {
 }
 
 const downloadPPT = (item) => {
-  ElMessage.info(`下载功能即将上线：${item.title}`)
+  if (!item?.hasFile) {
+    ElMessage.warning('该记录暂无可下载的PPT文件')
+    return
+  }
+  const url = buildDownloadUrl(item)
+  if (!url) {
+    ElMessage.error('下载链接不可用，请稍后重试')
+    return
+  }
+  const link = document.createElement('a')
+  link.href = url
+  link.rel = 'noopener'
+  link.target = '_blank'
+  link.download = ''
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
 }
 
 const deleteHistory = async (item) => {
@@ -1587,6 +1632,8 @@ const handleLogout = async () => {
     previewRequestId.value = 0
     previewDownloadUrl.value = ''
     outlineItems.value = []
+    ElMessage.success('已退出登录')
+    await new Promise(resolve => setTimeout(resolve, 500))
     router.push('/login')
   }
 }

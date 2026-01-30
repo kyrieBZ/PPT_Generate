@@ -91,7 +91,6 @@
     <footer class="home-footer">
       <div class="footer-title">
         <h2>联系我</h2>
-        <p>欢迎合作交流，扫码或访问主页。</p>
       </div>
       <div class="contact-grid">
         <div class="contact-card qr-card">
@@ -154,11 +153,74 @@
 </template>
 
 <script setup>
+import { nextTick, onBeforeUnmount, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
+
 const links = {
   github: 'https://github.com/kyrieBZ?tab=repositories',
   gitee: 'https://gitee.com/KyrieBZ',
   csdn: 'https://blog.csdn.net/2303_76152639?spm=1000.2115.3001.5343'
 }
+
+let cleanupQrBubble = null
+
+const setupQrBubbleFlip = () => {
+  const cards = Array.from(document.querySelectorAll('.qr-card'))
+  const viewPadding = 12
+  const leftOffset = 16
+  const rightOffset = 16
+
+  const updateCard = (card) => {
+    const bubble = card.querySelector('.qr-bubble')
+    if (!bubble) {
+      return
+    }
+
+    const cardRect = card.getBoundingClientRect()
+    const bubbleWidth = bubble.offsetWidth
+    const viewWidth = window.innerWidth
+    const bubbleRightIfLeft = cardRect.left + leftOffset + bubbleWidth
+    const bubbleLeftIfRight = cardRect.right - rightOffset - bubbleWidth
+    const overflowRight = bubbleRightIfLeft > viewWidth - viewPadding
+    const overflowLeft = bubbleLeftIfRight < viewPadding
+
+    card.classList.toggle('flip-right', overflowRight && !overflowLeft)
+  }
+
+  const updateAll = () => cards.forEach(updateCard)
+  const onResize = () => window.requestAnimationFrame(updateAll)
+
+  const handlers = cards.map((card) => {
+    const handler = () => updateCard(card)
+    card.addEventListener('mouseenter', handler)
+    card.addEventListener('focusin', handler)
+    return { card, handler }
+  })
+
+  window.addEventListener('resize', onResize)
+  updateAll()
+
+  return () => {
+    handlers.forEach(({ card, handler }) => {
+      card.removeEventListener('mouseenter', handler)
+      card.removeEventListener('focusin', handler)
+    })
+    window.removeEventListener('resize', onResize)
+  }
+}
+
+onMounted(async () => {
+  ElMessage.success('欢迎访问我的主页！')
+  await nextTick()
+  cleanupQrBubble = setupQrBubbleFlip()
+})
+
+onBeforeUnmount(() => {
+  if (cleanupQrBubble) {
+    cleanupQrBubble()
+    cleanupQrBubble = null
+  }
+})
 </script>
 
 <style scoped>
@@ -172,10 +234,18 @@ const links = {
   --accent-3: #f97316;
   --surface: rgba(255, 255, 255, 0.85);
   --glass: rgba(255, 255, 255, 0.7);
-  --shadow: 0 30px 60px rgba(15, 23, 42, 0.16);
+  --shadow: 0 18px 36px rgba(15, 23, 42, 0.12);
+  --page-x: clamp(16px, 6vw, 96px);
+  --space-2xs: clamp(6px, 0.8vw, 10px);
+  --space-xs: clamp(10px, 1.2vw, 16px);
+  --space-sm: clamp(14px, 1.6vw, 20px);
+  --space-md: clamp(18px, 2.2vw, 28px);
+  --space-lg: clamp(24px, 3vw, 40px);
+  --space-xl: clamp(32px, 4vw, 56px);
   min-height: 100vh;
-  background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.22), transparent 60%),
-    radial-gradient(circle at 70% 80%, rgba(34, 197, 94, 0.18), transparent 55%),
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.18), transparent 60%),
     linear-gradient(120deg, #f8fafc 0%, #eef2ff 45%, #ecfeff 100%);
   font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
   color: var(--ink);
@@ -187,25 +257,25 @@ const links = {
   position: absolute;
   border-radius: 999px;
   filter: blur(0px);
-  opacity: 0.55;
+  opacity: 0.35;
   pointer-events: none;
   animation: float 16s ease-in-out infinite;
 }
 
 .orb-a {
-  width: 280px;
-  height: 280px;
-  background: radial-gradient(circle at 30% 30%, rgba(37, 99, 235, 0.45), rgba(37, 99, 235, 0.05));
-  top: -80px;
-  left: -60px;
+  width: 13.75rem;
+  height: 13.75rem;
+  background: radial-gradient(circle at 30% 30%, rgba(37, 99, 235, 0.35), rgba(37, 99, 235, 0.05));
+  top: -5rem;
+  left: -3.75rem;
 }
 
 .orb-b {
-  width: 360px;
-  height: 360px;
-  background: radial-gradient(circle at 30% 30%, rgba(34, 197, 94, 0.4), rgba(34, 197, 94, 0.05));
-  bottom: -140px;
-  right: -120px;
+  width: 17.5rem;
+  height: 17.5rem;
+  background: radial-gradient(circle at 30% 30%, rgba(34, 197, 94, 0.3), rgba(34, 197, 94, 0.05));
+  bottom: -8.75rem;
+  right: -7.5rem;
   animation-delay: -4s;
 }
 
@@ -213,8 +283,8 @@ const links = {
   position: absolute;
   inset: 0;
   background-image: radial-gradient(rgba(15, 23, 42, 0.08) 1px, transparent 0);
-  background-size: 18px 18px;
-  opacity: 0.35;
+  background-size: 1.375rem 1.375rem;
+  opacity: 0.18;
   pointer-events: none;
 }
 
@@ -222,32 +292,34 @@ const links = {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 28px 8vw 10px;
+  padding: var(--space-lg) var(--page-x) var(--space-xs);
   position: sticky;
   top: 0;
   z-index: 5;
   background: linear-gradient(180deg, rgba(248, 250, 252, 0.85) 0%, rgba(248, 250, 252, 0) 100%);
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(4px);
+  gap: var(--space-sm);
+  flex-wrap: wrap;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-xs);
 }
 
 .brand-logo {
-  width: 44px;
-  height: 44px;
-  border-radius: 16px;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 1rem;
   display: grid;
   place-items: center;
   font-weight: 700;
 }
 
 .brand-logo img {
-  width: 44px;
-  height: 44px;
+  width: 2.75rem;
+  height: 2.75rem;
 }
 
 .brand-title {
@@ -262,12 +334,12 @@ const links = {
 
 .nav-links {
   display: flex;
-  gap: 14px;
+  gap: var(--space-xs);
   flex-wrap: wrap;
 }
 
 .nav-link {
-  padding: 8px 16px;
+  padding: 0.5rem 1rem;
   border-radius: 999px;
   border: 1px solid rgba(15, 23, 42, 0.15);
   background: var(--glass);
@@ -289,46 +361,49 @@ const links = {
 }
 
 .home-main {
-  padding: 24px 8vw 60px;
+  padding: var(--space-md) var(--page-x) var(--space-lg);
   display: flex;
   flex-direction: column;
-  gap: 40px;
+  gap: var(--space-lg);
   position: relative;
   z-index: 2;
+  flex: 1;
 }
 
 .hero {
   display: grid;
   grid-template-columns: 2fr 1fr;
-  gap: 24px;
+  gap: var(--space-md);
+  align-items: stretch;
 }
 
 .hero-content {
   display: flex;
   align-items: center;
-  gap: 22px;
+  gap: var(--space-md);
   background: var(--surface);
-  border-radius: 24px;
-  padding: 32px;
+  border-radius: 1.5rem;
+  padding: var(--space-lg);
   box-shadow: var(--shadow);
   position: relative;
   overflow: hidden;
   animation: fadeUp 0.6s ease;
+  flex-wrap: wrap;
 }
 
 .hero-content::after {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 24px;
+  border-radius: 1.5rem;
   border: 1px solid rgba(37, 99, 235, 0.15);
   pointer-events: none;
 }
 
 .hero-logo {
-  width: 96px;
-  height: 96px;
-  border-radius: 28px;
+  width: 6rem;
+  height: 6rem;
+  border-radius: 1.75rem;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -341,8 +416,8 @@ const links = {
 
 .hero-text h1 {
   font-family: 'Fraunces', serif;
-  font-size: 2.6rem;
-  margin-bottom: 12px;
+  font-size: clamp(1.9rem, 3vw, 2.6rem);
+  margin-bottom: 0.75rem;
 }
 
 .hero-text p {
@@ -351,16 +426,16 @@ const links = {
 }
 
 .hero-actions {
-  margin-top: 18px;
+  margin-top: 1.125rem;
   display: flex;
-  gap: 12px;
+  gap: var(--space-xs);
   flex-wrap: wrap;
 }
 
 .primary-btn,
 .ghost-btn {
-  padding: 12px 20px;
-  border-radius: 12px;
+  padding: 0.75rem 1.25rem;
+  border-radius: 0.75rem;
   font-weight: 600;
 }
 
@@ -379,14 +454,14 @@ const links = {
 .hero-panel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-sm);
 }
 
 .panel-card {
   background: rgba(255, 255, 255, 0.92);
-  padding: 24px;
-  border-radius: 20px;
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.12);
+  padding: var(--space-md);
+  border-radius: 1.25rem;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.1);
   animation: fadeUp 0.6s ease;
 }
 
@@ -397,14 +472,14 @@ const links = {
 
 
 .panel-tags {
-  margin-top: 12px;
+  margin-top: 0.75rem;
   display: flex;
-  gap: 8px;
+  gap: 0.5rem;
   flex-wrap: wrap;
 }
 
 .panel-tags span {
-  padding: 4px 10px;
+  padding: 0.25rem 0.625rem;
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.08);
   font-size: 0.75rem;
@@ -415,22 +490,22 @@ const links = {
 }
 
 .projects h2 {
-  margin-bottom: 16px;
+  margin-bottom: 1rem;
   font-family: 'Fraunces', serif;
 }
 
 .project-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(13.75rem, 1fr));
+  gap: var(--space-sm);
 }
 
 .project-card {
-  padding: 20px;
-  border-radius: 18px;
+  padding: var(--space-sm);
+  border-radius: 1.125rem;
   background: rgba(255, 255, 255, 0.9);
   border: 1px solid rgba(148, 163, 184, 0.3);
-  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.1);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.1);
   position: relative;
   overflow: hidden;
 }
@@ -449,7 +524,7 @@ const links = {
 
 .card-link {
   display: inline-block;
-  margin-top: 12px;
+  margin-top: 0.75rem;
   font-weight: 600;
   color: #0f172a;
 }
@@ -459,41 +534,17 @@ const links = {
 }
 
 .home-footer {
-  padding: 40px 8vw 30px;
+  padding: var(--space-xl) var(--page-x) var(--space-lg);
   background: rgba(15, 23, 42, 0.96);
   color: #e2e8f0;
   position: relative;
   z-index: 2;
-  box-shadow: 0 -26px 60px rgba(15, 23, 42, 0.5),
-    0 -16px 40px rgba(37, 99, 235, 0.35),
-    0 -4px 0 rgba(255, 255, 255, 0.06) inset;
-  overflow: hidden;
-}
-
-.home-footer::before {
-  content: '';
-  position: absolute;
-  top: -120px;
-  left: 50%;
-  width: 520px;
-  height: 220px;
-  transform: translateX(-50%);
-  background: radial-gradient(circle at center, rgba(37, 99, 235, 0.45), rgba(15, 23, 42, 0));
-  pointer-events: none;
-}
-
-.home-footer::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at 20% -40%, rgba(16, 185, 129, 0.28), transparent 50%),
-    radial-gradient(circle at 80% -30%, rgba(59, 130, 246, 0.25), transparent 55%);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  pointer-events: none;
+  box-shadow: none;
+  overflow: visible;
 }
 
 .footer-title h2 {
-  margin-bottom: 8px;
+  margin-bottom: 0.5rem;
 }
 
 .footer-title {
@@ -502,18 +553,18 @@ const links = {
 }
 
 .contact-grid {
-  margin-top: 24px;
+  margin-top: var(--space-md);
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(13.75rem, 1fr));
+  gap: var(--space-sm);
 }
 
 .contact-card {
   background: rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  padding: 16px;
+  border-radius: 1rem;
+  padding: var(--space-sm);
   display: flex;
-  gap: 14px;
+  gap: var(--space-xs);
   align-items: center;
 }
 
@@ -526,17 +577,17 @@ const links = {
 }
 
 .icon-wrapper {
-  width: 72px;
-  height: 72px;
-  border-radius: 14px;
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 0.875rem;
   background: #ffffff;
   display: grid;
   place-items: center;
 }
 
 .icon-wrapper img {
-  width: 60px;
-  height: 60px;
+  width: 3.75rem;
+  height: 3.75rem;
 }
 
 .qr-card {
@@ -546,17 +597,17 @@ const links = {
 
 .qr-bubble {
   position: absolute;
-  bottom: 92px;
-  left: 16px;
+  bottom: 5.75rem;
+  left: 1rem;
   background: #ffffff;
   color: #0f172a;
-  border-radius: 14px;
-  padding: 10px;
+  border-radius: 0.875rem;
+  padding: 0.625rem;
   box-shadow: 0 20px 40px rgba(15, 23, 42, 0.2);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
   opacity: 0;
   transform: translateY(8px);
   transition: all 0.2s ease;
@@ -565,8 +616,10 @@ const links = {
 }
 
 .qr-bubble img {
-  width: 120px;
-  height: 120px;
+  width: 7.5rem;
+  height: 7.5rem;
+  object-fit: contain;
+  display: block;
 }
 
 .qr-bubble span {
@@ -577,13 +630,23 @@ const links = {
 .qr-bubble::after {
   content: '';
   position: absolute;
-  bottom: -8px;
-  left: 24px;
-  width: 16px;
-  height: 16px;
+  bottom: -0.5rem;
+  left: 1.5rem;
+  width: 1rem;
+  height: 1rem;
   background: #ffffff;
   transform: rotate(45deg);
   box-shadow: 2px 2px 6px rgba(15, 23, 42, 0.08);
+}
+
+.qr-card.flip-right .qr-bubble {
+  left: auto;
+  right: 1rem;
+}
+
+.qr-card.flip-right .qr-bubble::after {
+  left: auto;
+  right: 1.5rem;
 }
 
 .qr-card:hover .qr-bubble {
@@ -592,7 +655,7 @@ const links = {
 }
 
 .footer-note {
-  margin-top: 24px;
+  margin-top: var(--space-md);
   color: rgba(226, 232, 240, 0.6);
   font-size: 0.85rem;
   text-align: center;
@@ -602,18 +665,124 @@ const links = {
   .hero {
     grid-template-columns: 1fr;
   }
+
+  .hero-panel {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .panel-card {
+    flex: 1 1 240px;
+  }
+}
+
+@media (max-width: 768px) {
+  .home-nav {
+    position: static;
+    backdrop-filter: none;
+  }
+
+  .nav-links {
+    width: 100%;
+  }
+
+  .nav-link {
+    flex: 1 1 auto;
+    text-align: center;
+  }
+
+  .hero-content {
+    padding: var(--space-md);
+  }
+
+  .hero-logo {
+    width: 4.5rem;
+    height: 4.5rem;
+    border-radius: 1.25rem;
+  }
+
+  .panel-card {
+    padding: var(--space-sm);
+  }
+
+  .icon-wrapper {
+    width: 3.75rem;
+    height: 3.75rem;
+  }
+
+  .icon-wrapper img {
+    width: 3rem;
+    height: 3rem;
+  }
+
+  .bg-grid {
+    display: none;
+  }
+
+  .bg-orb {
+    animation: none;
+  }
+
+  .home-main {
+    gap: clamp(16px, 3vw, 28px);
+    padding-bottom: clamp(20px, 4vw, 36px);
+  }
 }
 
 @media (max-width: 640px) {
   .home-nav {
     flex-direction: column;
-    gap: 16px;
+    gap: var(--space-sm);
     align-items: flex-start;
   }
 
   .hero-content {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .nav-links {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .nav-link {
+    width: 100%;
+    text-align: left;
+  }
+}
+
+@media (max-width: 480px) {
+  .hero-actions {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .primary-btn,
+  .ghost-btn {
+    width: 100%;
+    text-align: center;
+  }
+
+  .contact-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .qr-bubble {
+    left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bg-orb,
+  .hero-content,
+  .panel-card {
+    animation: none;
+  }
+
+  .contact-card.link {
+    transition: none;
   }
 }
 
