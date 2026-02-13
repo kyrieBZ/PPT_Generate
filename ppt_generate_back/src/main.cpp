@@ -14,6 +14,7 @@
 #include "http/http_server.h"
 #include "logger.h"
 #include "services/auth_service.h"
+#include "services/doubao_image_client.h"
 #include "services/email_service.h"
 #include "services/ppt_service.h"
 #include "services/qwen_client.h"
@@ -74,6 +75,11 @@ int main(int argc, char* argv[]) {
     if (!config.providers().qwen_api_key.empty()) {
       qwen_client = std::make_shared<QwenClient>(config.providers().qwen_api_key);
     }
+    std::shared_ptr<DoubaoImageClient> doubao_client;
+    if (!config.providers().doubao_api_key.empty() &&
+        !config.providers().doubao_image_endpoint.empty()) {
+      doubao_client = std::make_shared<DoubaoImageClient>(config.providers());
+    }
 
     Router router;
     AuthController auth_controller(auth_service);
@@ -84,7 +90,8 @@ int main(int argc, char* argv[]) {
                                  template_service,
                                  config.generation(),
                                  qwen_client,
-                                 s3_client);
+                                 s3_client,
+                                 doubao_client);
     TemplateController template_controller(template_service);
     ModelController model_controller(model_service);
 

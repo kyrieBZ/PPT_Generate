@@ -85,6 +85,7 @@ bool LibreOfficePowerPointService::Save(const std::string&) {
       {"secondaryColor", secondary_color_},
       {"accentColor", accent_color_}};
   payload["layoutMode"] = "template";
+  payload["cleanTemplateText"] = true;
   payload["slides"] = nlohmann::json::array();
   for (const auto& slide : slides_) {
     nlohmann::json item;
@@ -94,8 +95,20 @@ bool LibreOfficePowerPointService::Save(const std::string&) {
     } else if (!slide.raw_text.empty()) {
       item["bullets"] = nlohmann::json::array({slide.raw_text});
     }
+    if (!slide.bullet_groups.empty()) {
+      item["bulletGroups"] = slide.bullet_groups;
+    }
     if (!slide.notes.empty()) {
       item["notes"] = slide.notes;
+    }
+    if (!slide.image_paths.empty()) {
+      item["imagePaths"] = slide.image_paths;
+    }
+    if (!slide.image_urls.empty()) {
+      item["imageUrls"] = slide.image_urls;
+    }
+    if (!slide.image_prompts.empty()) {
+      item["imagePrompts"] = slide.image_prompts;
     }
     if (!slide.layout_hint.empty()) {
       item["layoutHint"] = slide.layout_hint;

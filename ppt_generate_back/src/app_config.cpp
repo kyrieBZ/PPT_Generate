@@ -107,6 +107,27 @@ ProviderConfig ParseProviders(const nlohmann::json& json) {
   if (auto it = json.find("qwen_api_key"); it != json.end() && it->is_string()) {
     cfg.qwen_api_key = *it;
   }
+  if (auto it = json.find("doubao_api_key"); it != json.end() && it->is_string()) {
+    cfg.doubao_api_key = *it;
+  }
+  if (auto it = json.find("doubao_image_endpoint"); it != json.end() && it->is_string()) {
+    cfg.doubao_image_endpoint = *it;
+  }
+  if (auto it = json.find("doubao_image_model"); it != json.end() && it->is_string()) {
+    cfg.doubao_image_model = *it;
+  }
+  if (auto it = json.find("doubao_image_size"); it != json.end() && it->is_string()) {
+    cfg.doubao_image_size = *it;
+  }
+  if (auto it = json.find("doubao_image_response_format"); it != json.end() && it->is_string()) {
+    cfg.doubao_image_response_format = *it;
+  }
+  if (auto it = json.find("doubao_image_count"); it != json.end() && it->is_number_unsigned()) {
+    cfg.doubao_image_count = it->get<std::uint32_t>();
+  }
+  if (auto it = json.find("doubao_timeout_seconds"); it != json.end() && it->is_number_unsigned()) {
+    cfg.doubao_timeout_seconds = it->get<std::uint32_t>();
+  }
   return cfg;
 }
 
@@ -151,11 +172,24 @@ GenerationConfig ParseGeneration(const nlohmann::json& json, const std::filesyst
   if (auto it = json.find("output_dir"); it != json.end() && it->is_string()) {
     cfg.output_dir = *it;
   }
+  if (auto it = json.find("image_dir"); it != json.end() && it->is_string()) {
+    cfg.image_dir = *it;
+  }
   if (auto it = json.find("python_binary"); it != json.end() && it->is_string()) {
     cfg.python_binary = *it;
   }
   if (auto it = json.find("builder_script"); it != json.end() && it->is_string()) {
     cfg.builder_script = *it;
+  }
+  if (auto it = json.find("template_analyzer_script"); it != json.end() && it->is_string()) {
+    cfg.template_analyzer_script = *it;
+  } else if (auto it = json.find("templateAnalyzerScript"); it != json.end() && it->is_string()) {
+    cfg.template_analyzer_script = *it;
+  }
+  if (auto it = json.find("template_analysis_dir"); it != json.end() && it->is_string()) {
+    cfg.template_analysis_dir = *it;
+  } else if (auto it = json.find("templateAnalysisDir"); it != json.end() && it->is_string()) {
+    cfg.template_analysis_dir = *it;
   }
   if (auto it = json.find("soffice_binary"); it != json.end() && it->is_string()) {
     cfg.soffice_binary = *it;
@@ -173,7 +207,10 @@ GenerationConfig ParseGeneration(const nlohmann::json& json, const std::filesyst
   };
 
   cfg.output_dir = make_absolute(cfg.output_dir);
+  cfg.image_dir = make_absolute(cfg.image_dir);
   cfg.builder_script = make_absolute(cfg.builder_script);
+  cfg.template_analyzer_script = make_absolute(cfg.template_analyzer_script);
+  cfg.template_analysis_dir = make_absolute(cfg.template_analysis_dir);
   return cfg;
 }
 

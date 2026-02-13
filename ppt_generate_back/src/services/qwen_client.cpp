@@ -13,6 +13,15 @@
 namespace {
 constexpr const char* kQwenEndpoint =
     "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
+constexpr int kDefaultTitleMaxChars = 18;
+constexpr int kDefaultGroupMaxBullets = 4;
+constexpr int kDefaultGroupMaxChars = 28;
+constexpr int kMinTitleMaxChars = 4;
+constexpr int kMaxTitleMaxChars = 36;
+constexpr int kMinGroupChars = 6;
+constexpr int kMaxGroupChars = 60;
+constexpr int kMaxGroupCount = 4;
+constexpr int kMaxBulletsPerGroup = 8;
 
 std::string UrlEncode(const std::string& value) {
   static const char* hex = "0123456789ABCDEF";
@@ -172,6 +181,27 @@ std::string BuildOutlinePrompt(const std::string& topic,
   return prompt.str();
 }
 
+std::string BuildLayoutGuidePrompt(const std::string& template_summary_json,
+                                   int slide_count,
+                                   const std::string& template_hint) {
+  std::ostringstream prompt;
+  prompt << "你是一名PPT版式分析师。根据给定的模板结构摘要JSON，输出版式约束。"
+         << "目标页数为" << slide_count << "页。";
+  if (!template_hint.empty()) {
+    prompt << "模板风格参考：" << template_hint << "。";
+  }
+  prompt << "模板结构摘要JSON如下：\n"
+         << template_summary_json << "\n";
+  prompt << "请输出严格的JSON数组，数组长度等于目标页数。"
+         << "每个元素包含字段："
+         << "title_max_chars（整数，标题最大字数，建议8-20），"
+         << "groups（数组，正文分组，数组长度代表正文分栏数，至少1）。"
+         << "groups中的每个元素包含：max_bullets（2-5），max_chars（单条最大字数，<=35）。"
+         << "如模板有图片区域，可适当减少max_bullets。"
+         << "禁止输出除JSON以外的任何字符。";
+  return prompt.str();
+}
+
 std::string BuildSlidesPromptFromOutline(const std::string& topic,
                                          const std::vector<OutlineItem>& outline,
                                          bool include_images) {
@@ -203,6 +233,73 @@ std::string BuildSlidesPromptFromOutline(const std::string& topic,
   prompt << "输出严格的JSON数组，数组中每个元素包含字段："
          << "title（字符串，需与大纲对应），"
          << "bullets（长度3-5的字符串数组，单条<=40字），"
+         << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）。"
+         << "禁止输出除JSON以外的任何字符。";
+  return prompt.str();
+}
+
+std::string BuildSlidesPromptFromOutlineWithLayout(const std::string& topic,
+                                                   const std::vector<OutlineItem>& outline,
+                                                   bool include_images,
+                                                   const std::string& layout_guide_json) {
+  std::ostringstream outline_text;
+  for (std::size_t i = 0; i < outline.size(); ++i) {
+    outline_text << (i + 1) << ". " << outline[i].title;
+    if (!outline[i].summary.empty()) {
+      outline_text << "（" << outline[i].summary << "）";
+    }
+    if (!outline[i].key_points.empty()) {
+      outline_text << " 关键点：";
+      for (std::size_t j = 0; j < outline[i].key_points.size(); ++j) {
+        if (j > 0) {
+          outline_text << "；";
+        }
+        outline_text << outline[i].key_points[j];
+      }
+    }
+    outline_text << "\n";
+  }
+
+  std::ostringstream prompt;
+  prompt << "你是一名资深中文PPT设计专家，请根据以下大纲与版式约束为主题【" << topic << "】"
+         << "生成每页PPT内容：\n"
+         << outline_text.str();
+  prompt << "版式约束 layout_guide(JSON数组，索引对应页码，从0开始)如下：\n"
+         << layout_guide_json << "\n";
+  if (include_images) {
+    prompt << "每页需要1-2个图片创意描述，突出场景、风格或配色，供后续图片检索使用。";
+  }
+  prompt << "输出严格的JSON数组，数组中每个元素包含字段："
+         << "title（字符串，需与大纲对应），"
+         << "bullet_groups（数组，长度需与layout_guide中groups长度一致；"
+         << "每个分组是字符串数组，条数<=对应max_bullets，单条字数<=对应max_chars），"
+         << "bullets（可选，flatten后的要点数组，单条<=40字），"
+         << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）。"
+         << "禁止输出除JSON以外的任何字符。";
+  return prompt.str();
+}
+
+std::string BuildSlidesPromptWithLayout(const std::string& topic,
+                                        int slide_count,
+                                        const std::string& template_hint,
+                                        bool include_images,
+                                        const std::string& layout_guide_json) {
+  std::ostringstream prompt;
+  prompt << "你是一名资深中文PPT设计专家，请围绕主题【" << topic << "】"
+         << "策划" << slide_count << "页结构化PPT。";
+  if (!template_hint.empty()) {
+    prompt << "模板风格参考：" << template_hint << "。";
+  }
+  prompt << "版式约束 layout_guide(JSON数组，索引对应页码，从0开始)如下：\n"
+         << layout_guide_json << "\n";
+  if (include_images) {
+    prompt << "每页需要1-2个图片创意描述，突出场景、风格或配色，供后续图片检索使用。";
+  }
+  prompt << "输出严格的JSON数组，数组中每个元素包含字段："
+         << "title（字符串，<=18个汉字），"
+         << "bullet_groups（数组，长度需与layout_guide中groups长度一致；"
+         << "每个分组是字符串数组，条数<=对应max_bullets，单条字数<=对应max_chars），"
+         << "bullets（可选，flatten后的要点数组，单条<=40字），"
          << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）。"
          << "禁止输出除JSON以外的任何字符。";
   return prompt.str();
@@ -255,6 +352,243 @@ bool ParseOutlineJson(const nlohmann::json& data, std::vector<OutlineItem>& out_
   return !out_outline.empty();
 }
 
+struct GroupConstraint {
+  int max_bullets = kDefaultGroupMaxBullets;
+  int max_chars = kDefaultGroupMaxChars;
+};
+
+struct SlideConstraint {
+  int title_max_chars = kDefaultTitleMaxChars;
+  std::vector<GroupConstraint> groups;
+};
+
+int ClampInt(int value, int min_value, int max_value) {
+  return std::max(min_value, std::min(value, max_value));
+}
+
+std::size_t Utf8CharBytes(unsigned char lead) {
+  if ((lead & 0x80U) == 0) {
+    return 1;
+  }
+  if ((lead & 0xE0U) == 0xC0U) {
+    return 2;
+  }
+  if ((lead & 0xF0U) == 0xE0U) {
+    return 3;
+  }
+  if ((lead & 0xF8U) == 0xF0U) {
+    return 4;
+  }
+  return 1;
+}
+
+std::string NormalizeSingleLine(std::string text) {
+  for (char& ch : text) {
+    if (ch == '\r' || ch == '\n' || ch == '\t') {
+      ch = ' ';
+    }
+  }
+  const auto begin = text.find_first_not_of(' ');
+  if (begin == std::string::npos) {
+    return {};
+  }
+  const auto end = text.find_last_not_of(' ');
+  return text.substr(begin, end - begin + 1);
+}
+
+std::string Utf8Truncate(const std::string& text, int max_chars) {
+  if (max_chars <= 0 || text.empty()) {
+    return {};
+  }
+  std::size_t index = 0;
+  int count = 0;
+  const auto size = text.size();
+  while (index < size && count < max_chars) {
+    const auto bytes = Utf8CharBytes(static_cast<unsigned char>(text[index]));
+    if (index + bytes > size) {
+      break;
+    }
+    index += bytes;
+    ++count;
+  }
+  if (index >= size) {
+    return text;
+  }
+  return text.substr(0, index);
+}
+
+bool ParseLayoutGuide(const std::string& layout_guide_json,
+                      std::vector<SlideConstraint>& out_constraints,
+                      std::string& error_message) {
+  out_constraints.clear();
+  if (layout_guide_json.empty()) {
+    return true;
+  }
+  try {
+    nlohmann::json guide_json = nlohmann::json::parse(layout_guide_json);
+    if (guide_json.is_object()) {
+      if (guide_json.contains("layout_guide") && guide_json["layout_guide"].is_array()) {
+        guide_json = guide_json["layout_guide"];
+      } else if (guide_json.contains("layoutGuide") && guide_json["layoutGuide"].is_array()) {
+        guide_json = guide_json["layoutGuide"];
+      }
+    }
+    if (!guide_json.is_array()) {
+      error_message = "layout_guide 不是数组";
+      return false;
+    }
+    for (const auto& item : guide_json) {
+      SlideConstraint constraint;
+      if (item.is_object()) {
+        constraint.title_max_chars = ClampInt(
+            item.value("title_max_chars", item.value("titleMaxChars", kDefaultTitleMaxChars)),
+            kMinTitleMaxChars, kMaxTitleMaxChars);
+
+        const nlohmann::json* groups_json = nullptr;
+        if (item.contains("groups") && item["groups"].is_array()) {
+          groups_json = &item["groups"];
+        }
+        if (groups_json != nullptr) {
+          for (const auto& group_item : *groups_json) {
+            if (!group_item.is_object()) {
+              continue;
+            }
+            GroupConstraint group;
+            group.max_bullets =
+                ClampInt(group_item.value("max_bullets",
+                                          group_item.value("maxBullets", kDefaultGroupMaxBullets)),
+                         1, kMaxBulletsPerGroup);
+            group.max_chars =
+                ClampInt(group_item.value("max_chars",
+                                          group_item.value("maxChars", kDefaultGroupMaxChars)),
+                         kMinGroupChars, kMaxGroupChars);
+            constraint.groups.push_back(group);
+            if (constraint.groups.size() >= static_cast<std::size_t>(kMaxGroupCount)) {
+              break;
+            }
+          }
+        }
+      }
+      if (constraint.groups.empty()) {
+        constraint.groups.push_back(GroupConstraint{});
+      }
+      out_constraints.push_back(std::move(constraint));
+    }
+    return true;
+  } catch (const std::exception& ex) {
+    error_message = ex.what();
+    return false;
+  }
+}
+
+void RebuildRawText(SlideContent& slide) {
+  slide.raw_text = slide.title;
+  for (const auto& bullet : slide.bullets) {
+    if (!bullet.empty()) {
+      slide.raw_text += "\n" + bullet;
+    }
+  }
+}
+
+void ApplySlideConstraint(SlideContent& slide, const SlideConstraint& constraint) {
+  slide.title = Utf8Truncate(NormalizeSingleLine(slide.title), constraint.title_max_chars);
+  if (slide.title.empty()) {
+    slide.title = "自动生成的PPT";
+  }
+
+  std::vector<std::string> source;
+  for (const auto& group : slide.bullet_groups) {
+    for (const auto& item : group) {
+      const auto normalized = NormalizeSingleLine(item);
+      if (!normalized.empty()) {
+        source.push_back(normalized);
+      }
+    }
+  }
+  if (source.empty()) {
+    for (const auto& item : slide.bullets) {
+      const auto normalized = NormalizeSingleLine(item);
+      if (!normalized.empty()) {
+        source.push_back(normalized);
+      }
+    }
+  }
+
+  std::size_t cursor = 0;
+  std::vector<std::vector<std::string>> constrained_groups;
+  constrained_groups.reserve(constraint.groups.size());
+  for (const auto& group_constraint : constraint.groups) {
+    std::vector<std::string> group;
+    group.reserve(static_cast<std::size_t>(group_constraint.max_bullets));
+    for (int i = 0; i < group_constraint.max_bullets && cursor < source.size(); ++i, ++cursor) {
+      auto trimmed = Utf8Truncate(source[cursor], group_constraint.max_chars);
+      trimmed = NormalizeSingleLine(trimmed);
+      if (!trimmed.empty()) {
+        group.push_back(std::move(trimmed));
+      }
+    }
+    if (!group.empty()) {
+      constrained_groups.push_back(std::move(group));
+    }
+  }
+
+  std::size_t dropped_count = 0;
+  if (cursor < source.size()) {
+    dropped_count = source.size() - cursor;
+  }
+
+  if (constrained_groups.empty() && !source.empty()) {
+    const int max_chars = constraint.groups.empty() ? kDefaultGroupMaxChars : constraint.groups[0].max_chars;
+    auto first = Utf8Truncate(source.front(), max_chars);
+    first = NormalizeSingleLine(first);
+    if (!first.empty()) {
+      constrained_groups.push_back({first});
+      dropped_count = source.size() > 1 ? source.size() - 1 : 0;
+    }
+  }
+
+  slide.bullet_groups = std::move(constrained_groups);
+  slide.bullets.clear();
+  for (const auto& group : slide.bullet_groups) {
+    for (const auto& item : group) {
+      slide.bullets.push_back(item);
+    }
+  }
+
+  if (dropped_count > 0) {
+    std::ostringstream note;
+    note << "layout_guide裁剪了" << dropped_count << "条超限要点";
+    if (slide.notes.empty()) {
+      slide.notes = note.str();
+    } else {
+      slide.notes += "\n" + note.str();
+    }
+  }
+
+  RebuildRawText(slide);
+}
+
+bool ApplyLayoutGuideConstraints(std::vector<SlideContent>& slides,
+                                 const std::string& layout_guide_json,
+                                 std::string& warning_message) {
+  if (layout_guide_json.empty() || slides.empty()) {
+    return true;
+  }
+  std::vector<SlideConstraint> constraints;
+  if (!ParseLayoutGuide(layout_guide_json, constraints, warning_message)) {
+    return false;
+  }
+  if (constraints.empty()) {
+    return true;
+  }
+  for (std::size_t i = 0; i < slides.size(); ++i) {
+    const auto& constraint =
+        constraints[i < constraints.size() ? i : constraints.size() - 1];
+    ApplySlideConstraint(slides[i], constraint);
+  }
+  return true;
+}
+
 bool ParseSlidesText(const std::string& slides_text,
                      const std::string& topic,
                      bool include_images,
@@ -277,11 +611,58 @@ bool ParseSlidesText(const std::string& slides_text,
     for (const auto& slide_json : response_json) {
       SlideContent slide;
       slide.title = slide_json.value("title", "");
+      std::vector<std::vector<std::string>> bullet_groups;
+      if (auto it = slide_json.find("bullet_groups"); it != slide_json.end() && it->is_array()) {
+        for (const auto& group : *it) {
+          if (!group.is_array()) {
+            continue;
+          }
+          std::vector<std::string> group_items;
+          for (const auto& item : group) {
+            if (item.is_string()) {
+              const auto value = item.get<std::string>();
+              if (!value.empty()) {
+                group_items.push_back(value);
+              }
+            }
+          }
+          if (!group_items.empty()) {
+            bullet_groups.push_back(std::move(group_items));
+          }
+        }
+      } else if (auto it = slide_json.find("bulletGroups"); it != slide_json.end() && it->is_array()) {
+        for (const auto& group : *it) {
+          if (!group.is_array()) {
+            continue;
+          }
+          std::vector<std::string> group_items;
+          for (const auto& item : group) {
+            if (item.is_string()) {
+              const auto value = item.get<std::string>();
+              if (!value.empty()) {
+                group_items.push_back(value);
+              }
+            }
+          }
+          if (!group_items.empty()) {
+            bullet_groups.push_back(std::move(group_items));
+          }
+        }
+      }
+
       if (auto it = slide_json.find("bullets"); it != slide_json.end() && it->is_array()) {
         for (const auto& bullet : *it) {
           slide.bullets.push_back(bullet.get<std::string>());
         }
       }
+      if (slide.bullets.empty() && !bullet_groups.empty()) {
+        for (const auto& group : bullet_groups) {
+          for (const auto& bullet : group) {
+            slide.bullets.push_back(bullet);
+          }
+        }
+      }
+      slide.bullet_groups = std::move(bullet_groups);
       slide.raw_text = slide.title;
       for (const auto& bullet : slide.bullets) {
         slide.raw_text += "\n" + bullet;
@@ -408,6 +789,52 @@ bool QwenClient::GenerateOutline(const std::string& topic,
   }
 }
 
+bool QwenClient::GenerateLayoutGuide(const std::string& template_summary_json,
+                                     int slide_count,
+                                     const std::string& template_hint,
+                                     std::string& out_layout_json,
+                                     std::string& error_message) const {
+  if (template_summary_json.empty()) {
+    error_message = "模板结构摘要为空";
+    return false;
+  }
+  slide_count = std::max(1, std::min(slide_count, 50));
+  const auto prompt = BuildLayoutGuidePrompt(template_summary_json, slide_count, template_hint);
+  std::string guide_text;
+  if (!CallQwen(api_key_, prompt, guide_text, error_message)) {
+    return false;
+  }
+  try {
+    auto guide_json = nlohmann::json::parse(guide_text);
+    if (guide_json.is_object()) {
+      if (guide_json.contains("layout_guide")) {
+        guide_json = guide_json["layout_guide"];
+      } else if (guide_json.contains("layoutGuide")) {
+        guide_json = guide_json["layoutGuide"];
+      }
+    }
+    if (!guide_json.is_array()) {
+      error_message = "版式约束解析失败：返回格式不是数组";
+      return false;
+    }
+    if (guide_json.size() > static_cast<std::size_t>(slide_count)) {
+      guide_json.erase(guide_json.begin() + slide_count, guide_json.end());
+    }
+    while (guide_json.size() < static_cast<std::size_t>(slide_count)) {
+      if (guide_json.empty()) {
+        guide_json.push_back(nlohmann::json::object());
+      } else {
+        guide_json.push_back(guide_json.back());
+      }
+    }
+    out_layout_json = guide_json.dump();
+    return true;
+  } catch (const std::exception& ex) {
+    error_message = ex.what();
+    return false;
+  }
+}
+
 bool QwenClient::GenerateSlidesFromOutline(const std::string& topic,
                                            const std::vector<OutlineItem>& outline,
                                            bool include_images,
@@ -423,6 +850,35 @@ bool QwenClient::GenerateSlidesFromOutline(const std::string& topic,
     return false;
   }
   return ParseSlidesText(slides_text, topic, include_images, out_slides, error_message);
+}
+
+bool QwenClient::GenerateSlidesFromOutlineWithLayout(const std::string& topic,
+                                                     const std::vector<OutlineItem>& outline,
+                                                     bool include_images,
+                                                     const std::string& layout_guide_json,
+                                                     std::vector<SlideContent>& out_slides,
+                                                     std::string& error_message) const {
+  if (layout_guide_json.empty()) {
+    return GenerateSlidesFromOutline(topic, outline, include_images, out_slides, error_message);
+  }
+  if (outline.empty()) {
+    error_message = "大纲为空";
+    return false;
+  }
+  const auto prompt = BuildSlidesPromptFromOutlineWithLayout(topic, outline, include_images,
+                                                             layout_guide_json);
+  std::string slides_text;
+  if (!CallQwen(api_key_, prompt, slides_text, error_message)) {
+    return false;
+  }
+  if (!ParseSlidesText(slides_text, topic, include_images, out_slides, error_message)) {
+    return false;
+  }
+  std::string layout_warning;
+  if (!ApplyLayoutGuideConstraints(out_slides, layout_guide_json, layout_warning)) {
+    Logger::Warn("layout_guide约束应用失败，将保留原始模型输出: " + layout_warning);
+  }
+  return true;
 }
 
 bool QwenClient::GenerateSlides(const std::string& topic,
@@ -472,5 +928,41 @@ bool QwenClient::GenerateSlides(const std::string& topic,
   Logger::Warn(std::string("解析通义千问JSON失败，将回退文本模式: ") + error_message);
   out_slides.clear();
   out_slides.push_back(ParseSlide(slides_text, topic + " 场景", include_images));
+  return true;
+}
+
+bool QwenClient::GenerateSlidesWithLayout(const std::string& topic,
+                                          int slide_count,
+                                          const std::string& template_hint,
+                                          bool include_images,
+                                          const std::string& layout_guide_json,
+                                          std::vector<SlideContent>& out_slides,
+                                          std::string& error_message) const {
+  if (layout_guide_json.empty()) {
+    return GenerateSlides(topic, slide_count, template_hint, include_images, out_slides, error_message);
+  }
+  slide_count = std::max(1, std::min(slide_count, 10));
+
+  std::ostringstream prompt;
+  prompt << BuildSlidesPromptWithLayout(topic, slide_count, template_hint, include_images,
+                                        layout_guide_json);
+  std::string slides_text;
+  if (!CallQwen(api_key_, prompt.str(), slides_text, error_message)) {
+    return false;
+  }
+  if (ParseSlidesText(slides_text, topic, include_images, out_slides, error_message)) {
+    std::string layout_warning;
+    if (!ApplyLayoutGuideConstraints(out_slides, layout_guide_json, layout_warning)) {
+      Logger::Warn("layout_guide约束应用失败，将保留原始模型输出: " + layout_warning);
+    }
+    return true;
+  }
+  Logger::Warn(std::string("解析通义千问JSON失败，将回退文本模式: ") + error_message);
+  out_slides.clear();
+  out_slides.push_back(ParseSlide(slides_text, topic + " 场景", include_images));
+  std::string layout_warning;
+  if (!ApplyLayoutGuideConstraints(out_slides, layout_guide_json, layout_warning)) {
+    Logger::Warn("layout_guide约束应用失败，将保留原始模型输出: " + layout_warning);
+  }
   return true;
 }

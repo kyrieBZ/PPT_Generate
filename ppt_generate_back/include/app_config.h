@@ -38,6 +38,13 @@ struct ModelConfig {
 
 struct ProviderConfig {
   std::string qwen_api_key;
+  std::string doubao_api_key;
+  std::string doubao_image_endpoint;
+  std::string doubao_image_model;
+  std::string doubao_image_size = "1024x1024";
+  std::string doubao_image_response_format = "url";
+  std::uint32_t doubao_image_count = 1;
+  std::uint32_t doubao_timeout_seconds = 30;
 };
 
 struct EmailConfig {
@@ -53,8 +60,11 @@ struct EmailConfig {
 
 struct GenerationConfig {
   std::string output_dir = "assets/generated";
+  std::string image_dir = "assets/generated/images";
   std::string python_binary = "python3";
   std::string builder_script = "scripts/libreoffice_ppt_builder.py";
+  std::string template_analyzer_script = "scripts/ppt_template_analyzer.py";
+  std::string template_analysis_dir = "assets/template_analysis";
   std::string soffice_binary = "soffice";
 };
 

@@ -1,6 +1,8 @@
 #include "controllers/ppt_controller.h"
 
 #include <cctype>
+#include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -9,10 +11,14 @@
 #include <sstream>
 #include <vector>
 
+#include <curl/curl.h>
+
 #include "logger.h"
 #include "models/outline_item.h"
 
 namespace {
+constexpr int kTemplateAnalysisVersion = 2;
+constexpr int kLayoutGuideCacheVersion = 2;
 
 std::string FormatTimestamp(std::uint64_t seconds) {
   if (seconds == 0) {
@@ -60,6 +66,209 @@ std::string SanitizeFilenamePart(const std::string& value, std::size_t max_len) 
     result.resize(max_len);
   }
   return result;
+}
+
+std::uint64_t FileMtimeSeconds(const std::filesystem::path& path) {
+  std::error_code ec;
+  const auto ftime = std::filesystem::last_write_time(path, ec);
+  if (ec) {
+    return 0;
+  }
+  const auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+      ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(sctp.time_since_epoch()).count());
+}
+
+bool ReadJsonFile(const std::filesystem::path& path, nlohmann::json& out) {
+  std::ifstream input(path);
+  if (!input.is_open()) {
+    return false;
+  }
+  try {
+    input >> out;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool WriteJsonFile(const std::filesystem::path& path, const nlohmann::json& data) {
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream output(path);
+  if (!output.is_open()) {
+    return false;
+  }
+  output << data.dump();
+  return true;
+}
+
+std::filesystem::path BuildTemplateAnalysisDir(const GenerationConfig& config) {
+  if (!config.template_analysis_dir.empty()) {
+    return std::filesystem::path(config.template_analysis_dir);
+  }
+  return std::filesystem::path("assets/template_analysis");
+}
+
+std::filesystem::path BuildTemplateAnalysisPath(const GenerationConfig& config,
+                                                const std::string& template_id) {
+  const auto safe_id = SanitizeFilenamePart(template_id, 80);
+  return BuildTemplateAnalysisDir(config) / (safe_id + ".analysis.json");
+}
+
+std::filesystem::path BuildTemplateLayoutPath(const GenerationConfig& config,
+                                              const std::string& template_id,
+                                              int slide_count) {
+  const auto safe_id = SanitizeFilenamePart(template_id, 80);
+  return BuildTemplateAnalysisDir(config) /
+         (safe_id + ".layout_" + std::to_string(slide_count) + ".json");
+}
+
+bool AnalysisMatchesTemplate(const nlohmann::json& analysis,
+                             const std::filesystem::path& template_path) {
+  if (!analysis.is_object()) {
+    return false;
+  }
+  const int version = analysis.value("version", 0);
+  if (version != kTemplateAnalysisVersion) {
+    return false;
+  }
+  if (!analysis.contains("template") || !analysis["template"].is_object()) {
+    return false;
+  }
+  const auto& info = analysis["template"];
+  const auto mtime = info.value("mtime", 0ULL);
+  const auto size = info.value("size", 0ULL);
+  std::error_code ec;
+  const auto current_size = std::filesystem::file_size(template_path, ec);
+  const auto current_mtime = FileMtimeSeconds(template_path);
+  if (ec) {
+    return false;
+  }
+  return static_cast<std::uint64_t>(size) == static_cast<std::uint64_t>(current_size) &&
+         static_cast<std::uint64_t>(mtime) == static_cast<std::uint64_t>(current_mtime);
+}
+
+bool EnsureTemplateAnalysis(const GenerationConfig& config,
+                            const std::string& template_id,
+                            const std::string& template_path,
+                            nlohmann::json& out_analysis,
+                            std::string& error) {
+  const auto analysis_path = BuildTemplateAnalysisPath(config, template_id);
+  if (ReadJsonFile(analysis_path, out_analysis) &&
+      AnalysisMatchesTemplate(out_analysis, template_path)) {
+    return true;
+  }
+
+  if (config.python_binary.empty() || config.template_analyzer_script.empty()) {
+    error = "模板分析脚本未配置";
+    return false;
+  }
+  if (!std::filesystem::exists(config.template_analyzer_script)) {
+    error = "模板分析脚本不存在";
+    return false;
+  }
+  if (!std::filesystem::exists(template_path)) {
+    error = "模板文件不存在";
+    return false;
+  }
+
+  std::ostringstream command;
+  command << '"' << config.python_binary << '"'
+          << " \"" << config.template_analyzer_script << "\""
+          << " --template \"" << template_path << "\""
+          << " --output \"" << analysis_path.string() << "\"";
+
+  const int result = std::system(command.str().c_str());
+  if (result != 0) {
+    error = "模板分析脚本执行失败";
+    return false;
+  }
+  if (!ReadJsonFile(analysis_path, out_analysis)) {
+    error = "无法读取模板分析结果";
+    return false;
+  }
+  if (!AnalysisMatchesTemplate(out_analysis, template_path)) {
+    error = "模板分析结果与模板文件不匹配";
+    return false;
+  }
+  return true;
+}
+
+bool LoadLayoutGuide(const GenerationConfig& config,
+                     const std::string& template_id,
+                     const std::string& template_path,
+                     int slide_count,
+                     const std::string& template_hint,
+                     const nlohmann::json& analysis,
+                     const QwenClient& qwen_client,
+                     std::string& out_layout_json,
+                     std::string& error) {
+  const auto layout_path = BuildTemplateLayoutPath(config, template_id, slide_count);
+  nlohmann::json cached;
+  if (ReadJsonFile(layout_path, cached) && cached.is_object()) {
+    const int version = cached.value("version", 0);
+    const int cached_count = cached.value("slide_count", 0);
+    const bool count_ok = cached_count == slide_count;
+    bool template_ok = false;
+    if (cached.contains("template") && cached["template"].is_object()) {
+      const auto& info = cached["template"];
+      const auto mtime = info.value("mtime", 0ULL);
+      const auto size = info.value("size", 0ULL);
+      std::error_code ec;
+      const auto current_size = std::filesystem::file_size(template_path, ec);
+      const auto current_mtime = FileMtimeSeconds(template_path);
+      if (!ec && static_cast<std::uint64_t>(mtime) == static_cast<std::uint64_t>(current_mtime) &&
+          static_cast<std::uint64_t>(size) == static_cast<std::uint64_t>(current_size)) {
+        template_ok = true;
+      }
+    }
+    if (version == kLayoutGuideCacheVersion && count_ok && template_ok &&
+        cached.contains("layout_guide")) {
+      const auto& guide = cached["layout_guide"];
+      if (guide.is_array()) {
+        out_layout_json = guide.dump();
+        return true;
+      }
+    }
+  }
+
+  nlohmann::json summary = analysis.value("summary", nlohmann::json::object());
+  if (!summary.is_object()) {
+    summary = analysis;
+  }
+  std::string layout_json;
+  if (!qwen_client.GenerateLayoutGuide(summary.dump(), slide_count, template_hint,
+                                       layout_json, error)) {
+    return false;
+  }
+  nlohmann::json guide_json;
+  try {
+    guide_json = nlohmann::json::parse(layout_json);
+  } catch (...) {
+    error = "版式约束解析失败";
+    return false;
+  }
+  if (!guide_json.is_array()) {
+    error = "版式约束格式不正确";
+    return false;
+  }
+  const auto template_mtime = FileMtimeSeconds(template_path);
+  std::error_code ec;
+  const auto template_size = std::filesystem::file_size(template_path, ec);
+  if (ec) {
+    return false;
+  }
+  nlohmann::json payload = {
+      {"version", kLayoutGuideCacheVersion},
+      {"template", {{"id", template_id}, {"mtime", template_mtime}, {"size", template_size}}},
+      {"slide_count", slide_count},
+      {"layout_guide", guide_json},
+  };
+  WriteJsonFile(layout_path, payload);
+  out_layout_json = guide_json.dump();
+  return true;
 }
 
 nlohmann::json RequestToJson(const PptRequest& request, const std::string& download_url = {}) {
@@ -170,6 +379,9 @@ nlohmann::json SlideToJson(const SlideContent& slide,
   if (!slide.bullets.empty()) {
     result["bullets"] = slide.bullets;
   }
+  if (!slide.bullet_groups.empty()) {
+    result["bulletGroups"] = slide.bullet_groups;
+  }
 
   if (layout) {
     result["layout"] = {
@@ -236,6 +448,165 @@ std::string BuildOutputPath(const GenerationConfig& config,
   filename += "_" + std::to_string(request_id) + ".pptx";
   std::filesystem::path filepath = filename;
   return (output_dir / filepath).lexically_normal().string();
+}
+
+std::string BuildImageDir(const GenerationConfig& config, std::uint64_t request_id) {
+  std::filesystem::path image_dir(config.image_dir);
+  std::error_code ec;
+  std::filesystem::create_directories(image_dir, ec);
+  image_dir /= std::to_string(request_id);
+  std::filesystem::create_directories(image_dir, ec);
+  return image_dir.lexically_normal().string();
+}
+
+std::string BuildImagePath(const GenerationConfig& config,
+                           std::uint64_t request_id,
+                           std::size_t slide_index,
+                           std::size_t image_index,
+                           const std::string& ext = ".png") {
+  std::filesystem::path dir(BuildImageDir(config, request_id));
+  std::ostringstream name;
+  name << "slide_" << (slide_index + 1) << "_img_" << (image_index + 1) << ext;
+  return (dir / name.str()).lexically_normal().string();
+}
+
+size_t WriteFileCallback(void* contents, size_t size, size_t nmemb, void* userp) {
+  auto* file = static_cast<std::ofstream*>(userp);
+  const auto total = size * nmemb;
+  file->write(static_cast<const char*>(contents), static_cast<std::streamsize>(total));
+  return total;
+}
+
+bool DownloadToFile(const std::string& url,
+                    const std::string& path,
+                    std::uint32_t timeout_seconds,
+                    std::string& error) {
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    error = "无法初始化HTTP客户端";
+    return false;
+  }
+  std::ofstream output(path, std::ios::binary);
+  if (!output.is_open()) {
+    curl_easy_cleanup(curl);
+    error = "无法写入图片文件";
+    return false;
+  }
+
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteFileCallback);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &output);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+
+  CURLcode res = curl_easy_perform(curl);
+  long http_code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+  curl_easy_cleanup(curl);
+  output.close();
+
+  if (res != CURLE_OK) {
+    error = curl_easy_strerror(res);
+    return false;
+  }
+  if (http_code < 200 || http_code >= 300) {
+    error = "下载图片失败，HTTP " + std::to_string(http_code);
+    return false;
+  }
+  return true;
+}
+
+std::vector<unsigned char> Base64Decode(const std::string& input) {
+  static const std::string kBase64Chars =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::vector<unsigned char> output;
+  int val = 0;
+  int valb = -8;
+  for (unsigned char c : input) {
+    if (std::isspace(c)) {
+      continue;
+    }
+    if (c == '=') {
+      break;
+    }
+    const auto pos = kBase64Chars.find(c);
+    if (pos == std::string::npos) {
+      continue;
+    }
+    val = (val << 6) + static_cast<int>(pos);
+    valb += 6;
+    if (valb >= 0) {
+      output.push_back(static_cast<unsigned char>((val >> valb) & 0xFF));
+      valb -= 8;
+    }
+  }
+  return output;
+}
+
+bool WriteBinaryFile(const std::string& path, const std::vector<unsigned char>& data) {
+  std::ofstream output(path, std::ios::binary);
+  if (!output.is_open()) {
+    return false;
+  }
+  output.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+  return output.good();
+}
+
+void AttachImagesToSlides(const GenerationConfig& config,
+                          DoubaoImageClient& client,
+                          std::vector<SlideContent>& slides,
+                          std::uint64_t request_id,
+                          const std::string& topic) {
+  if (!client.IsEnabled()) {
+    return;
+  }
+
+  for (std::size_t i = 0; i < slides.size(); ++i) {
+    auto& slide = slides[i];
+    if (slide.image_prompts.empty()) {
+      if (!slide.title.empty()) {
+        slide.image_prompts.push_back(slide.title + " 场景");
+      } else if (!topic.empty()) {
+        slide.image_prompts.push_back(topic + " 场景");
+      }
+    }
+    if (slide.image_prompts.empty()) {
+      continue;
+    }
+
+    std::vector<DoubaoImageAsset> assets;
+    std::string error;
+    if (!client.GenerateImages(slide.image_prompts.front(), assets, error)) {
+      Logger::Warn("Doubao image generation failed: " + error);
+      continue;
+    }
+
+    const auto timeout = client.timeout_seconds();
+    for (std::size_t j = 0; j < assets.size(); ++j) {
+      const auto image_path = BuildImagePath(config, request_id, i, j);
+      bool saved = false;
+      std::string save_error;
+      if (!assets[j].b64_json.empty()) {
+        const auto data = Base64Decode(assets[j].b64_json);
+        saved = !data.empty() && WriteBinaryFile(image_path, data);
+        if (!saved) {
+          save_error = "base64解码失败";
+        }
+      } else if (!assets[j].url.empty()) {
+        saved = DownloadToFile(assets[j].url, image_path, timeout, save_error);
+      }
+
+      if (saved) {
+        slide.image_paths.push_back(image_path);
+        if (!assets[j].url.empty()) {
+          slide.image_urls.push_back(assets[j].url);
+        }
+      } else {
+        Logger::Warn("Image download failed: " + save_error);
+      }
+    }
+  }
 }
 
 std::string BuildObjectKey(const GenerationConfig& config, const std::string& output_path) {
@@ -394,14 +765,16 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
                            std::shared_ptr<TemplateService> template_service,
                            GenerationConfig generation_config,
                            std::shared_ptr<QwenClient> qwen_client,
-                           std::shared_ptr<S3Client> s3_client)
+                           std::shared_ptr<S3Client> s3_client,
+                           std::shared_ptr<DoubaoImageClient> doubao_client)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
       template_service_(std::move(template_service)),
       generation_config_(std::move(generation_config)),
       qwen_client_(std::move(qwen_client)),
-      s3_client_(std::move(s3_client)) {}
+      s3_client_(std::move(s3_client)),
+      doubao_client_(std::move(doubao_client)) {}
 
 HttpResponse PptController::Generate(const HttpRequest& request) {
   std::string error;
@@ -461,6 +834,21 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     }
 
     nlohmann::json payload{{"request", RequestToJson(ppt_request)}};
+    std::optional<std::string> template_file;
+    nlohmann::json template_analysis;
+    bool has_template_analysis = false;
+    if (qwen_client_ && qwen_client_->IsEnabled()) {
+      template_file = template_service_->GetLocalFile(template_info_opt->id);
+      if (template_file) {
+        std::string analysis_error;
+        if (EnsureTemplateAnalysis(generation_config_, template_info_opt->id, *template_file,
+                                   template_analysis, analysis_error)) {
+          has_template_analysis = true;
+        } else {
+          Logger::Warn("Template analysis failed: " + analysis_error);
+        }
+      }
+    }
     if (input.model_id == "qwen-turbo" && qwen_client_ && qwen_client_->IsEnabled()) {
       std::vector<OutlineItem> outline = input.outline;
       if (!outline.empty() && static_cast<int>(outline.size()) > input.pages) {
@@ -478,8 +866,23 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
         }
       }
 
+      std::string layout_guide_json;
+      const int layout_slide_count = outline.empty()
+                                         ? std::max(1, std::min(input.pages, 10))
+                                         : static_cast<int>(outline.size());
+      if (has_template_analysis && layout_slide_count > 0) {
+        std::string layout_error;
+        if (!LoadLayoutGuide(generation_config_, template_info_opt->id, *template_file,
+                             layout_slide_count, template_prompt, template_analysis,
+                             *qwen_client_, layout_guide_json, layout_error)) {
+          Logger::Warn("Layout guide generation failed: " + layout_error);
+          layout_guide_json.clear();
+        }
+      }
+
       if (!outline.empty()) {
-        if (qwen_client_->GenerateSlidesFromOutline(input.topic, outline, input.include_images, slides, qwen_error)) {
+        if (qwen_client_->GenerateSlidesFromOutlineWithLayout(input.topic, outline, input.include_images,
+                                                              layout_guide_json, slides, qwen_error)) {
           generated = true;
         } else {
           Logger::Warn("PPT content generation from outline failed: " + qwen_error);
@@ -489,7 +892,9 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
       }
 
       if (!generated) {
-        if (qwen_client_->GenerateSlides(input.topic, input.pages, template_prompt, input.include_images, slides, qwen_error)) {
+        if (qwen_client_->GenerateSlidesWithLayout(input.topic, input.pages, template_prompt,
+                                                   input.include_images, layout_guide_json,
+                                                   slides, qwen_error)) {
           generated = true;
         }
       }
@@ -506,7 +911,10 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
           payload["preview"].push_back(SlideToJson(slides[i], layout, theme));
         }
 
-        const auto template_file = template_service_->GetLocalFile(template_info_opt->id);
+        if (input.include_images && doubao_client_ && doubao_client_->IsEnabled()) {
+          AttachImagesToSlides(generation_config_, *doubao_client_, slides, ppt_request.id, input.topic);
+        }
+
         if (!template_file) {
           Logger::Warn("Template file missing or invalid for id: " + template_info_opt->id +
                        ", local=" + template_info_opt->local_file_path);
