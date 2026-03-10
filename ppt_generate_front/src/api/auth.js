@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { ElMessage } from 'element-plus'
 
 const API_URL = import.meta.env.VITE_API_URL || '/api'
 
@@ -16,6 +17,31 @@ export const setAuthToken = (token) => {
   } else {
     delete apiClient.defaults.headers.common.Authorization
   }
+}
+
+/** 从 axios 错误中解析用户可读文案，挂到 error.userMessage 供业务使用 */
+export function getErrorMessage(error) {
+  if (!error) return '请求失败，请稍后重试'
+  const data = error.response?.data
+  if (data && typeof data.message === 'string' && data.message.trim()) {
+    return data.message.trim()
+  }
+  if (error.response) {
+    const status = error.response.status
+    const map = {
+      400: '请求参数有误，请检查后重试',
+      403: '没有权限执行该操作',
+      404: '请求的资源不存在',
+      409: '操作冲突，请稍后重试',
+      422: '请求无法处理，请检查输入',
+      500: '服务暂时不可用，请稍后重试'
+    }
+    return map[status] || `请求失败（${status}），请稍后重试`
+  }
+  if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+    return '请求超时，请检查网络后重试'
+  }
+  return '网络异常，请检查网络后重试'
 }
 
 const savedToken = localStorage.getItem('token') || sessionStorage.getItem('token')
@@ -37,10 +63,13 @@ apiClient.interceptors.request.use(
   }
 )
 
-// 响应拦截器
+// 响应拦截器：统一挂载 userMessage，401 清 token 并跳转，其它错误统一 ElMessage
 apiClient.interceptors.response.use(
   response => response,
   error => {
+    const userMessage = getErrorMessage(error)
+    error.userMessage = userMessage
+
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       sessionStorage.removeItem('token')
@@ -48,6 +77,8 @@ apiClient.interceptors.response.use(
       if (path !== '/login' && path !== '/register') {
         window.location.href = '/login'
       }
+    } else {
+      ElMessage.error(userMessage)
     }
     return Promise.reject(error)
   }

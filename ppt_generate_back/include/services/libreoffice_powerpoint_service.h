@@ -10,6 +10,9 @@ struct LibreOfficeRuntimeOptions {
     std::string python_binary = "python3";
     std::string builder_script;
     std::string soffice_binary = "soffice";
+    std::string builder_mode = "python";
+    std::string node_binary = "node";
+    std::string pptxgen_builder_script;
 };
 
 /**
@@ -32,10 +35,11 @@ public:
                    const std::string& secondary_color,
                    const std::string& accent_color) override;
 
-    bool Save(const std::string& ppt_path) override;
+    bool Save(const std::string& ppt_path, const std::string& layout_guide_json = "",
+             const std::string& options_json = "") override;
 
 private:
-    bool EnsurePathsReady(std::string& error) const;
+    bool EnsurePathsReady(std::string& error, const std::string& effective_builder_mode = "") const;
 
     LibreOfficeRuntimeOptions options_;
     std::string template_path_;

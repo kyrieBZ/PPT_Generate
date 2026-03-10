@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 import zipfile
@@ -10,13 +12,17 @@ import tempfile
 import urllib.request
 
 try:
-    from pptx import Presentation
+from pptx import Presentation
     from pptx.enum.dml import MSO_COLOR_TYPE
     from pptx.enum.shapes import PP_PLACEHOLDER
     try:
         from pptx.enum.text import MSO_AUTO_SIZE
     except ImportError:
         MSO_AUTO_SIZE = None
+    try:
+        from pptx.util import Inches
+    except ImportError:
+        Inches = None
 except ImportError as exc:
     print("python-pptx is required. Install with: pip install python-pptx", file=sys.stderr)
     raise
@@ -266,6 +272,38 @@ def pick_layout_index(slide_data, layout_profiles, default_index):
     else:
         desired_total_lines = len(bullets)
     desired_has_image = bool(parse_image_prompts(slide_data))
+
+    best_index = default_index
+    best_score = None
+    for profile in layout_profiles:
+        score = 0
+        score += abs(profile["body_columns"] - desired_columns) * 10
+        if desired_has_image and not profile["has_image"]:
+            score += 15
+        elif not desired_has_image and profile["has_image"]:
+            score += 3
+        if profile["title_count"] == 0:
+            score += 5
+        if desired_total_lines and profile["total_lines"] < desired_total_lines:
+            score += (desired_total_lines - profile["total_lines"]) * 2
+        if profile["body_columns"] > desired_columns:
+            score += (profile["body_columns"] - desired_columns) * 2
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_index = profile["index"]
+    return best_index
+
+
+def pick_layout_index_from_guide(guide_page, layout_profiles, default_index, desired_has_image=False):
+    """Choose layout index from layout_guide page (groups count, etc.). Used when payload has layout_guide."""
+    if not layout_profiles:
+        return default_index
+    groups = guide_page.get("groups") if isinstance(guide_page, dict) else []
+    desired_columns = len(groups) if groups else 1
+    desired_total_lines = sum(
+        int(g.get("max_bullets", 1)) for g in groups if isinstance(g, dict)
+    ) if groups else 1
 
     best_index = default_index
     best_score = None
@@ -741,12 +779,48 @@ def split_bullets(bullets, buckets):
     return result
 
 
-def build_presentation(template_path, output_path, payload):
+# Placeholder-like patterns to detect unfilled template text (3.4 post-build QA)
+_PLACEHOLDER_PATTERNS = re.compile(
+    r"xxxx|lorem\s+ipsum|Click to add|此页版式|点击添加|\[.*占位.*\]",
+    re.IGNORECASE,
+)
+
+
+def run_placeholder_qa(output_path, strict_qa=False):
+    """Run markitdown on output PPTX and grep for placeholder-like text; log warnings or exit non-zero if --strict-qa."""
+    if not output_path or not os.path.isfile(output_path):
+        return
+    try:
+        out = subprocess.run(
+            [sys.executable, "-m", "markitdown", output_path],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+        print(f"PPT_QA: skipped (markitdown not run): {e}", file=sys.stderr)
+        return
+    text = (out.stdout or "") + (out.stderr or "")
+    hits = _PLACEHOLDER_PATTERNS.findall(text)
+    if hits:
+        unique = list(dict.fromkeys(hits))
+        msg = f"PPT_QA: possible placeholder left in output: {unique}"
+        print(msg, file=sys.stderr)
+        if strict_qa:
+            sys.exit(1)
+    return
+
+
+def build_presentation(template_path, output_path, payload, strict_qa=False):
     _log(f"build_presentation template={template_path} output={output_path}")
+    strict_qa = strict_qa or bool(payload.get("strictQa", False))
     pres = Presentation(template_path)
 
     slides = payload.get("slides", [])
     layout_mode = payload.get("layoutMode", "template")
+    layout_guide = payload.get("layout_guide")  # optional: list of per-slide layout constraints from backend
+    if not isinstance(layout_guide, list):
+        layout_guide = []
     clean_template_text = bool(payload.get("cleanTemplateText", False))
     layouts = pres.slide_layouts
     temp_files = []
@@ -764,6 +838,8 @@ def build_presentation(template_path, output_path, payload):
         layout_profiles = fallback_profiles
 
     existing_count = len(pres.slides)
+    # In template mode with existing slides: fill them to preserve background; only add new if needed.
+    use_existing_slides = layout_mode == "template" and existing_count > 0
 
     for idx, slide_data in enumerate(slides):
         _log(f"slide[{idx}] begin")
@@ -784,9 +860,16 @@ def build_presentation(template_path, output_path, payload):
 
         image_sources = resolve_image_sources(slide_data, temp_files)
 
-        layout_index = 0
+        default_layout_index = (
+            layout_profiles[min(1, len(layout_profiles) - 1)]["index"]
+            if layout_profiles
+            else min(1, len(layouts) - 1)
+        )
+        layout_index = default_layout_index
         if len(layouts) > 0:
-            if layout_mode == "sequential":
+            if layout_mode == "template":
+                layout_index = fallback_profiles[idx % len(fallback_profiles)]["index"]
+            elif layout_mode == "sequential":
                 if layout_profiles:
                     layout_index = layout_profiles[idx % len(layout_profiles)]["index"]
                 else:
@@ -795,11 +878,13 @@ def build_presentation(template_path, output_path, payload):
                 layout_index = pick_layout_index(
                     slide_data,
                     layout_profiles,
-                    layout_profiles[min(1, len(layout_profiles) - 1)]["index"]
-                    if layout_profiles
-                    else min(1, len(layouts) - 1),
+                    default_layout_index,
                 )
-        slide = pres.slides.add_slide(layouts[layout_index])
+
+        if use_existing_slides and idx < existing_count:
+            slide = pres.slides[idx]
+        else:
+            slide = pres.slides.add_slide(layouts[layout_index])
 
         overflow, title_shape, used_placeholder_tokens = fill_slide_text(
             slide, title, bullets, bullet_groups
@@ -818,32 +903,50 @@ def build_presentation(template_path, output_path, payload):
 
         if image_sources:
             image_placeholders = collect_image_placeholders(slide, title_shape)
-            for index, image_path in enumerate(image_sources):
-                if index >= len(image_placeholders):
-                    break
-                placeholder = image_placeholders[index]
-                try:
-                    if hasattr(placeholder, "insert_picture"):
-                        placeholder.insert_picture(image_path)
-                    else:
-                        slide.shapes.add_picture(
-                            image_path,
-                            placeholder.left,
-                            placeholder.top,
-                            placeholder.width,
-                            placeholder.height,
-                        )
-                except Exception:
+            if image_placeholders:
+                for index, image_path in enumerate(image_sources):
+                    if index >= len(image_placeholders):
+                        break
+                    placeholder = image_placeholders[index]
                     try:
-                        slide.shapes.add_picture(
-                            image_path,
-                            placeholder.left,
-                            placeholder.top,
-                            placeholder.width,
-                            placeholder.height,
-                        )
+                        if hasattr(placeholder, "insert_picture"):
+                            placeholder.insert_picture(image_path)
+                        else:
+                            slide.shapes.add_picture(
+                                image_path,
+                                placeholder.left,
+                                placeholder.top,
+                                placeholder.width,
+                                placeholder.height,
+                            )
                     except Exception:
-                        pass
+                        try:
+                            slide.shapes.add_picture(
+                                image_path,
+                                placeholder.left,
+                                placeholder.top,
+                                placeholder.width,
+                                placeholder.height,
+                            )
+                        except Exception:
+                            pass
+            else:
+                # 模板没有图片占位符时，直接在右侧插入一张配图
+                for image_path in image_sources:
+                    try:
+                        if Inches is not None:
+                            # 标准 16:9 页面宽 10 英寸、高 5.625 英寸
+                            left = Inches(5.5)
+                            top = Inches(1.0)
+                            width = Inches(3.5)
+                            height = Inches(3.5)
+                            slide.shapes.add_picture(image_path, left, top, width, height)
+                        else:
+                            # 回退：不指定大小和位置，交给 pptx 默认处理
+                            slide.shapes.add_picture(image_path)
+                        break
+                    except Exception:
+                        continue
 
         notes = slide_data.get("notes", "")
         if notes:
@@ -912,8 +1015,14 @@ def build_presentation(template_path, output_path, payload):
         _log(f"slide[{idx}] end")
 
     if existing_count > 0:
-        for index in range(existing_count - 1, -1, -1):
-            delete_slide(pres, index)
+        if use_existing_slides:
+            if len(slides) < existing_count:
+                for index in range(existing_count - 1, len(slides) - 1, -1):
+                    if index >= 0:
+                        delete_slide(pres, index)
+        else:
+            for index in range(existing_count - 1, -1, -1):
+                delete_slide(pres, index)
 
     pres.save(output_path)
     for temp_path in temp_files:
@@ -921,6 +1030,7 @@ def build_presentation(template_path, output_path, payload):
             os.remove(temp_path)
         except Exception:
             pass
+    run_placeholder_qa(output_path, strict_qa=strict_qa)
     _log("build_presentation done")
 
 
@@ -929,6 +1039,7 @@ def main():
     parser.add_argument("--template", required=True, help="Path to PPTX template")
     parser.add_argument("--output", required=True, help="Path to output PPTX")
     parser.add_argument("--data-json", required=True, help="Path to JSON payload")
+    parser.add_argument("--strict-qa", action="store_true", help="Exit non-zero if placeholder-like text is found in output")
     args = parser.parse_args()
 
     template_path = Path(args.template)
@@ -950,7 +1061,7 @@ def main():
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        build_presentation(str(template_path), str(output_path), payload)
+        build_presentation(str(template_path), str(output_path), payload, strict_qa=getattr(args, "strict_qa", False))
     except Exception as exc:
         print(f"Failed to build presentation: {exc}", file=sys.stderr)
         raise

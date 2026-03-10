@@ -23,10 +23,12 @@ onMounted(() => {
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-  line-height: 1.6;
-  color: #333;
+  font-family: 'Plus Jakarta Sans', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+  line-height: var(--line-height-body, 1.55);
+  color: var(--color-text);
+  background-color: var(--color-bg-page);
 }
+
 
 #app {
   min-height: 100vh;

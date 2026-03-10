@@ -17,6 +17,8 @@ struct DatabaseConfig {
   std::string password;
   std::string name;
   std::size_t pool_size = 8;
+  /** 单次查询读/写超时（秒），0 表示不设置 */
+  std::uint32_t query_timeout_seconds = 30;
 };
 
 struct AuthConfig {
@@ -45,6 +47,14 @@ struct ProviderConfig {
   std::string doubao_image_response_format = "url";
   std::uint32_t doubao_image_count = 1;
   std::uint32_t doubao_timeout_seconds = 30;
+  /** 通义千问 HTTP 请求超时（秒），0 表示使用默认 60 */
+  std::uint32_t qwen_timeout_seconds = 60;
+  /** 通义万象（万相）文生图：异步任务创建接口，空则用默认 DashScope 地址 */
+  std::string wanx_image_endpoint;
+  /** 通义万象模型名，如 wan2.6-image */
+  std::string wanx_image_model = "wan2.6-image";
+  /** 通义万象轮询超时（秒），含创建+轮询总时间 */
+  std::uint32_t wanx_timeout_seconds = 120;
 };
 
 struct EmailConfig {
@@ -66,6 +76,10 @@ struct GenerationConfig {
   std::string template_analyzer_script = "scripts/ppt_template_analyzer.py";
   std::string template_analysis_dir = "assets/template_analysis";
   std::string soffice_binary = "soffice";
+  // PptxGenJS from-scratch builder (scheme B)
+  std::string builder_mode = "python";
+  std::string node_binary = "node";
+  std::string pptxgen_builder_script = "scripts/pptxgen_builder.js";
 };
 
 struct S3Config {

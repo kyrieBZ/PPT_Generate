@@ -505,7 +505,7 @@ const chartOptions = computed(() => {
   return options
 })
 
-const palette = ['#2563eb', '#10b981', '#f97316', '#f43f5e', '#8b5cf6', '#0ea5e9']
+const palette = ['#0EA5E9', '#10b981', '#f97316', '#38BDF8', '#0284C7', '#0ea5e9']
 
 const axisStyle = {
   axisLine: { lineStyle: { color: 'rgba(148,163,184,0.5)' } },
@@ -814,7 +814,8 @@ const loadMetrics = async () => {
     const response = await adminAPI.metrics({ range: timeRange.value })
     applyMetrics(response.data || {})
   } catch (error) {
-    console.error('获取后台统计失败:', error)
+    // 拦截器已统一 ElMessage
+    console.error('获取后台统计失败:', error?.userMessage || error)
   } finally {
     metricsLoading.value = false
   }
@@ -826,7 +827,8 @@ const loadUsers = async () => {
     const response = await adminAPI.users()
     users.value = response.data?.items || []
   } catch (error) {
-    console.error('获取用户列表失败:', error)
+    // 拦截器已统一 ElMessage
+    console.error('获取用户列表失败:', error?.userMessage || error)
   } finally {
     usersLoading.value = false
   }
@@ -852,7 +854,8 @@ const toggleUserStatus = async (user) => {
     ElMessage.success(nextDisabled ? '用户已禁用' : '用户已启用')
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
-      ElMessage.error(error?.response?.data?.message || '操作失败')
+      // 拦截器已统一 ElMessage，此处仅记录
+      console.error('更新用户状态失败:', error?.userMessage || error?.response?.data?.message)
     }
   }
 }
@@ -920,25 +923,25 @@ onMounted(() => {
 </script>
 
 <style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
 
 .admin-shell {
   min-height: 100vh;
   display: grid;
   grid-template-columns: 280px 1fr;
-  background: radial-gradient(circle at top, rgba(37, 99, 235, 0.12), transparent 50%),
-    linear-gradient(135deg, #f8fafc 0%, #eef2ff 45%, #fdf2f8 100%);
-  font-family: 'Space Grotesk', 'Noto Sans SC', 'PingFang SC', sans-serif;
+  background: radial-gradient(circle at top, rgba(14, 165, 233, 0.12), transparent 50%),
+    linear-gradient(135deg, #f8fafc 0%, #f0f9ff 45%, #e0f2fe 100%);
+  font-family: 'Plus Jakarta Sans', 'Noto Sans SC', 'PingFang SC', sans-serif;
   color: #0f172a;
 }
 
 .admin-sidebar {
-  padding: 32px 24px;
+  padding: var(--space-xl) var(--space-lg);
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.95), rgba(15, 23, 42, 0.9));
   color: #e2e8f0;
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: var(--space-xl);
   position: relative;
   overflow: hidden;
 }
@@ -973,10 +976,10 @@ onMounted(() => {
 .admin-user {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 16px;
+  gap: var(--space-md);
+  padding: var(--space-md);
   background: rgba(148, 163, 184, 0.12);
-  border-radius: 18px;
+  border-radius: var(--radius-card);
   position: relative;
   z-index: 1;
 }
@@ -984,8 +987,8 @@ onMounted(() => {
 .admin-avatar {
   width: 46px;
   height: 46px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #38bdf8, #6366f1);
+  border-radius: var(--radius-card);
+  background: linear-gradient(135deg, #38bdf8, #0EA5E9);
   display: grid;
   place-items: center;
   font-weight: 700;
@@ -1020,20 +1023,20 @@ onMounted(() => {
   border: none;
   background: rgba(148, 163, 184, 0.08);
   color: #e2e8f0;
-  padding: 14px 16px;
-  border-radius: 14px;
+  padding: var(--space-md);
+  border-radius: var(--radius-card);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-sm);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background var(--transition-default), color var(--transition-default), transform var(--transition-default);
   text-align: left;
   position: relative;
 }
 
 .nav-item:hover:not(.disabled),
 .nav-item.active {
-  background: rgba(59, 130, 246, 0.2);
+  background: rgba(14, 165, 233, 0.2);
   color: #ffffff;
   transform: translateX(4px);
 }
@@ -1074,16 +1077,16 @@ onMounted(() => {
 
 .back-btn {
   width: 100%;
-  padding: 12px 16px;
-  border-radius: 14px;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-card);
   border: 1px solid rgba(148, 163, 184, 0.3);
   background: transparent;
   color: #e2e8f0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-xs);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background var(--transition-default), color var(--transition-default);
 }
 
 .back-btn:hover {
@@ -1091,31 +1094,34 @@ onMounted(() => {
 }
 
 .admin-main {
-  padding: 32px 40px 40px;
+  padding: var(--space-xl) var(--space-2xl);
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: var(--space-xl);
 }
 
 .admin-topbar {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 20px;
+  gap: var(--space-lg);
 }
 
 .admin-topbar h1 {
-  font-size: 2.2rem;
-  margin-bottom: 6px;
+  font-size: var(--text-title-page);
+  font-weight: 600;
+  margin-bottom: var(--space-xs);
+  line-height: var(--line-height-tight);
 }
 
 .admin-topbar p {
-  color: #475569;
+  color: var(--color-text-muted);
+  font-size: var(--text-caption);
 }
 
 .top-actions {
   display: flex;
-  gap: 12px;
+  gap: var(--space-sm);
   flex-wrap: wrap;
 }
 
@@ -1164,45 +1170,53 @@ onMounted(() => {
 }
 
 .meta-chip.accent {
-  background: rgba(37, 99, 235, 0.15);
-  color: #1d4ed8;
+  background: rgba(14, 165, 233, 0.15);
+  color: #0284C7;
 }
 
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
+  gap: var(--space-md);
 }
 
 .stat-card {
-  padding: 18px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(148, 163, 184, 0.3);
+  padding: var(--space-lg);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-card);
+  border: 1px solid rgba(0, 0, 0, 0.06);
   display: flex;
-  gap: 14px;
+  gap: var(--space-md);
   align-items: center;
-  box-shadow: 0 18px 30px rgba(15, 23, 42, 0.08);
+  box-shadow: var(--shadow-card);
+  transition: box-shadow var(--transition-default), transform var(--transition-default);
+}
+
+.stat-card:hover {
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-2px);
 }
 
 .stat-icon {
   width: 48px;
   height: 48px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #38bdf8, #6366f1);
+  border-radius: var(--radius-card);
+  background: linear-gradient(135deg, #38bdf8, #0EA5E9);
   display: grid;
   place-items: center;
   color: #0f172a;
 }
 
 .stat-info h3 {
-  font-size: 1.6rem;
-  margin: 4px 0;
+  font-size: var(--text-kpi);
+  font-weight: 700;
+  margin: var(--space-xs) 0;
+  line-height: var(--line-height-tight);
 }
 
 .stat-info p {
-  color: #64748b;
-  font-size: 0.9rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-caption);
 }
 
 .stat-footnote {
@@ -1217,15 +1231,15 @@ onMounted(() => {
 }
 
 .insight-card {
-  padding: 20px;
-  border-radius: 18px;
+  padding: var(--space-lg);
+  border-radius: var(--radius-card);
   background: rgba(15, 23, 42, 0.9);
   color: #e2e8f0;
-  box-shadow: 0 20px 35px rgba(15, 23, 42, 0.2);
+  box-shadow: var(--shadow-card);
 }
 
 .insight-card.accent {
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  background: linear-gradient(135deg, #0EA5E9, #38BDF8);
 }
 
 .insight-card h3 {
@@ -1279,16 +1293,20 @@ onMounted(() => {
 }
 
 .dashboard-card {
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 20px;
-  padding: 20px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+  background: var(--color-bg-card);
+  border-radius: var(--radius-card);
+  padding: var(--space-lg);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow-card);
   display: grid;
   grid-template-rows: auto 1fr auto;
-  gap: 14px;
+  gap: var(--space-md);
   min-height: 380px;
-  transition: transform 0.2s ease;
+  transition: box-shadow var(--transition-default), transform var(--transition-default);
+}
+
+.dashboard-card:hover {
+  box-shadow: var(--shadow-card-hover);
 }
 
 .dashboard-card.dragging {
@@ -1364,8 +1382,14 @@ onMounted(() => {
 }
 
 .records-table-card {
-  border-radius: 18px;
+  border-radius: var(--radius-card);
   overflow: hidden;
+  box-shadow: var(--shadow-card);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.records-table-card :deep(.el-table tbody tr:hover) {
+  background: rgba(14, 165, 233, 0.04);
 }
 
 .pagination-bar {

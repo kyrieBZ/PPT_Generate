@@ -15,6 +15,7 @@ const normalizeRequest = (item = {}) => {
   const id = item.id ?? 0
   const hasFile = Boolean(item.hasFile ?? item.has_file)
   const downloadUrl = item.downloadUrl ?? item.download_url ?? (hasFile && id ? `/api/ppt/file?id=${id}` : '')
+  const downloadUrlPdf = item.downloadUrlPdf ?? item.download_url_pdf ?? (hasFile && id ? `/api/ppt/file?id=${id}&format=pdf` : '')
   return {
     id,
     userId: item.user_id ?? item.userId ?? 0,
@@ -33,7 +34,8 @@ const normalizeRequest = (item = {}) => {
     createdAt: item.createdAt ?? item.created_at ?? '',
     updatedAt: item.updatedAt ?? item.updated_at ?? '',
     hasFile,
-    downloadUrl
+    downloadUrl,
+    downloadUrlPdf
   }
 }
 
@@ -222,19 +224,48 @@ export default createStore({
         return title.includes(lower) || topic.includes(lower) || userName.includes(lower) || userEmail.includes(lower)
       })
     },
-    async createPptRequest({ commit, state }, payload) {
+    async createPptRequest({ commit, state, dispatch }, payload) {
       const body = { ...payload }
       if (!body.modelId) {
         body.modelId = state.selectedModel || 'qwen-turbo'
       }
       const response = await pptAPI.generate(body)
-      const preview = response.data?.preview || null
-      if (response.data?.request) {
-        const normalized = normalizeRequest(response.data.request)
-        commit('prependPptRequest', normalized)
-        return { request: normalized, preview }
+      const request = response.data?.request
+      if (!request) {
+        return {}
       }
-      return { preview }
+      const normalized = normalizeRequest(request)
+      commit('prependPptRequest', normalized)
+
+      const isAsync = response.status === 202 || normalized.status === 'pending' || normalized.status === 'processing'
+      if (!isAsync) {
+        return { request: normalized, preview: response.data?.preview || null }
+      }
+
+      const pollIntervalMs = 2000
+      const timeoutMs = 300000
+      const start = Date.now()
+      while (Date.now() - start < timeoutMs) {
+        await new Promise(r => setTimeout(r, pollIntervalMs))
+        try {
+          const res = await pptAPI.getRequest(request.id)
+          const req = res.data?.request
+          if (!req) continue
+          const status = req.status
+          if (status === 'completed') {
+            await dispatch('fetchPptHistory')
+            return { request: normalizeRequest(req), preview: null }
+          }
+          if (status === 'failed') {
+            await dispatch('fetchPptHistory')
+            throw new Error('PPT 生成失败')
+          }
+        } catch (err) {
+          if (err?.message === 'PPT 生成失败') throw err
+        }
+      }
+      await dispatch('fetchPptHistory')
+      throw new Error('生成超时，请稍后在历史记录中查看')
     },
     async fetchModels({ commit, state }) {
       if (state.models.length) {

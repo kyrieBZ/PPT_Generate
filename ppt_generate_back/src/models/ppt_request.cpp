@@ -93,7 +93,19 @@ PptRequestInput PptRequestInput::FromJson(const nlohmann::json& data) {
     input.model_id = model_id;
   }
   input.template_id = ReadString(data, "templateId", "template_id");
+  input.generate_mode = ReadString(data, "generateMode", "generate_mode");
+  if (input.generate_mode != "style") {
+    input.generate_mode = "template";
+  }
   input.outline = ReadOutline(data);
+  input.enable_section_slides = ReadBool(data, "enableSectionSlides", "enable_section_slides", input.enable_section_slides);
+  input.section_slide_interval = ReadInt(data, "sectionSlideInterval", "section_slide_interval", input.section_slide_interval);
+  if (input.section_slide_interval < 2) {
+    input.section_slide_interval = 2;
+  } else if (input.section_slide_interval > 10) {
+    input.section_slide_interval = 10;
+  }
+  input.theme_preset = ReadString(data, "themePreset", "theme_preset");
   input.pages = std::clamp(input.pages, 1, 50);
   return input;
 }

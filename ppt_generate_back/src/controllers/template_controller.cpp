@@ -4,6 +4,8 @@
 #include <fstream>
 #include <sstream>
 
+#include "http/http_types.h"
+
 TemplateController::TemplateController(std::shared_ptr<TemplateService> service)
     : service_(std::move(service)) {}
 
@@ -57,19 +59,19 @@ nlohmann::json TemplateController::ToJson(const RemoteTemplate& item) {
 HttpResponse TemplateController::Download(const HttpRequest& request) {
   const auto it = request.query_params.find("id");
   if (it == request.query_params.end() || it->second.empty()) {
-    return HttpResponse::Json(400, {{"message", "Template ID missing"}});
+    return HttpResponse::Json(400, ErrorJson("ERR_TEMPLATE_ID_MISSING", "Template ID missing"));
   }
   const auto template_info = service_->FindById(it->second);
   if (!template_info) {
-    return HttpResponse::Json(404, {{"message", "Template file does not exist"}});
+    return HttpResponse::Json(404, ErrorJson("ERR_TEMPLATE_NOT_FOUND", "Template file does not exist"));
   }
   auto local_file = service_->GetLocalFile(template_info->id);
   if (!local_file) {
-    return HttpResponse::Json(404, {{"message", "Template file is missing"}});  
+    return HttpResponse::Json(404, ErrorJson("ERR_TEMPLATE_FILE_MISSING", "Template file is missing"));
   }
   std::ifstream input(*local_file, std::ios::binary);
   if (!input.is_open()) {
-    return HttpResponse::Json(500, {{"message", "Cannot read template file"}});  
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
   }
   std::ostringstream buffer;
   buffer << input.rdbuf();

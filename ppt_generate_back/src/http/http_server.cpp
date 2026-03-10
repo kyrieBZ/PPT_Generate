@@ -209,6 +209,10 @@ bool HttpServer::ParseRequest(int client_fd, HttpRequest& request) {
             return false;
           }
         }
+        const std::string method_lower = string_utils::ToLower(request.method);
+        if (method_lower == "get" || method_lower == "head") {
+          content_length = 0;
+        }
       }
     }
 

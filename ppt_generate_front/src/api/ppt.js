@@ -4,6 +4,10 @@ export default {
   generate(payload) {
     return apiClient.post('/ppt/generate', payload)
   },
+  /** 轮询单条请求状态（用于异步生成），返回 { request } */
+  getRequest(id) {
+    return apiClient.get('/ppt/request', { params: { id } })
+  },
   history(params = {}) {
     return apiClient.get('/ppt/history', { params })
   },

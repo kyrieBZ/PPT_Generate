@@ -47,6 +47,9 @@ DatabaseConfig ParseDatabase(const nlohmann::json& json) {
   if (cfg.pool_size == 0) {
     cfg.pool_size = 1;
   }
+  if (auto it = json.find("query_timeout_seconds"); it != json.end() && it->is_number_unsigned()) {
+    cfg.query_timeout_seconds = it->get<std::uint32_t>();
+  }
   return cfg;
 }
 
@@ -128,6 +131,24 @@ ProviderConfig ParseProviders(const nlohmann::json& json) {
   if (auto it = json.find("doubao_timeout_seconds"); it != json.end() && it->is_number_unsigned()) {
     cfg.doubao_timeout_seconds = it->get<std::uint32_t>();
   }
+  if (auto it = json.find("qwen_timeout_seconds"); it != json.end() && it->is_number_unsigned()) {
+    cfg.qwen_timeout_seconds = it->get<std::uint32_t>();
+  }
+  if (cfg.qwen_timeout_seconds == 0) {
+    cfg.qwen_timeout_seconds = 60;
+  }
+  if (auto it = json.find("wanx_image_endpoint"); it != json.end() && it->is_string()) {
+    cfg.wanx_image_endpoint = *it;
+  }
+  if (auto it = json.find("wanx_image_model"); it != json.end() && it->is_string()) {
+    cfg.wanx_image_model = *it;
+  }
+  if (auto it = json.find("wanx_timeout_seconds"); it != json.end() && it->is_number_unsigned()) {
+    cfg.wanx_timeout_seconds = it->get<std::uint32_t>();
+  }
+  if (cfg.wanx_timeout_seconds == 0) {
+    cfg.wanx_timeout_seconds = 120;
+  }
   return cfg;
 }
 
@@ -194,6 +215,15 @@ GenerationConfig ParseGeneration(const nlohmann::json& json, const std::filesyst
   if (auto it = json.find("soffice_binary"); it != json.end() && it->is_string()) {
     cfg.soffice_binary = *it;
   }
+  if (auto it = json.find("builder_mode"); it != json.end() && it->is_string()) {
+    cfg.builder_mode = *it;
+  }
+  if (auto it = json.find("node_binary"); it != json.end() && it->is_string()) {
+    cfg.node_binary = *it;
+  }
+  if (auto it = json.find("pptxgen_builder_script"); it != json.end() && it->is_string()) {
+    cfg.pptxgen_builder_script = *it;
+  }
 
   auto make_absolute = [&](const std::string& value) {
     if (value.empty()) {
@@ -211,6 +241,7 @@ GenerationConfig ParseGeneration(const nlohmann::json& json, const std::filesyst
   cfg.builder_script = make_absolute(cfg.builder_script);
   cfg.template_analyzer_script = make_absolute(cfg.template_analyzer_script);
   cfg.template_analysis_dir = make_absolute(cfg.template_analysis_dir);
+  cfg.pptxgen_builder_script = make_absolute(cfg.pptxgen_builder_script);
   return cfg;
 }
 

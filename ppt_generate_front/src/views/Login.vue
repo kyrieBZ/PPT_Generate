@@ -271,7 +271,7 @@ const handleLogin = async () => {
     }
   } catch (error) {
     console.error('登录失败:', error)
-    const message = error.response?.data?.message || '登录失败，请检查用户名和密码'
+    const message = error.userMessage || error.response?.data?.message || '登录失败，请检查用户名和密码'
     formError.value = message
     if (message.includes('禁用')) {
       ElMessage.error('账号已被禁用！')
@@ -319,7 +319,8 @@ const sendResetCode = async () => {
     ElMessage.success('验证码已发送，请查收邮箱')
     startCooldown()
   } catch (error) {
-    ElMessage.error(error.response?.data?.message || '发送验证码失败')
+    // 拦截器已统一 ElMessage，此处仅记录
+    console.error('发送验证码失败:', error.userMessage || error.response?.data?.message)
   } finally {
     sendLoading.value = false
   }
@@ -340,7 +341,8 @@ const confirmReset = async () => {
     ElMessage.success('密码重置成功，请使用新密码登录')
     showResetDialog.value = false
   } catch (error) {
-    ElMessage.error(error.response?.data?.message || '重置密码失败')
+    // 拦截器已统一 ElMessage，此处仅记录
+    console.error('重置密码失败:', error.userMessage || error.response?.data?.message)
   } finally {
     resetLoading.value = false
   }
@@ -372,48 +374,51 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 20px;
+  background: linear-gradient(135deg, #BAE6FD 0%, #E0F2FE 50%, #F0F9FF 100%);
+  padding: var(--space-lg);
   position: relative;
 }
 
 .login-card {
-  background: white;
-  border-radius: 20px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  background: var(--color-bg-card);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-card-hover);
   width: 100%;
   max-width: 1000px;
   overflow: hidden;
   display: grid;
   grid-template-columns: 1fr 1fr;
   min-height: 500px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 .back-home {
   position: absolute;
-  top: 20px;
-  left: 20px;
+  top: var(--space-lg);
+  left: var(--space-lg);
   width: 44px;
   height: 44px;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  background: rgba(15, 23, 42, 0.15);
-  color: #ffffff;
+  border-radius: var(--radius-btn);
+  border: 1px solid rgba(14, 165, 233, 0.4);
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--color-primary);
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color var(--transition-default), background var(--transition-default), border-color var(--transition-default);
   backdrop-filter: blur(6px);
 }
 
 .back-home:hover {
-  background: rgba(15, 23, 42, 0.3);
+  background: rgba(255, 255, 255, 1);
+  border-color: var(--color-primary);
+  color: var(--color-primary-hover);
 }
 
 .logo-section {
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  background: linear-gradient(135deg, #0EA5E9 0%, #38BDF8 100%);
   color: white;
-  padding: 40px;
+  padding: var(--space-2xl);
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -422,53 +427,57 @@ onBeforeUnmount(() => {
 }
 
 .logo-section h1 {
-  font-size: 2.5rem;
-  margin-bottom: 10px;
-  font-weight: bold;
+  font-size: var(--text-title-page);
+  margin-bottom: var(--space-sm);
+  font-weight: 700;
+  line-height: var(--line-height-tight);
 }
 
 .subtitle {
-  font-size: 1.1rem;
+  font-size: var(--text-body);
   opacity: 0.9;
 }
 
 .login-form {
-  padding: 40px;
+  padding: var(--space-2xl);
   display: flex;
   flex-direction: column;
   justify-content: center;
 }
 
 .login-form h2 {
-  font-size: 2rem;
-  margin-bottom: 30px;
-  color: #333;
+  font-size: var(--text-title-section);
+  font-weight: 600;
+  margin-bottom: var(--space-xl);
+  color: var(--color-text);
+  line-height: var(--line-height-tight);
 }
 
 .form-group {
-  margin-bottom: 20px;
+  margin-bottom: var(--space-lg);
 }
 
 .login-form :deep(.el-form-item__label) {
   font-weight: 500;
-  color: #555;
+  color: var(--color-text-muted);
   margin-bottom: 8px;
 }
 
 .login-form :deep(.el-input__wrapper) {
-  border: 2px solid #e0e0e0;
-  border-radius: 10px;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-input);
   box-shadow: none;
-  padding: 0 12px;
+  padding: 0 var(--space-sm);
+  transition: border-color var(--transition-default);
 }
 
 .login-form :deep(.el-input__wrapper.is-focus) {
-  border-color: #4f46e5;
+  border-color: var(--color-primary);
 }
 
 .login-form :deep(.el-input__inner) {
   height: 44px;
-  font-size: 1rem;
+  font-size: var(--text-body);
 }
 
 .login-form :deep(.el-form-item.is-error .el-input__wrapper) {
@@ -483,18 +492,18 @@ onBeforeUnmount(() => {
 
 .reset-form :deep(.el-form-item__label) {
   font-weight: 500;
-  color: #555;
+  color: var(--color-text-muted);
 }
 
 .reset-form :deep(.el-input__wrapper) {
-  border: 2px solid #e0e0e0;
-  border-radius: 10px;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-input);
   box-shadow: none;
-  padding: 0 12px;
+  padding: 0 var(--space-sm);
 }
 
 .reset-form :deep(.el-input__wrapper.is-focus) {
-  border-color: #4f46e5;
+  border-color: var(--color-primary);
 }
 
 .reset-form :deep(.el-input__inner) {
@@ -555,30 +564,31 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  color: #555;
+  color: var(--color-text-muted);
 }
 
 .forgot-password {
-  color: #4f46e5;
+  color: var(--color-primary);
   text-decoration: none;
   font-size: 0.9rem;
 }
 
 .forgot-password:hover {
   text-decoration: underline;
+  color: var(--color-primary-hover);
 }
 
 .login-btn {
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  background: linear-gradient(135deg, #0EA5E9 0%, #38BDF8 100%);
   color: white;
-  padding: 14px;
+  padding: var(--space-md) var(--space-lg);
   border: none;
-  border-radius: 10px;
-  font-size: 1.1rem;
+  border-radius: var(--radius-btn);
+  font-size: var(--text-body);
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.3s, box-shadow 0.3s;
-  margin-bottom: 20px;
+  transition: transform var(--transition-default), box-shadow var(--transition-default), background var(--transition-default);
+  margin-bottom: var(--space-lg);
 }
 
 .btn-content {
@@ -596,7 +606,8 @@ onBeforeUnmount(() => {
 
 .login-btn:hover:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 10px 20px rgba(79, 70, 229, 0.3);
+  box-shadow: 0 10px 20px rgba(14, 165, 233, 0.35);
+  background: linear-gradient(135deg, #0284C7 0%, #0EA5E9 100%);
 }
 
 .login-btn:disabled {
@@ -607,7 +618,7 @@ onBeforeUnmount(() => {
 .register-link {
   text-align: center;
   margin-bottom: 15px;
-  color: #666;
+  color: var(--color-text-muted);
 }
 
 .form-error {
@@ -620,25 +631,26 @@ onBeforeUnmount(() => {
 }
 
 .register-link a {
-  color: #4f46e5;
+  color: var(--color-primary);
   text-decoration: none;
   font-weight: 500;
 }
 
 .register-link a:hover {
   text-decoration: underline;
+  color: var(--color-primary-hover);
 }
 
 .demo-credentials {
   text-align: center;
   padding: 10px;
-  background: #f0f9ff;
+  background: var(--color-bg-page-alt);
   border-radius: 8px;
   margin-top: 10px;
 }
 
 .demo-credentials p {
-  color: #0369a1;
+  color: var(--color-primary-hover);
   font-size: 0.9rem;
   margin: 0;
 }

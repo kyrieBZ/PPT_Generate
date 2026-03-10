@@ -43,6 +43,11 @@ MYSQL* MySQLConnectionPool::CreateConnection() {
   }
 
   mysql_options(connection, MYSQL_SET_CHARSET_NAME, "utf8mb4");
+  if (config_.query_timeout_seconds > 0) {
+    unsigned int timeout_sec = static_cast<unsigned int>(config_.query_timeout_seconds);
+    mysql_options(connection, MYSQL_OPT_READ_TIMEOUT, &timeout_sec);
+    mysql_options(connection, MYSQL_OPT_WRITE_TIMEOUT, &timeout_sec);
+  }
 
   if (!mysql_real_connect(connection,
                           config_.host.c_str(),

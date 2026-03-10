@@ -72,10 +72,14 @@ class PptService {
   void SetPowerPointServiceFactory(std::shared_ptr<IPowerPointServiceFactory> factory);
 
   // Generate final PPTX file using template and content
+  // layout_guide_json: optional JSON array from template analysis, used by builder to pick layout per slide
+  // options_json: optional e.g. {"themePreset":"midnight"} for PptxGenJS builder
   bool GeneratePptxFile(const std::string& template_path,
                        const std::vector<SlideContent>& slides,
                        const std::string& output_path,
-                       std::string& error);
+                       std::string& error,
+                       const std::string& layout_guide_json = "",
+                       const std::string& options_json = "");
 
  private:
   std::shared_ptr<MySQLConnectionPool> pool_;

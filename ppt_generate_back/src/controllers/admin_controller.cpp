@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "http/http_types.h"
 #include "logger.h"
 #include "utils/string_utils.h"
 
@@ -61,7 +62,10 @@ HttpResponse AdminController::ListUsers(const HttpRequest& request) {
   std::string error;
   auto admin = AuthenticateAdmin(request, error);
   if (!admin) {
-    return HttpResponse::Json(error == "Forbidden" ? 403 : 401, {{"message", error}});
+    if (error == "Forbidden") {
+      return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", error));
+    }
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error));
   }
 
   std::string query;
@@ -71,7 +75,8 @@ HttpResponse AdminController::ListUsers(const HttpRequest& request) {
 
   auto users = auth_service_->ListUsers(query, error);
   if (!error.empty()) {
-    return HttpResponse::Json(500, {{"message", error}});
+    Logger::Error(std::string("ListUsers failed: ") + error);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
   }
 
   nlohmann::json payload;
@@ -86,7 +91,10 @@ HttpResponse AdminController::UpdateUserStatus(const HttpRequest& request) {
   std::string error;
   auto admin = AuthenticateAdmin(request, error);
   if (!admin) {
-    return HttpResponse::Json(error == "Forbidden" ? 403 : 401, {{"message", error}});
+    if (error == "Forbidden") {
+      return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", error));
+    }
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error));
   }
 
   try {
@@ -105,19 +113,19 @@ HttpResponse AdminController::UpdateUserStatus(const HttpRequest& request) {
     }
 
     if (user_id == 0) {
-      return HttpResponse::Json(400, {{"message", "Invalid userId"}});
+      return HttpResponse::Json(400, ErrorJson("ERR_ADMIN_INVALID_USER_ID", "Invalid userId"));
     }
     if (admin->id == user_id) {
-      return HttpResponse::Json(400, {{"message", "不能修改自身状态"}});
+      return HttpResponse::Json(400, ErrorJson("ERR_ADMIN_CANNOT_CHANGE_SELF", "不能修改自身状态"));
     }
 
     if (!auth_service_->UpdateUserStatus(user_id, disabled, error)) {
-      return HttpResponse::Json(400, {{"message", error.empty() ? "更新用户状态失败" : error}});
+      return HttpResponse::Json(400, ErrorJson("ERR_ADMIN_UPDATE_STATUS_FAILED", error.empty() ? "更新用户状态失败" : error));
     }
 
     return HttpResponse::Json(200, {{"userId", user_id}, {"disabled", disabled}});
   } catch (const std::exception& ex) {
     Logger::Error(std::string("Failed to parse admin user status request: ") + ex.what());
-    return HttpResponse::Json(400, {{"message", "Invalid JSON"}});
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
   }
 }

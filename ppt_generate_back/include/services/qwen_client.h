@@ -9,7 +9,8 @@
 
 class QwenClient {
  public:
-  explicit QwenClient(std::string api_key);
+  /** timeout_seconds: HTTP 请求超时，0 表示使用默认 60 秒 */
+  explicit QwenClient(std::string api_key, std::uint32_t timeout_seconds = 60);
 
   bool IsEnabled() const { return !api_key_.empty(); }
 
@@ -55,4 +56,5 @@ class QwenClient {
 
  private:
   std::string api_key_;
+  std::uint32_t timeout_seconds_;
 };

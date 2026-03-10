@@ -9,7 +9,9 @@ export default defineConfig(({ mode }) => {
   const allowedHosts = env.VITE_ALLOWED_HOSTS
     ? env.VITE_ALLOWED_HOSTS.split(',').map((host) => host.trim()).filter(Boolean)
     : []
-  
+  // 允许通过 ngrok 等任意域名访问（仅开发）；未配置时设为 true 以便 ngrok 转发
+  const serverAllowedHosts = allowedHosts.length ? allowedHosts : true
+
   return {
     plugins: [
       vue(),
@@ -36,10 +38,10 @@ export default defineConfig(({ mode }) => {
       port: 3000,
       host: true,
       open: true,
-      allowedHosts: allowedHosts.length ? allowedHosts : undefined,
+      allowedHosts: serverAllowedHosts,
       proxy: {
         '/api': {
-          target: 'http://localhost:8080',
+          target: 'http://127.0.0.1:8080',
           changeOrigin: true,
           secure: false
         }

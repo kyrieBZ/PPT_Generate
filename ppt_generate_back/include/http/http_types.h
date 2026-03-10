@@ -8,11 +8,20 @@
 
 #include "utils/string_utils.h"
 
+/** 统一错误响应体：{ "code", "message", "data": null } */
+inline nlohmann::json ErrorJson(const std::string& code, const std::string& message) {
+  return nlohmann::json{{"code", code}, {"message", message}, {"data", nullptr}};
+}
+
+/** 500 错误对用户展示的固定文案，不暴露内部信息 */
+constexpr const char* kInternalErrorMessage = "服务暂时不可用，请稍后重试";
+
 namespace detail {
 inline std::string ReasonPhrase(int status) {
   switch (status) {
     case 200: return "OK";
     case 201: return "Created";
+    case 202: return "Accepted";
     case 206: return "Partial Content";
     case 204: return "No Content";
     case 400: return "Bad Request";

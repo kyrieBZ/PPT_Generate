@@ -4,6 +4,8 @@
 #include <iostream>
 #include <thread>
 
+#include <nlohmann/json.hpp>
+
 #include "app_config.h"
 #include "controllers/auth_controller.h"
 #include "controllers/admin_controller.h"
@@ -14,7 +16,6 @@
 #include "http/http_server.h"
 #include "logger.h"
 #include "services/auth_service.h"
-#include "services/doubao_image_client.h"
 #include "services/email_service.h"
 #include "services/ppt_service.h"
 #include "services/qwen_client.h"
@@ -22,6 +23,9 @@
 #include "services/ppt_service_interface.h"
 #include "services/libreoffice_powerpoint_service.h"
 #include "services/s3_client.h"
+#include "services/wanxiang_image_client.h"
+#include "utils/thread_pool.h"
+#include "utils/ppt_metrics.h"
 
 namespace {
 std::atomic<bool> g_should_stop{false};
@@ -59,6 +63,9 @@ int main(int argc, char* argv[]) {
     runtime_options.python_binary = config.generation().python_binary;
     runtime_options.builder_script = config.generation().builder_script;
     runtime_options.soffice_binary = config.generation().soffice_binary;
+    runtime_options.builder_mode = config.generation().builder_mode;
+    runtime_options.node_binary = config.generation().node_binary;
+    runtime_options.pptxgen_builder_script = config.generation().pptxgen_builder_script;
     factory = std::make_shared<LibreOfficePowerPointServiceFactory>(runtime_options);
     if (factory) {
         ppt_service->SetPowerPointServiceFactory(factory);
@@ -73,14 +80,15 @@ int main(int argc, char* argv[]) {
     }
     std::shared_ptr<QwenClient> qwen_client;
     if (!config.providers().qwen_api_key.empty()) {
-      qwen_client = std::make_shared<QwenClient>(config.providers().qwen_api_key);
+      qwen_client = std::make_shared<QwenClient>(config.providers().qwen_api_key,
+                                                 config.providers().qwen_timeout_seconds);
     }
-    std::shared_ptr<DoubaoImageClient> doubao_client;
-    if (!config.providers().doubao_api_key.empty() &&
-        !config.providers().doubao_image_endpoint.empty()) {
-      doubao_client = std::make_shared<DoubaoImageClient>(config.providers());
+    std::shared_ptr<WanxiangImageClient> wanx_client;
+    if (!config.providers().qwen_api_key.empty()) {
+      wanx_client = std::make_shared<WanxiangImageClient>(config.providers());
     }
 
+    auto thread_pool = std::make_shared<ThreadPool>(4);
     Router router;
     AuthController auth_controller(auth_service);
     AdminController admin_controller(auth_service);
@@ -91,7 +99,8 @@ int main(int argc, char* argv[]) {
                                  config.generation(),
                                  qwen_client,
                                  s3_client,
-                                 doubao_client);
+                                 wanx_client,
+                                 thread_pool);
     TemplateController template_controller(template_service);
     ModelController model_controller(model_service);
 
@@ -99,6 +108,15 @@ int main(int argc, char* argv[]) {
 
     router.AddRoute("GET", "/api/health", [](const HttpRequest&) {
       return HttpResponse::Json(200, {{"status", "ok"}});
+    });
+    router.AddRoute("GET", "/api/metrics", [](const HttpRequest&) {
+      nlohmann::json gen = {
+          {"total", PptMetrics::GenerationTotal().load(std::memory_order_relaxed)},
+          {"success", PptMetrics::GenerationSuccess().load(std::memory_order_relaxed)},
+          {"failed", PptMetrics::GenerationFailed().load(std::memory_order_relaxed)},
+          {"last_duration_ms", PptMetrics::LastGenerationDurationMs().load(std::memory_order_relaxed)}
+      };
+      return HttpResponse::Json(200, {{"generation", gen}});
     });
 
     router.AddRoute("POST", "/api/auth/register", [&auth_controller](const HttpRequest& request) {
@@ -126,6 +144,9 @@ int main(int argc, char* argv[]) {
 
     router.AddRoute("POST", "/api/ppt/generate", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Generate(request);
+    });
+    router.AddRoute("GET", "/api/ppt/request", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.GetRequestStatus(request);
     });
 
     router.AddRoute("GET", "/api/ppt/history", [&ppt_controller](const HttpRequest& request) {

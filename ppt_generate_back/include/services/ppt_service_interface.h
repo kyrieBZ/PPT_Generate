@@ -47,8 +47,11 @@ public:
     /**
      * 保存PowerPoint文件
      * @param ppt_path PowerPoint文件路径
+     * @param layout_guide_json 可选，版式约束 JSON 数组，供 builder 选版式
+     * @param options_json 可选，如 {"themePreset":"midnight"} 供 PptxGenJS 等 builder 使用
      */
-    virtual bool Save(const std::string& ppt_path) = 0;
+    virtual bool Save(const std::string& ppt_path, const std::string& layout_guide_json = "",
+                      const std::string& options_json = "") = 0;
 };
 
 // 抽象工厂接口，用于创建PowerPoint服务实例

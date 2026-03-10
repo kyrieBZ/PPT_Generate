@@ -21,7 +21,7 @@
           :class="{ 'active': activeMenu === item.id }"
           @click="activeMenu = item.id"
         >
-          <span class="nav-icon">{{ item.icon }}</span>
+          <el-icon class="nav-icon"><component :is="item.icon" /></el-icon>
           <span class="nav-text">{{ item.text }}</span>
         </router-link>
       </nav>
@@ -32,11 +32,11 @@
           class="admin-entry"
           @click="router.push('/admin')"
         >
-          <span class="admin-entry-icon">🛠️</span>
+          <el-icon class="admin-entry-icon"><Setting /></el-icon>
           <span>后台管理</span>
         </button>
         <button @click="handleLogout" class="logout-btn">
-          <span class="logout-icon">🚪</span>
+          <el-icon class="logout-icon"><SwitchButton /></el-icon>
           <span>退出登录</span>
         </button>
       </div>
@@ -51,7 +51,7 @@
         <div class="header-right">
           
           <button class="generate-btn" @click="openGeneratePanel">
-            <span class="btn-icon">✨</span>
+            <el-icon class="btn-icon"><Plus /></el-icon>
             <span>新建PPT</span>
           </button>
         </div>
@@ -61,7 +61,7 @@
         <section v-if="activeMenu === 'dashboard'" class="dashboard">
           <div class="stats-grid">
             <div v-for="card in statCards" :key="card.id" class="stat-card">
-              <div class="stat-icon">{{ card.icon }}</div>
+              <el-icon class="stat-icon"><component :is="card.icon" /></el-icon>
               <div class="stat-content">
                 <h3>{{ card.title }}</h3>
                 <p class="stat-number">{{ card.value }}</p>
@@ -71,7 +71,7 @@
 
           <div class="features-grid">
             <div class="feature-card">
-              <div class="feature-icon">🤖</div>
+              <el-icon class="feature-icon"><MagicStick /></el-icon>
               <h4>智能生成</h4>
               <p>基于GenAI模型自动生成PPT内容</p>
               <button class="feature-action" @click="openGeneratePanel">
@@ -82,13 +82,13 @@
               </button>
             </div>
             <div class="feature-card">
-              <div class="feature-icon">🎨</div>
+              <el-icon class="feature-icon"><Brush /></el-icon>
               <h4>个性化定制</h4>
               <p>多通道指令满足个性化需求</p>
               <button class="feature-action">查看模板</button>
             </div>
             <div class="feature-card">
-              <div class="feature-icon">📊</div>
+              <el-icon class="feature-icon"><DataAnalysis /></el-icon>
               <h4>图文表生成</h4>
               <p>智能生成文本、图片和表格</p>
               <button class="feature-action">使用示例</button>
@@ -153,36 +153,15 @@
                     ></textarea>
                   </div>
 
-                  <div class="form-group inline-group">
-                    <div>
-                      <label for="ppt-pages">期望页数</label>
-                      <input
-                        id="ppt-pages"
-                        v-model.number="generateForm.pages"
-                        type="number"
-                        min="1"
-                        max="50"
-                      />
-                    </div>
-                    <div>
-                      <label>模板风格</label>
-                      <div class="style-options">
-                        <label
-                          v-for="style in styles"
-                          :key="style.id"
-                          class="style-option"
-                          :class="{ 'selected': generateForm.style === style.id }"
-                        >
-                          <input
-                            type="radio"
-                            v-model="generateForm.style"
-                            :value="style.id"
-                            hidden
-                          />
-                          {{ style.name }}
-                        </label>
-                      </div>
-                    </div>
+                  <div class="form-group">
+                    <label for="ppt-pages">期望页数</label>
+                    <input
+                      id="ppt-pages"
+                      v-model.number="generateForm.pages"
+                      type="number"
+                      min="1"
+                      max="50"
+                    />
                   </div>
                 </div>
               </div>
@@ -191,12 +170,17 @@
                 <div class="step-header">
                   <span class="step-index">02</span>
                   <div>
-                    <h3>模板与设计基调</h3>
-                    <p>选择模板风格，让视觉节奏更统一。</p>
+                    <h3>生成方式</h3>
                   </div>
                 </div>
                 <div class="step-body">
                   <div class="form-group">
+                    <el-radio-group v-model="generateForm.generateMode" class="generate-mode-radio">
+                      <el-radio-button value="template">基于模板</el-radio-button>
+                      <el-radio-button value="style">基于预设主题</el-radio-button>
+                    </el-radio-group>
+                  </div>
+                  <div v-if="generateForm.generateMode === 'template'" class="form-group">
                     <label>选择模板</label>
                     <div class="template-options" v-if="!templatesLoading && templates.length">
                       <label
@@ -235,6 +219,25 @@
                     </div>
                     <div v-else class="templates-empty">模板列表加载中...</div>
                   </div>
+                  <div v-if="generateForm.generateMode === 'style'" class="form-group">
+                    <label>选择预设主题</label>
+                    <div class="style-options">
+                      <label
+                        v-for="style in styles"
+                        :key="style.id"
+                        class="style-option"
+                        :class="{ 'selected': generateForm.style === style.id }"
+                      >
+                        <input
+                          type="radio"
+                          v-model="generateForm.style"
+                          :value="style.id"
+                          hidden
+                        />
+                        {{ style.name }}
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -262,7 +265,37 @@
                         <input type="checkbox" v-model="generateForm.includeNotes" />
                         包含演讲备注
                       </label>
+                      <label class="option-checkbox">
+                        <input type="checkbox" v-model="generateForm.enableSectionSlides" />
+                        启用章节页
+                      </label>
                     </div>
+                    <div v-if="generateForm.enableSectionSlides" class="form-group-inline mt-1">
+                      <label for="section-interval">每</label>
+                      <select id="section-interval" v-model.number="generateForm.sectionSlideInterval" class="select-sm">
+                        <option :value="3">3</option>
+                        <option :value="4">4</option>
+                        <option :value="5">5</option>
+                        <option :value="6">6</option>
+                      </select>
+                      <span>页插入一章节页</span>
+                    </div>
+                  </div>
+                  <div v-if="generateForm.generateMode === 'style'" class="form-group">
+                    <label for="theme-preset">主题预设（PptxGenJS）</label>
+                    <select id="theme-preset" v-model="generateForm.themePreset" class="select-md">
+                      <option value="">默认（随上方预设主题）</option>
+                      <option value="midnight">深蓝商务 (Midnight)</option>
+                      <option value="forest">森林绿 (Forest)</option>
+                      <option value="charcoal">炭灰简约 (Charcoal)</option>
+                      <option value="coral">珊瑚活力 (Coral)</option>
+                      <option value="teal">青绿信任 (Teal)</option>
+                      <option value="ocean">海洋渐变 (Ocean)</option>
+                      <option value="berry">浆果奶油 (Berry)</option>
+                      <option value="sage">鼠尾草 (Sage)</option>
+                      <option value="terracotta">暖陶 (Terracotta)</option>
+                      <option value="cherry">樱桃 (Cherry)</option>
+                    </select>
                   </div>
 
                   <div class="form-group">
@@ -416,6 +449,23 @@
                         本地预览
                       </button>
                     </div>
+                    <el-dropdown
+                      trigger="click"
+                      :disabled="!hasPreviewFile"
+                      @command="(cmd) => cmd === 'pptx' ? downloadPPT(previewRequestItem) : downloadPDF(previewRequestItem)"
+                    >
+                      <el-button type="success" size="default" :disabled="!hasPreviewFile" class="preview-download-btn">
+                        <el-icon class="btn-icon"><Download /></el-icon>
+                        <span>下载</span>
+                        <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                      </el-button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item command="pptx">下载 PPTX</el-dropdown-item>
+                          <el-dropdown-item command="pdf">下载 PDF</el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
                   </div>
                 </div>
                 <div v-if="previewMode === 'online'" class="preview-embed">
@@ -538,7 +588,7 @@
                     <span class="meta-item">生成时间: {{ formatDate(item.createdAt) }}</span>
                     <span class="meta-item">页数: {{ item.pages }}</span>
                     <span class="meta-item">状态: {{ item.status }}</span>
-                    <span class="meta-item">模板: {{ item.templateName || '未选择' }}</span>
+                    <span class="meta-item">{{ historySourceDisplay(item) }}</span>
                   </div>
                 </div>
               </div>
@@ -549,17 +599,25 @@
                     <span>编辑</span>
                   </span>
                 </el-button>
-                <el-button
-                  size="large"
-                  type="success"
+                <el-dropdown
+                  trigger="click"
                   :disabled="!item?.hasFile"
-                  @click="downloadPPT(item)"
+                  @command="(cmd) => cmd === 'pptx' ? downloadPPT(item) : downloadPDF(item)"
                 >
-                  <span class="btn-content">
-                    <el-icon class="btn-icon"><Download /></el-icon>
-                    <span>下载</span>
-                  </span>
-                </el-button>
+                  <el-button size="large" type="success" :disabled="!item?.hasFile">
+                    <span class="btn-content">
+                      <el-icon class="btn-icon"><Download /></el-icon>
+                      <span>下载</span>
+                      <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                    </span>
+                  </el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="pptx">下载 PPTX</el-dropdown-item>
+                      <el-dropdown-item command="pdf">下载 PDF</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
                 <el-button size="large" type="danger" @click="deleteHistory(item)">
                   <span class="btn-content">
                     <el-icon class="btn-icon"><Delete /></el-icon>
@@ -726,7 +784,7 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch , watchEffec
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, Download, Delete, EditPen, Search } from '@element-plus/icons-vue'
+import { MagicStick, Download, Delete, EditPen, Search, Setting, SwitchButton, Plus, DataAnalysis, Brush, Document, Timer, Star, RefreshRight, ArrowDown } from '@element-plus/icons-vue'
 import templatesAPI from '@/api/templates'
 import pptAPI from '@/api/ppt'
 import dayjs from 'dayjs'
@@ -762,6 +820,8 @@ const previewSlides = ref([])
 const previewIndex = ref(0)
 const previewRequestId = ref(0)
 const previewDownloadUrl = ref('')
+const previewDownloadUrlPdf = ref('')
+const previewTitle = ref('')
 const outlineItems = ref([])
 const outlineLoading = ref(false)
 const generatePanels = [
@@ -818,6 +878,14 @@ watchEffect(() => {
 
 const hasLocalPreview = computed(() => Array.isArray(previewSlides.value) && previewSlides.value.length > 0)
 const previewSlideCount = computed(() => previewSlides.value.length)
+const hasPreviewFile = computed(() => Boolean(previewRequestId.value && (previewEmbedUrl.value || hasLocalPreview.value)))
+const previewRequestItem = computed(() => ({
+  id: previewRequestId.value,
+  hasFile: hasPreviewFile.value,
+  downloadUrl: previewDownloadUrl.value || (previewRequestId.value ? `/api/ppt/file?id=${previewRequestId.value}` : ''),
+  downloadUrlPdf: previewDownloadUrlPdf.value || (previewRequestId.value ? `/api/ppt/file?id=${previewRequestId.value}&format=pdf` : ''),
+  title: previewTitle.value || 'presentation'
+}))
 const currentPreviewSlide = computed(() => {
   if (!hasLocalPreview.value) return null
   const index = Math.min(Math.max(previewIndex.value, 0), previewSlides.value.length - 1)
@@ -967,6 +1035,36 @@ const buildDownloadUrl = (request) => {
   }
 }
 
+const resolveDownloadUrlPdf = (request) => {
+  if (!request?.id) return ''
+  if (request.downloadUrlPdf) return request.downloadUrlPdf
+  return `/api/ppt/file?id=${request.id}&format=pdf`
+}
+
+const buildDownloadUrlPdf = (request) => {
+  const raw = resolveDownloadUrlPdf(request)
+  if (!raw) return ''
+  try {
+    if (raw.startsWith('http')) {
+      const parsed = new URL(raw)
+      if (!parsed.pathname.includes('/ppt/file')) {
+        return raw
+      }
+    }
+    const apiBase = import.meta.env.VITE_API_URL || '/api'
+    const base = apiBase.startsWith('http') ? apiBase : window.location.origin
+    const url = new URL(raw, base)
+    const token = store.state.token
+    if (token) {
+      url.searchParams.set('token', token)
+    }
+    url.searchParams.set('ngrok-skip-browser-warning', '1')
+    return url.toString()
+  } catch (error) {
+    return raw
+  }
+}
+
 const hydratePreviewFromRequest = async (request, { force = false } = {}) => {
   if (!request?.id) return
   if (!force && previewRequestId.value === request.id && (previewFileUrl.value || previewSlides.value.length)) {
@@ -974,6 +1072,8 @@ const hydratePreviewFromRequest = async (request, { force = false } = {}) => {
   }
   previewRequestId.value = request.id
   previewDownloadUrl.value = request.downloadUrl || ''
+  previewDownloadUrlPdf.value = request.downloadUrlPdf || request.download_url_pdf || ''
+  previewTitle.value = request.title || ''
   previewFileUrl.value = buildPreviewFileUrl(resolveDownloadUrl(request))
   previewSlides.value = []
   previewIndex.value = 0
@@ -1048,11 +1148,11 @@ const userInitials = computed(() => {
 })
 
 const baseMenuItems = [
-  { id: 'dashboard', text: '仪表板', icon: '📊', path: '/main', description: '系统概览与快速操作' },
-  { id: 'generate', text: '智能生成', icon: '🤖', path: '/main/generate', description: 'GenAI智能PPT生成' },
-  { id: 'templates', text: '模板中心', icon: '🎨', path: '/main/templates', description: '精选PPT模板库' },
-  { id: 'history', text: '历史记录', icon: '📋', path: '/main/history', description: '历史生成记录管理' },
-  { id: 'settings', text: '系统设置', icon: '⚙️', path: '/main/settings', description: '个性化系统配置' }
+  { id: 'dashboard', text: '仪表板', icon: DataAnalysis, path: '/main', description: '系统概览与快速操作' },
+  { id: 'generate', text: '智能生成', icon: MagicStick, path: '/main/generate', description: 'GenAI智能PPT生成' },
+  { id: 'templates', text: '模板中心', icon: Brush, path: '/main/templates', description: '精选PPT模板库' },
+  { id: 'history', text: '历史记录', icon: Document, path: '/main/history', description: '历史生成记录管理' },
+  { id: 'settings', text: '系统设置', icon: Setting, path: '/main/settings', description: '个性化系统配置' }
 ]
 
 const menuItems = computed(() => [...baseMenuItems])
@@ -1077,9 +1177,13 @@ const generateForm = ref({
   topic: '',
   pages: 10,
   style: 'business',
+  generateMode: 'template',
   includeImages: true,
   includeCharts: true,
   includeNotes: false,
+  enableSectionSlides: false,
+  sectionSlideInterval: 4,
+  themePreset: '',
   modelId: '',
   templateId: ''
 })
@@ -1157,11 +1261,21 @@ const previewCardStyle = computed(() => {
 watch(
   templates,
   (list) => {
-    if (!generateForm.value.templateId && Array.isArray(list) && list.length) {
+    if (generateForm.value.generateMode === 'template' && !generateForm.value.templateId && Array.isArray(list) && list.length) {
       generateForm.value.templateId = list[0].id
     }
   },
   { immediate: true }
+)
+watch(
+  () => generateForm.value.generateMode,
+  (mode) => {
+    if (mode === 'style') {
+      generateForm.value.templateId = ''
+    } else if (mode === 'template' && templates.value.length && !generateForm.value.templateId) {
+      generateForm.value.templateId = templates.value[0].id
+    }
+  }
 )
 
 watch(
@@ -1178,10 +1292,10 @@ const statCards = computed(() => {
   const averagePages = total ? Math.round(totalPages / total) : 0
   const latestStatus = pptHistory.value.length ? pptHistory.value[0].status : 'N/A'
   return [
-    { id: 'generated', icon: '📊', title: '已生成PPT', value: total },
-    { id: 'pages', icon: '⏱️', title: '平均页数', value: averagePages },
-    { id: 'status', icon: '⭐', title: '最新状态', value: latestStatus },
-    { id: 'templates', icon: '🔄', title: '可用模板', value: templates.value.length }
+    { id: 'generated', icon: Document, title: '已生成PPT', value: total },
+    { id: 'pages', icon: Timer, title: '平均页数', value: averagePages },
+    { id: 'status', icon: Star, title: '最新状态', value: latestStatus },
+    { id: 'templates', icon: RefreshRight, title: '可用模板', value: templates.value.length }
   ]
 })
 
@@ -1418,6 +1532,14 @@ const formatDate = (value) => {
   return raw
 }
 
+const historySourceDisplay = (item) => {
+  const name = item?.templateName || item?.template_name || ''
+  if (!name) return '模板: 未选择'
+  if (name.startsWith('预设主题:')) return name
+  if (name.startsWith('风格:')) return '预设主题:' + name.slice(3)
+  return '模板: ' + name
+}
+
 const resetGenerateForm = () => {
   const keepTemplateId = generateForm.value.templateId || templates.value[0]?.id || ''
   generateForm.value = {
@@ -1425,9 +1547,13 @@ const resetGenerateForm = () => {
     topic: '',
     pages: 10,
     style: 'business',
+    generateMode: 'template',
     includeImages: true,
     includeCharts: true,
     includeNotes: false,
+    enableSectionSlides: false,
+    sectionSlideInterval: 4,
+    themePreset: '',
     modelId: selectedModel.value || 'qwen-turbo',
     templateId: keepTemplateId
   }
@@ -1454,19 +1580,23 @@ const handleGenerateOutline = async () => {
     ElMessage.warning('请填写标题和主题描述')
     return
   }
-  if (!generateForm.value.templateId) {
-    ElMessage.warning('请选择模板样式')
+  if (generateForm.value.generateMode === 'template' && !generateForm.value.templateId) {
+    ElMessage.warning('请选择模板')
     return
   }
   outlineLoading.value = true
   try {
+    const templateIdForOutline = generateForm.value.generateMode === 'template'
+      ? generateForm.value.templateId
+      : (templates.value[0]?.id || '')
     const payload = {
       title: generateForm.value.title.trim(),
       topic: generateForm.value.topic.trim(),
       pages: generateForm.value.pages,
       style: generateForm.value.style,
       modelId: generateForm.value.modelId || selectedModel.value,
-      templateId: generateForm.value.templateId
+      templateId: templateIdForOutline,
+      generateMode: generateForm.value.generateMode
     }
     const response = await pptAPI.outline(payload)
     const outline = Array.isArray(response.data?.outline) ? response.data.outline : []
@@ -1478,9 +1608,8 @@ const handleGenerateOutline = async () => {
       ElMessage.warning('未生成大纲内容')
     }
   } catch (error) {
-    console.error('大纲生成失败:', error)
-    const message = error.response?.data?.message || error.message || '大纲生成失败，请重试'
-    ElMessage.error(message)
+    // 拦截器已统一 ElMessage
+    console.error('大纲生成失败:', error.userMessage || error.response?.data?.message)
   } finally {
     outlineLoading.value = false
   }
@@ -1491,8 +1620,8 @@ const handleGenerate = async () => {
     ElMessage.warning('请填写标题和主题描述')
     return
   }
-  if (!generateForm.value.templateId) {
-    ElMessage.warning('请选择模板样式')
+  if (generateForm.value.generateMode === 'template' && !generateForm.value.templateId) {
+    ElMessage.warning('请选择模板')
     return
   }
   if (!outlineReady.value) {
@@ -1510,11 +1639,15 @@ const handleGenerate = async () => {
       topic: generateForm.value.topic.trim(),
       pages: generateForm.value.pages,
       style: generateForm.value.style,
+      generateMode: generateForm.value.generateMode,
       includeImages: generateForm.value.includeImages,
       includeCharts: generateForm.value.includeCharts,
       includeNotes: generateForm.value.includeNotes,
+      enableSectionSlides: !!generateForm.value.enableSectionSlides,
+      sectionSlideInterval: Math.min(10, Math.max(2, generateForm.value.sectionSlideInterval || 4)),
+      themePreset: generateForm.value.generateMode === 'style' ? (generateForm.value.themePreset || '').trim() : '',
       modelId: generateForm.value.modelId || selectedModel.value,
-      templateId: generateForm.value.templateId,
+      templateId: generateForm.value.generateMode === 'template' ? generateForm.value.templateId : '',
       outline: outlineItems.value.map(item => ({
         title: item.title || '',
         summary: item.summary || '',
@@ -1526,6 +1659,8 @@ const handleGenerate = async () => {
       throw new Error('生成请求失败')
     }
     previewDownloadUrl.value = result.request?.downloadUrl || ''
+    previewDownloadUrlPdf.value = result.request?.downloadUrlPdf || result.request?.download_url_pdf || ''
+    previewTitle.value = result.request?.title || ''
     previewFileUrl.value = buildPreviewFileUrl(resolveDownloadUrl(result.request))
     previewSlides.value = Array.isArray(result.preview)
       ? result.preview.map(normalizePreviewSlide).filter(Boolean)
@@ -1541,9 +1676,9 @@ const handleGenerate = async () => {
     activeMenu.value = 'generate'
     activeGeneratePanel.value = 'preview'
   } catch (error) {
-    console.error('生成失败:', error)
-    const message = error.response?.data?.message || error.message || '生成失败，请重试'
-    ElMessage.error(message)
+    const msg = error?.message || error?.userMessage || error?.response?.data?.message || '生成失败，请稍后重试'
+    ElMessage.error(msg)
+    console.error('生成失败:', msg)
   } finally {
     generating.value = false
   }
@@ -1573,6 +1708,26 @@ const downloadPPT = (item) => {
   document.body.removeChild(link)
 }
 
+const downloadPDF = (item) => {
+  if (!item?.hasFile) {
+    ElMessage.warning('该记录暂无可下载的PPT文件')
+    return
+  }
+  const url = buildDownloadUrlPdf(item)
+  if (!url) {
+    ElMessage.error('下载链接不可用，请稍后重试')
+    return
+  }
+  const link = document.createElement('a')
+  link.href = url
+  link.rel = 'noopener'
+  link.target = '_blank'
+  link.download = (item?.title || 'presentation') + '.pdf'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
 const deleteHistory = async (item) => {
   if (!item?.id) {
     return
@@ -1596,9 +1751,8 @@ const deleteHistory = async (item) => {
     if (error === 'cancel' || error === 'close' || error?.message === 'cancel') {
       return
     }
-    console.error('删除失败:', error)
-    const message = error.response?.data?.message || error.message || '删除失败，请稍后重试'
-    ElMessage.error(message)
+    // 拦截器已统一 ElMessage
+    console.error('删除失败:', error.userMessage || error.response?.data?.message)
   }
 }
 
@@ -1625,12 +1779,14 @@ const handleLogout = async () => {
   } catch (error) {
     console.error('退出登录失败:', error)
   } finally {
-    previewFileUrl.value = ''
-    previewSlides.value = []
-    previewIndex.value = 0
-    previewMode.value = 'online'
-    previewRequestId.value = 0
-    previewDownloadUrl.value = ''
+  previewFileUrl.value = ''
+  previewSlides.value = []
+  previewIndex.value = 0
+  previewMode.value = 'online'
+  previewRequestId.value = 0
+  previewDownloadUrl.value = ''
+  previewDownloadUrlPdf.value = ''
+  previewTitle.value = ''
     outlineItems.value = []
     ElMessage.success('已退出登录')
     await new Promise(resolve => setTimeout(resolve, 500))
@@ -1690,10 +1846,10 @@ onMounted(() => {
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 .main-container {
-  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: radial-gradient(circle at 15% 20%, rgba(236, 254, 255, 0.8), transparent 35%),
-    radial-gradient(circle at 85% 0%, rgba(255, 237, 213, 0.6), transparent 35%),
-    linear-gradient(120deg, #f8fafc 0%, #f1f5f9 100%);
+  font-family: 'Plus Jakarta Sans', 'Noto Sans SC', 'PingFang SC', sans-serif;
+  background: radial-gradient(circle at 15% 20%, rgba(224, 242, 254, 0.9), transparent 35%),
+    radial-gradient(circle at 85% 0%, rgba(186, 230, 253, 0.5), transparent 35%),
+    linear-gradient(120deg, #f8fafc 0%, #f0f9ff 100%);
   position: relative;
   overflow: hidden;
 }
@@ -1754,7 +1910,7 @@ h4 {
 .avatar {
   width: 50px;
   height: 50px;
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  background: linear-gradient(135deg, #0EA5E9 0%, #38BDF8 100%);
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -1796,13 +1952,13 @@ h4 {
 .nav-item:hover {
   background: rgba(255, 255, 255, 0.1);
   color: white;
-  border-left-color: #4f46e5;
+  border-left-color: #0EA5E9;
 }
 
 .nav-item.active {
-  background: rgba(79, 70, 229, 0.2);
+  background: rgba(14, 165, 233, 0.2);
   color: white;
-  border-left-color: #4f46e5;
+  border-left-color: #0EA5E9;
 }
 
 .nav-icon {
@@ -1828,19 +1984,19 @@ h4 {
   gap: 10px;
   width: 100%;
   padding: 12px;
-  background: rgba(79, 70, 229, 0.18);
-  color: #c7d2fe;
-  border: 1px solid rgba(129, 140, 248, 0.5);
+  background: rgba(14, 165, 233, 0.18);
+  color: #bae6fd;
+  border: 1px solid rgba(56, 189, 248, 0.5);
   border-radius: 10px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.3s;
+  transition: all 0.2s ease;
 }
 
 .admin-entry:hover {
-  background: rgba(79, 70, 229, 0.3);
-  border-color: rgba(165, 180, 252, 0.9);
-  color: #eef2ff;
+  background: rgba(14, 165, 233, 0.3);
+  border-color: rgba(56, 189, 248, 0.9);
+  color: #e0f2fe;
 }
 
 .admin-entry-icon {
@@ -1873,157 +2029,173 @@ h4 {
 }
 
 .main-header {
-  background: white;
-  padding: 20px 30px;
-  border-bottom: 1px solid #e5e7eb;
+  background: var(--color-bg-card);
+  padding: var(--space-lg) var(--space-xl);
+  border-bottom: 1px solid var(--color-border);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  box-shadow: var(--shadow-nav);
 }
 
 .header-right {
   display: flex;
-  gap: 12px;
+  gap: var(--space-sm);
   align-items: center;
   flex-wrap: wrap;
 }
 
 .header-left h1 {
-  font-size: 1.8rem;
-  color: #1e293b;
-  margin-bottom: 5px;
+  font-size: var(--text-title-page);
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: var(--space-xs);
+  line-height: var(--line-height-tight);
 }
 
 .page-description {
-  color: #64748b;
-  font-size: 0.95rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-caption);
 }
 
 .generate-btn {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 24px;
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-lg);
+  background: linear-gradient(135deg, #0EA5E9 0%, #38BDF8 100%);
   color: white;
   border: none;
-  border-radius: 10px;
-  font-size: 1rem;
+  border-radius: var(--radius-btn);
+  font-size: var(--text-body);
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.3s;
+  transition: transform var(--transition-default), box-shadow var(--transition-default);
 }
 
 .generate-btn:hover {
   transform: translateY(-2px);
-  box-shadow: 0 10px 20px rgba(79, 70, 229, 0.3);
+  box-shadow: var(--shadow-card-hover);
 }
 
 .content-area {
   flex: 1;
-  padding: 30px;
+  padding: var(--space-xl);
   overflow-y: auto;
 }
 
 .dashboard {
   display: flex;
   flex-direction: column;
-  gap: 30px;
+  gap: var(--space-xl);
 }
 
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 20px;
+  gap: var(--space-lg);
 }
 
 .stat-card {
-  background: white;
-  border-radius: 15px;
-  padding: 25px;
-  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+  background: var(--color-bg-card);
+  border-radius: var(--radius-card);
+  padding: var(--space-lg);
+  box-shadow: var(--shadow-card);
+  border: 1px solid rgba(0, 0, 0, 0.06);
   display: flex;
   align-items: center;
-  gap: 20px;
-  transition: transform 0.3s;
+  gap: var(--space-lg);
+  transition: box-shadow var(--transition-default), transform var(--transition-default);
+  cursor: default;
 }
 
 .stat-card:hover {
-  transform: translateY(-5px);
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-2px);
 }
 
 .stat-icon {
-  font-size: 3rem;
-  opacity: 0.8;
+  font-size: 2.5rem;
+  color: var(--color-primary, #0EA5E9);
+  opacity: 0.9;
 }
 
 .stat-content h3 {
-  font-size: 1rem;
-  color: #64748b;
-  margin-bottom: 5px;
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-xs);
+  font-weight: 500;
 }
 
 .stat-number {
-  font-size: 2.5rem;
-  font-weight: bold;
-  color: #1e293b;
+  font-size: var(--text-kpi);
+  font-weight: 700;
+  color: var(--color-text);
+  line-height: var(--line-height-tight);
 }
 
 .features-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
+  gap: var(--space-lg);
 }
 
 .feature-card {
-  background: white;
-  border-radius: 15px;
-  padding: 25px;
-  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+  background: var(--color-bg-card);
+  border-radius: var(--radius-card);
+  padding: var(--space-lg);
+  box-shadow: var(--shadow-card);
+  border: 1px solid rgba(0, 0, 0, 0.06);
   text-align: center;
-  transition: transform 0.3s;
+  transition: box-shadow var(--transition-default), transform var(--transition-default);
 }
 
 .feature-card:hover {
-  transform: translateY(-5px);
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-2px);
 }
 
 .feature-icon {
-  font-size: 3rem;
-  margin-bottom: 15px;
+  font-size: 2.5rem;
+  color: var(--color-primary, #0EA5E9);
+  margin-bottom: var(--space-md);
 }
 
 .feature-card h4 {
-  font-size: 1.2rem;
-  margin-bottom: 10px;
-  color: #1e293b;
+  font-size: var(--text-card);
+  font-weight: 600;
+  margin-bottom: var(--space-sm);
+  color: var(--color-text);
 }
 
 .feature-card p {
-  color: #64748b;
-  margin-bottom: 20px;
-  line-height: 1.5;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-lg);
+  font-size: var(--text-caption);
+  line-height: var(--line-height-body);
 }
 
 .feature-action {
-  padding: 10px 20px;
-  background: #f1f5f9;
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--color-bg-page-alt);
   border: none;
-  border-radius: 8px;
-  color: #4f46e5;
+  border-radius: var(--radius-btn);
+  color: var(--color-primary);
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.3s;
+  transition: background var(--transition-default), color var(--transition-default);
 }
 
 .feature-action:hover {
-  background: #e0e7ff;
+  background: rgba(14, 165, 233, 0.12);
 }
 
 .history-section {
-  background: white;
-  border-radius: 15px;
-  padding: 25px;
+  background: var(--color-bg-card);
+  border-radius: var(--radius-card);
+  padding: var(--space-lg);
+  box-shadow: var(--shadow-card);
+  border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 
@@ -2031,13 +2203,13 @@ h4 {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 30px;
+  margin-bottom: var(--space-xl);
 }
 
 .search-box input {
-  padding: 10px 15px;
-  border: 2px solid #e5e7eb;
-  border-radius: 8px;
+  padding: var(--space-sm) var(--space-md);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-input);
   width: 300px;
 }
 
@@ -2048,15 +2220,15 @@ h4 {
 }
 
 .template-search-box :deep(.el-input__wrapper) {
-  border: 2px solid #e5e7eb;
-  border-radius: 8px;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-input);
   box-shadow: none;
-  padding: 0 12px;
+  padding: 0 var(--space-sm);
   width: 300px;
 }
 
 .template-search-box :deep(.el-input__wrapper.is-focus) {
-  border-color: #4f46e5;
+  border-color: #0EA5E9;
 }
 
 .template-search-box :deep(.el-input__inner) {
@@ -2082,15 +2254,15 @@ h4 {
 
 
 .history-search-box :deep(.el-input__wrapper) {
-  border: 2px solid #e5e7eb;
-  border-radius: 8px;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-input);
   box-shadow: none;
-  padding: 0 12px;
+  padding: 0 var(--space-sm);
   width: 300px;
 }
 
 .history-search-box :deep(.el-input__wrapper.is-focus) {
-  border-color: #4f46e5;
+  border-color: #0EA5E9;
 }
 
 .history-search-box :deep(.el-input__inner) {
@@ -2127,8 +2299,8 @@ h4 {
 }
 
 .history-item:hover {
-  border-color: #4f46e5;
-  box-shadow: 0 5px 15px rgba(79, 70, 229, 0.1);
+  border-color: #0EA5E9;
+  box-shadow: 0 5px 15px rgba(14, 165, 233, 0.1);
 }
 
 .history-preview {
@@ -2216,7 +2388,7 @@ h4 {
   background: #f8fafc;
   --preview-primary: #0f172a;
   --preview-secondary: #475569;
-  --preview-accent: #6366f1;
+  --preview-accent: #38BDF8;
 }
 
 .preview-empty {
@@ -2260,6 +2432,15 @@ h4 {
   gap: 8px;
 }
 
+.preview-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.preview-download-btn .btn-icon {
+  margin-right: 2px;
+}
+
 .preview-toggle {
   padding: 6px 12px;
   border-radius: 999px;
@@ -2274,7 +2455,7 @@ h4 {
 
 .preview-toggle.active {
   background: #eef2ff;
-  border-color: #4f46e5;
+  border-color: #0EA5E9;
   color: #312e81;
 }
 
@@ -2485,11 +2666,11 @@ h4 {
 
 .preview-thumb .thumb-index {
   font-weight: 600;
-  color: #4f46e5;
+  color: #0EA5E9;
 }
 
 .preview-thumb.active {
-  border-color: #4f46e5;
+  border-color: #0EA5E9;
   background: #eef2ff;
   color: #312e81;
 }
@@ -2544,7 +2725,7 @@ h4 {
 }
 
 .settings-model.selected {
-  border-color: #4f46e5;
+  border-color: #0EA5E9;
   background: #f3f4ff;
 }
 
@@ -2571,7 +2752,7 @@ h4 {
 .model-tags span {
   margin-right: 12px;
   font-size: 0.85rem;
-  color: #4f46e5;
+  color: #0EA5E9;
 }
 
 .plan-fields {
@@ -2682,7 +2863,7 @@ h4 {
 }
 
 .template-meta a {
-  color: #4f46e5;
+  color: #0EA5E9;
 }
 
 .template-tags {
@@ -2710,7 +2891,7 @@ h4 {
   flex: 1;
   min-width: 120px;
   padding: 10px;
-  background: #4f46e5;
+  background: #0EA5E9;
   border: none;
   border-radius: 8px;
   color: #fff;
@@ -2819,7 +3000,7 @@ h4 {
   gap: 20px;
   padding: 24px 28px;
   border-radius: 20px;
-  background: linear-gradient(120deg, rgba(30, 41, 59, 0.9), rgba(79, 70, 229, 0.9));
+  background: linear-gradient(120deg, rgba(30, 41, 59, 0.9), rgba(14, 165, 233, 0.9));
   color: #f8fafc;
   box-shadow: 0 20px 40px rgba(15, 23, 42, 0.2);
   animation: fadeUp 0.6s ease;
@@ -2935,11 +3116,11 @@ h4 {
 }
 
 .step-card {
-  background: #ffffff;
-  border-radius: 16px;
-  padding: 18px;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+  background: var(--color-bg-card);
+  border-radius: var(--radius-card);
+  padding: var(--space-lg);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-card);
   animation: fadeUp 0.6s ease;
 }
 
@@ -2953,13 +3134,13 @@ h4 {
 .step-index {
   width: 38px;
   height: 38px;
-  border-radius: 12px;
+  border-radius: var(--radius-btn);
   display: grid;
   place-items: center;
   font-weight: 700;
-  color: #312e81;
-  background: #e0e7ff;
-  font-size: 0.85rem;
+  color: var(--color-primary-hover);
+  background: var(--color-bg-page-alt);
+  font-size: var(--text-caption);
   text-transform: uppercase;
 }
 
@@ -2984,18 +3165,18 @@ h4 {
 
 .action-primary,
 .action-secondary {
-  padding: 12px 20px;
-  border-radius: 12px;
+  padding: var(--space-sm) var(--space-lg);
+  border-radius: var(--radius-btn);
   font-weight: 600;
   cursor: pointer;
   border: none;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: transform var(--transition-default), box-shadow var(--transition-default);
 }
 
 .action-primary {
-  background: linear-gradient(120deg, #4f46e5, #6366f1);
+  background: linear-gradient(120deg, #0EA5E9, #38BDF8);
   color: #ffffff;
-  box-shadow: 0 12px 24px rgba(79, 70, 229, 0.3);
+  box-shadow: 0 12px 24px rgba(14, 165, 233, 0.3);
 }
 
 .action-secondary {
@@ -3044,9 +3225,9 @@ h4 {
 }
 
 .outline-btn.primary {
-  background: #4f46e5;
+  background: #0EA5E9;
   color: #ffffff;
-  border-color: #4f46e5;
+  border-color: #0EA5E9;
 }
 
 .outline-btn:disabled {
@@ -3074,7 +3255,7 @@ h4 {
 
 .outline-item {
   border: 1px solid rgba(99, 102, 241, 0.2);
-  border-left: 4px solid #6366f1;
+  border-left: 4px solid #38BDF8;
   border-radius: 12px;
   padding: 14px;
   background: linear-gradient(135deg, rgba(224, 231, 255, 0.55), rgba(255, 255, 255, 0.9));
@@ -3095,7 +3276,7 @@ h4 {
 .outline-item-header span {
   padding: 4px 10px;
   border-radius: 999px;
-  background: rgba(79, 70, 229, 0.12);
+  background: rgba(14, 165, 233, 0.12);
   color: #3730a3;
   font-size: 0.85rem;
 }
@@ -3138,8 +3319,25 @@ h4 {
 .form-group input:focus,
 .form-group textarea:focus {
   outline: none;
-  border-color: #4f46e5;
+  border-color: #0EA5E9;
 }
+
+.form-group-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.form-group-inline label { margin-bottom: 0; }
+.mt-1 { margin-top: 8px; }
+.select-sm, .select-md {
+  padding: 8px 12px;
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+.select-sm { max-width: 80px; }
+.select-md { min-width: 180px; max-width: 240px; }
 
 .style-options {
   display: flex;
@@ -3156,13 +3354,13 @@ h4 {
 }
 
 .style-option:hover {
-  border-color: #4f46e5;
+  border-color: #0EA5E9;
 }
 
 .style-option.selected {
   background: #e0e7ff;
-  border-color: #4f46e5;
-  color: #4f46e5;
+  border-color: #0EA5E9;
+  color: #0EA5E9;
   font-weight: 500;
 }
 
@@ -3183,7 +3381,7 @@ h4 {
 }
 
 .template-option.selected {
-  border-color: #4f46e5;
+  border-color: #0EA5E9;
   background: #f5f3ff;
 }
 
@@ -3268,7 +3466,7 @@ h4 {
 }
 
 .model-option.selected {
-  border-color: #4f46e5;
+  border-color: #0EA5E9;
   background: #f5f3ff;
 }
 
@@ -3311,13 +3509,13 @@ h4 {
 }
 
 .modal-btn.primary {
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  background: linear-gradient(135deg, #0EA5E9 0%, #38BDF8 100%);
   color: white;
 }
 
 .modal-btn.primary:hover:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 10px 20px rgba(79, 70, 229, 0.3);
+  box-shadow: 0 10px 20px rgba(14, 165, 233, 0.3);
 }
 
 .modal-btn.primary:disabled {

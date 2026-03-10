@@ -10,11 +10,24 @@ C++17 REST backend that complements the `ppt_generate_front` Vue application. It
 - Password hashing with salted SHA-256 plus randomly generated bearer tokens stored in the database.
 - Config-driven deployment (JSON file) so you can adapt ports, credentials, and pool sizes without recompiling.
 
+## PPT generation mode (builder_mode)
+
+The backend can generate PPTX in two ways (see `config/generation`):
+
+- **`builder_mode: "python"`** (default): Uses the Python script and a PPT template (python-pptx). Requires `python_binary` and `builder_script`, and a valid template file.
+- **`builder_mode: "pptxgenjs"`**: Uses the Node.js PptxGenJS script to generate slides from scratch (no template). Requires Node.js, `node_binary`, and `pptxgen_builder_script`. Run the backend from the `ppt_generate_back` directory so `node_modules/pptxgenjs` is found.
+
+To use PptxGenJS: set `"builder_mode": "pptxgenjs"` in `config/config.json`, run `npm install` in `ppt_generate_back`, and start the server with working directory `ppt_generate_back`.
+
 ## Project layout
 
 ```
 ppt_generate_back/
 ├── CMakeLists.txt
+├── package.json
+├── scripts
+│   ├── libreoffice_ppt_builder.py
+│   └── pptxgen_builder.js
 ├── config
 │   └── config.example.json
 ├── include
@@ -65,9 +78,10 @@ cp config/config.example.json config/config.json
 
 Key fields:
 - `server.host` plus `server.port` (default 8080 to match the frontend proxy).
-- `database` section for connection info and pool size.
+- `database` section for connection info, pool size, and optional `query_timeout_seconds` (default 30) for MySQL read/write timeout.
 - `auth.token_ttl_minutes` to adjust bearer token lifetime.
 - `providers.qwen_api_key` 设置为通义千问的 DashScope API Key，可启用真实文本生成；留空则退回到占位内容。
+- `providers.qwen_timeout_seconds`（默认 60）、`providers.doubao_timeout_seconds`（默认 30）用于外部 API 请求超时。
 
 ## Build & run
 
@@ -95,6 +109,7 @@ All routes are prefixed with `/api` and respond with JSON.
 | GET    | `/templates`      | Return curated PPT templates from free provider websites. |
 | GET    | `/models`         | Available PPT generation models / providers.              |
 | GET    | `/health`         | Basic liveness check.                                     |
+| GET    | `/metrics`        | Process metrics (generation total/success/failed, last_duration_ms). |
 
 Authentication: send `Authorization: Bearer <token>` for protected endpoints.
 

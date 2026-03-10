@@ -129,11 +129,8 @@ void AppendImagePlaceholders(SlideContent& slide,
     if (prompt.empty()) {
       continue;
     }
+    // 仅记录图片提示词，由后端的通义万相/DashScope 图像客户端生成真实图片。
     slide.image_prompts.push_back(prompt);
-    const auto url = BuildImageUrl(prompt);
-    if (!url.empty()) {
-      slide.image_urls.push_back(url);
-    }
   }
 }
 
@@ -702,7 +699,8 @@ bool ParseSlidesText(const std::string& slides_text,
 bool CallQwen(const std::string& api_key,
               const std::string& prompt,
               std::string& text_out,
-              std::string& error_message) {
+              std::string& error_message,
+              std::uint32_t timeout_seconds) {
   if (api_key.empty()) {
     error_message = "未配置通义千问API密钥";
     return false;
@@ -731,6 +729,9 @@ bool CallQwen(const std::string& api_key,
   curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buffer);
+  if (timeout_seconds > 0) {
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
+  }
 
   CURLcode res = curl_easy_perform(curl);
   curl_slist_free_all(headers);
@@ -761,7 +762,9 @@ bool CallQwen(const std::string& api_key,
 }
 }
 
-QwenClient::QwenClient(std::string api_key) : api_key_(std::move(api_key)) {
+QwenClient::QwenClient(std::string api_key, std::uint32_t timeout_seconds)
+    : api_key_(std::move(api_key)),
+      timeout_seconds_(timeout_seconds > 0 ? timeout_seconds : 60) {
   curl_global_init(CURL_GLOBAL_DEFAULT);
 }
 
@@ -773,7 +776,7 @@ bool QwenClient::GenerateOutline(const std::string& topic,
   slide_count = std::max(1, std::min(slide_count, 10));
   const auto prompt = BuildOutlinePrompt(topic, slide_count, template_hint);
   std::string outline_text;
-  if (!CallQwen(api_key_, prompt, outline_text, error_message)) {
+  if (!CallQwen(api_key_, prompt, outline_text, error_message, timeout_seconds_)) {
     return false;
   }
   try {
@@ -801,7 +804,7 @@ bool QwenClient::GenerateLayoutGuide(const std::string& template_summary_json,
   slide_count = std::max(1, std::min(slide_count, 50));
   const auto prompt = BuildLayoutGuidePrompt(template_summary_json, slide_count, template_hint);
   std::string guide_text;
-  if (!CallQwen(api_key_, prompt, guide_text, error_message)) {
+  if (!CallQwen(api_key_, prompt, guide_text, error_message, timeout_seconds_)) {
     return false;
   }
   try {
@@ -846,7 +849,7 @@ bool QwenClient::GenerateSlidesFromOutline(const std::string& topic,
   }
   const auto prompt = BuildSlidesPromptFromOutline(topic, outline, include_images);
   std::string slides_text;
-  if (!CallQwen(api_key_, prompt, slides_text, error_message)) {
+  if (!CallQwen(api_key_, prompt, slides_text, error_message, timeout_seconds_)) {
     return false;
   }
   return ParseSlidesText(slides_text, topic, include_images, out_slides, error_message);
@@ -868,7 +871,7 @@ bool QwenClient::GenerateSlidesFromOutlineWithLayout(const std::string& topic,
   const auto prompt = BuildSlidesPromptFromOutlineWithLayout(topic, outline, include_images,
                                                              layout_guide_json);
   std::string slides_text;
-  if (!CallQwen(api_key_, prompt, slides_text, error_message)) {
+  if (!CallQwen(api_key_, prompt, slides_text, error_message, timeout_seconds_)) {
     return false;
   }
   if (!ParseSlidesText(slides_text, topic, include_images, out_slides, error_message)) {
@@ -919,7 +922,7 @@ bool QwenClient::GenerateSlides(const std::string& topic,
          << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）。"
          << "禁止输出除JSON以外的任何字符。";
   std::string slides_text;
-  if (!CallQwen(api_key_, prompt.str(), slides_text, error_message)) {
+  if (!CallQwen(api_key_, prompt.str(), slides_text, error_message, timeout_seconds_)) {
     return false;
   }
   if (ParseSlidesText(slides_text, topic, include_images, out_slides, error_message)) {
@@ -947,7 +950,7 @@ bool QwenClient::GenerateSlidesWithLayout(const std::string& topic,
   prompt << BuildSlidesPromptWithLayout(topic, slide_count, template_hint, include_images,
                                         layout_guide_json);
   std::string slides_text;
-  if (!CallQwen(api_key_, prompt.str(), slides_text, error_message)) {
+  if (!CallQwen(api_key_, prompt.str(), slides_text, error_message, timeout_seconds_)) {
     return false;
   }
   if (ParseSlidesText(slides_text, topic, include_images, out_slides, error_message)) {

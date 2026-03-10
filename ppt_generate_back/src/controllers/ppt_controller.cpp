@@ -1,5 +1,6 @@
 #include "controllers/ppt_controller.h"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -9,12 +10,18 @@
 #include <optional>
 #include <random>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 #include <curl/curl.h>
 
+#include "http/http_types.h"
 #include "logger.h"
 #include "models/outline_item.h"
+#include "models/slide_content.h"
+#include "utils/ppt_metrics.h"
+
+#include <chrono>
 
 namespace {
 constexpr int kTemplateAnalysisVersion = 2;
@@ -38,6 +45,69 @@ std::string FormatTimestamp(std::uint64_t seconds) {
     return {};
   }
   return buffer;
+}
+
+/** UTF-8 replacement character. */
+static const unsigned char kUtf8Replacement[] = { 0xEF, 0xBF, 0xBD };
+
+/** Make string valid UTF-8 so nlohmann::json::dump() does not throw. Replaces invalid sequences with U+FFFD. */
+std::string ToSafeJsonString(std::string value) {
+  std::string out;
+  out.reserve(value.size());
+  const unsigned char* p = reinterpret_cast<const unsigned char*>(value.data());
+  const unsigned char* end = p + value.size();
+  while (p < end) {
+    unsigned char b = *p++;
+    if (b <= 0x7F) {
+      if (b == 0) continue;
+      if (b < 0x20 && b != '\t' && b != '\n' && b != '\r') {
+        out.append(kUtf8Replacement, kUtf8Replacement + 3);
+        continue;
+      }
+      if (b == 0x7F) {
+        out.append(kUtf8Replacement, kUtf8Replacement + 3);
+        continue;
+      }
+      out.push_back(static_cast<char>(b));
+      continue;
+    }
+    if (b >= 0xC2 && b <= 0xDF && p + 1 <= end) {
+      unsigned char b1 = p[0];
+      if (b1 >= 0x80 && b1 <= 0xBF) {
+        out.push_back(static_cast<char>(b));
+        out.push_back(static_cast<char>(b1));
+        p += 1;
+        continue;
+      }
+    }
+    if (b >= 0xE0 && b <= 0xEF && p + 2 <= end) {
+      unsigned char b1 = p[0], b2 = p[1];
+      if (b1 >= 0x80 && b1 <= 0xBF && b2 >= 0x80 && b2 <= 0xBF) {
+        if (b != 0xE0 || b1 >= 0xA0) {
+          out.push_back(static_cast<char>(b));
+          out.push_back(static_cast<char>(b1));
+          out.push_back(static_cast<char>(b2));
+          p += 2;
+          continue;
+        }
+      }
+    }
+    if (b >= 0xF0 && b <= 0xF4 && p + 3 <= end) {
+      unsigned char b1 = p[0], b2 = p[1], b3 = p[2];
+      if (b1 >= 0x80 && b1 <= 0xBF && b2 >= 0x80 && b2 <= 0xBF && b3 >= 0x80 && b3 <= 0xBF) {
+        if (b == 0xF0 && b1 < 0x90) { /* overlong */ } else if (b == 0xF4 && b1 > 0x8F) { /* > U+10FFFF */ } else {
+          out.push_back(static_cast<char>(b));
+          out.push_back(static_cast<char>(b1));
+          out.push_back(static_cast<char>(b2));
+          out.push_back(static_cast<char>(b3));
+          p += 3;
+          continue;
+        }
+      }
+    }
+    out.append(kUtf8Replacement, kUtf8Replacement + 3);
+  }
+  return out;
 }
 
 std::string SanitizeFilenamePart(const std::string& value, std::size_t max_len) {
@@ -271,36 +341,40 @@ bool LoadLayoutGuide(const GenerationConfig& config,
   return true;
 }
 
-nlohmann::json RequestToJson(const PptRequest& request, const std::string& download_url = {}) {
+nlohmann::json RequestToJson(const PptRequest& request, const std::string& download_url = {},
+                              const std::string& download_url_pdf = {}) {
   const bool has_file = !request.output_path.empty();
   nlohmann::json result = {
       {"id", request.id},
       {"userId", request.user_id},
-      {"title", request.title},
-      {"topic", request.topic},
+      {"title", ToSafeJsonString(request.title)},
+      {"topic", ToSafeJsonString(request.topic)},
       {"pages", request.pages},
-      {"style", request.style},
+      {"style", ToSafeJsonString(request.style)},
       {"includeImages", request.include_images},
       {"includeCharts", request.include_charts},
       {"includeNotes", request.include_notes},
-      {"modelId", request.model_id},
-      {"modelName", request.model_name},
-      {"templateId", request.template_id},
-      {"templateName", request.template_name},
-      {"status", request.status},
+      {"modelId", ToSafeJsonString(request.model_id)},
+      {"modelName", ToSafeJsonString(request.model_name)},
+      {"templateId", ToSafeJsonString(request.template_id)},
+      {"templateName", ToSafeJsonString(request.template_name)},
+      {"status", ToSafeJsonString(request.status)},
       {"createdAt", FormatTimestamp(request.created_at)},
       {"updatedAt", FormatTimestamp(request.updated_at)},
       {"hasFile", has_file}};
   if (!request.user_name.empty()) {
-    result["username"] = request.user_name;
+    result["username"] = ToSafeJsonString(request.user_name);
   }
   if (!request.user_email.empty()) {
-    result["email"] = request.user_email;
+    result["email"] = ToSafeJsonString(request.user_email);
   }
   if (has_file) {
     result["downloadUrl"] = download_url.empty()
                                 ? "/api/ppt/file?id=" + std::to_string(request.id)
-                                : download_url;
+                                : ToSafeJsonString(download_url);
+    if (!download_url_pdf.empty()) {
+      result["downloadUrlPdf"] = ToSafeJsonString(download_url_pdf);
+    }
   }
   return result;
 }
@@ -553,15 +627,53 @@ bool WriteBinaryFile(const std::string& path, const std::vector<unsigned char>& 
   return output.good();
 }
 
-void AttachImagesToSlides(const GenerationConfig& config,
-                          DoubaoImageClient& client,
-                          std::vector<SlideContent>& slides,
-                          std::uint64_t request_id,
-                          const std::string& topic) {
-  if (!client.IsEnabled()) {
-    return;
+std::string UrlEncodeSimple(const std::string& value) {
+  static const char* hex = "0123456789ABCDEF";
+  std::string encoded;
+  encoded.reserve(value.size() * 3);
+  for (unsigned char c : value) {
+    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      encoded.push_back(static_cast<char>(c));
+    } else if (c == ' ') {
+      encoded.push_back('+');
+    } else {
+      encoded.push_back('%');
+      encoded.push_back(hex[c >> 4]);
+      encoded.push_back(hex[c & 0x0F]);
+    }
   }
+  return encoded;
+}
 
+std::string BuildSafeImagePrompt(const SlideContent& slide, const std::string& topic) {
+  std::string base = slide.title;
+  if (base.empty()) {
+    base = topic;
+  }
+  if (base.empty()) {
+    return {};
+  }
+  const auto http_pos = base.find("http");
+  if (http_pos != std::string::npos) {
+    base = base.substr(0, http_pos);
+  }
+  for (char& c : base) {
+    if (c == '"' || c == '\'' || c == '`') {
+      c = ' ';
+    }
+  }
+  const std::size_t kMaxLen = 48;
+  if (base.size() > kMaxLen) {
+    base.resize(kMaxLen);
+  }
+  return base + " 插画 场景图";
+}
+
+void AttachImagesWithWanxiangAndUnsplash(const GenerationConfig& config,
+                                         WanxiangImageClient* wanx_client,
+                                         std::vector<SlideContent>& slides,
+                                         std::uint64_t request_id,
+                                         const std::string& topic) {
   for (std::size_t i = 0; i < slides.size(); ++i) {
     auto& slide = slides[i];
     if (slide.image_prompts.empty()) {
@@ -575,35 +687,68 @@ void AttachImagesToSlides(const GenerationConfig& config,
       continue;
     }
 
-    std::vector<DoubaoImageAsset> assets;
-    std::string error;
-    if (!client.GenerateImages(slide.image_prompts.front(), assets, error)) {
-      Logger::Warn("Doubao image generation failed: " + error);
-      continue;
-    }
+    bool has_any_image = !slide.image_paths.empty() || !slide.image_urls.empty();
 
-    const auto timeout = client.timeout_seconds();
-    for (std::size_t j = 0; j < assets.size(); ++j) {
-      const auto image_path = BuildImagePath(config, request_id, i, j);
-      bool saved = false;
-      std::string save_error;
-      if (!assets[j].b64_json.empty()) {
-        const auto data = Base64Decode(assets[j].b64_json);
-        saved = !data.empty() && WriteBinaryFile(image_path, data);
-        if (!saved) {
-          save_error = "base64解码失败";
+    if (!has_any_image && wanx_client && wanx_client->IsEnabled()) {
+      const auto safe_prompt = BuildSafeImagePrompt(slide, topic);
+      if (safe_prompt.empty()) {
+        continue;
+      }
+      std::vector<std::string> urls;
+      std::string error;
+      if (!wanx_client->GenerateImages(safe_prompt, urls, error)) {
+        // 如果因内容巡检拒绝，退回到一个与主题弱相关的通用安全提示词，保证仍然有真实配图。
+        if (error.find("DataInspectionFailed") != std::string::npos) {
+          std::vector<std::string> generic_urls;
+          std::string generic_error;
+          const std::string generic_prompt = "简洁技术主题PPT 扁平插画 场景图";
+          if (!wanx_client->GenerateImages(generic_prompt, generic_urls, generic_error)) {
+            Logger::Warn("Wanxiang image generation failed: " + error +
+                         " prompt=" + safe_prompt +
+                         "; generic_error=" + generic_error);
+          } else {
+            urls = std::move(generic_urls);
+          }
+        } else {
+          Logger::Warn("Wanxiang image generation failed: " + error + " prompt=" + safe_prompt);
         }
-      } else if (!assets[j].url.empty()) {
-        saved = DownloadToFile(assets[j].url, image_path, timeout, save_error);
       }
 
-      if (saved) {
-        slide.image_paths.push_back(image_path);
-        if (!assets[j].url.empty()) {
-          slide.image_urls.push_back(assets[j].url);
+      if (!urls.empty()) {
+        const auto timeout = wanx_client->timeout_seconds();
+        for (std::size_t j = 0; j < urls.size(); ++j) {
+          const auto& url = urls[j];
+          if (url.empty()) {
+            continue;
+          }
+          const auto image_path = BuildImagePath(config, request_id, i, j);
+          std::string save_error;
+          bool saved = DownloadToFile(url, image_path, timeout, save_error);
+          if (saved) {
+            slide.image_paths.push_back(image_path);
+            slide.image_urls.push_back(url);
+            has_any_image = true;
+          } else {
+            Logger::Warn("Wanxiang image download failed: " + save_error);
+          }
         }
-      } else {
-        Logger::Warn("Image download failed: " + save_error);
+      }
+    }
+
+    // 对仅有 URL 而没有本地路径的图片，统一在服务端预下载到 image_dir，
+    // 这样无论是 Python 模板模式还是 Node 风格模式，都可以稳定插入本地图片文件。
+    if (slide.image_paths.empty() && !slide.image_urls.empty()) {
+      const auto& url = slide.image_urls.front();
+      if (!url.empty()) {
+        const auto image_path = BuildImagePath(config, request_id, i, 0);
+        const std::uint32_t timeout =
+            wanx_client && wanx_client->timeout_seconds() > 0 ? wanx_client->timeout_seconds() : 60;
+        std::string save_error;
+        if (DownloadToFile(url, image_path, timeout, save_error)) {
+          slide.image_paths.push_back(image_path);
+        } else {
+          Logger::Warn("Fallback image download failed: " + save_error);
+        }
       }
     }
   }
@@ -638,6 +783,145 @@ std::string BuildObjectKey(const GenerationConfig& config, const std::string& ou
   return key;
 }
 
+/** Object key for PDF: same relative path as pptx but .pdf extension. */
+std::string BuildObjectKeyPdf(const GenerationConfig& config, const std::string& pptx_output_path) {
+  if (pptx_output_path.empty()) {
+    return {};
+  }
+  std::filesystem::path p(pptx_output_path);
+  p.replace_extension(".pdf");
+  return BuildObjectKey(config, p.string());
+}
+
+/** Ensure PDF exists at pdf_path; convert from pptx_path using soffice if needed. Returns true on success. */
+bool EnsurePdfFromPptx(const std::string& pptx_path, const std::string& pdf_path,
+                       const std::string& soffice_binary, std::string& error) {
+  if (pptx_path.empty() || pdf_path.empty()) {
+    error = "Empty path";
+    return false;
+  }
+  std::error_code ec;
+  if (std::filesystem::exists(pdf_path, ec) && std::filesystem::file_size(pdf_path, ec) > 0 && !ec) {
+    return true;
+  }
+  if (!std::filesystem::exists(pptx_path, ec) || ec) {
+    error = "PPTX file not found: " + pptx_path;
+    return false;
+  }
+  std::filesystem::path out_path(pdf_path);
+  std::string out_dir = out_path.parent_path().string();
+  std::ostringstream cmd;
+  cmd << "\"" << soffice_binary << "\" --headless --convert-to pdf --outdir \"" << out_dir << "\" \"" << pptx_path << "\"";
+  const int ret = std::system(cmd.str().c_str());
+  if (ret != 0) {
+    error = "soffice convert failed with code " + std::to_string(ret);
+    return false;
+  }
+  if (!std::filesystem::exists(pdf_path, ec) || std::filesystem::file_size(pdf_path, ec) == 0 || ec) {
+    error = "PDF was not created: " + pdf_path;
+    return false;
+  }
+  return true;
+}
+
+/** Map frontend style id to PptxGenJS theme preset (pptxgen_builder.js THEME_PRESETS). */
+std::string StyleToThemePreset(const std::string& style) {
+  static const std::unordered_map<std::string, std::string> kMap = {
+      {"business", "midnight"}, {"academic", "forest"},
+      {"creative", "coral"},    {"minimal", "charcoal"}};
+  auto it = kMap.find(style);
+  return (it != kMap.end()) ? it->second : "midnight";
+}
+
+/** Generate PPTX using PptxGenJS only (no template). Writes payload and runs node script. */
+bool RunPptxGenFromPreset(const std::vector<SlideContent>& slides,
+                         const std::string& output_path,
+                         const std::string& style,
+                         const std::string& options_json,
+                         const GenerationConfig& config,
+                         std::string& error) {
+  if (config.node_binary.empty() || config.pptxgen_builder_script.empty()) {
+    error = "PptxGenJS builder not configured";
+    return false;
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(config.pptxgen_builder_script, ec) || ec) {
+    error = "PptxGenJS script not found";
+    return false;
+  }
+  std::filesystem::path out_path(output_path);
+  std::filesystem::path payload_path = out_path;
+  payload_path.replace_extension(".json");
+  std::filesystem::create_directories(out_path.parent_path(), ec);
+
+  nlohmann::json payload;
+  payload["themePreset"] = StyleToThemePreset(style);
+  if (!options_json.empty()) {
+    try {
+      auto opts = nlohmann::json::parse(options_json);
+      if (opts.contains("themePreset") && opts["themePreset"].is_string()) {
+        payload["themePreset"] = opts["themePreset"].get<std::string>();
+      }
+    } catch (const std::exception&) {}
+  }
+  payload["slides"] = nlohmann::json::array();
+  for (const auto& slide : slides) {
+    nlohmann::json item;
+    item["title"] = slide.title;
+    if (!slide.bullets.empty()) {
+      item["bullets"] = slide.bullets;
+    } else if (!slide.raw_text.empty()) {
+      item["bullets"] = nlohmann::json::array({slide.raw_text});
+    } else {
+      item["bullets"] = nlohmann::json::array();
+    }
+    if (!slide.bullet_groups.empty()) {
+      item["bulletGroups"] = slide.bullet_groups;
+    }
+    if (!slide.notes.empty()) {
+      item["notes"] = slide.notes;
+    }
+    if (!slide.image_paths.empty()) {
+      item["imagePaths"] = slide.image_paths;
+    }
+    if (!slide.image_urls.empty()) {
+      item["imageUrls"] = slide.image_urls;
+    }
+    if (!slide.layout_hint.empty()) {
+      item["layoutHint"] = slide.layout_hint;
+    }
+    payload["slides"].push_back(std::move(item));
+  }
+
+  std::ofstream out(payload_path.string());
+  if (!out.is_open()) {
+    error = "Cannot write payload file";
+    return false;
+  }
+  out << payload.dump();
+  out.close();
+  if (!out.good()) {
+    error = "Failed to write payload";
+    return false;
+  }
+
+  std::ostringstream cmd;
+  cmd << "\"" << config.node_binary << "\""
+      << " \"" << config.pptxgen_builder_script << "\""
+      << " --data-json \"" << payload_path.string() << "\""
+      << " --output \"" << output_path << "\"";
+  const int ret = std::system(cmd.str().c_str());
+  if (ret != 0) {
+    error = "PptxGenJS script failed with code " + std::to_string(ret);
+    return false;
+  }
+  if (!std::filesystem::exists(output_path, ec) || std::filesystem::file_size(output_path, ec) == 0 || ec) {
+    error = "PptxGenJS did not produce output file";
+    return false;
+  }
+  return true;
+}
+
 std::string Trim(std::string value) {
   const auto start = value.find_first_not_of(" \t\r\n");
   if (start == std::string::npos) {
@@ -647,14 +931,21 @@ std::string Trim(std::string value) {
   return value.substr(start, end - start + 1);
 }
 
-std::string BuildDownloadFilename(const PptRequest& request, const User& user) {
+std::string BuildDownloadFilename(const PptRequest& request, const User& user, const std::string& extension = ".pptx") {
   const auto safe_title = SanitizeFilenamePart(request.title, 80);
   const auto safe_email = SanitizeFilenamePart(user.email, 80);
   std::string filename = safe_title;
   if (!safe_email.empty()) {
     filename += "_" + safe_email;
   }
-  filename += "_" + std::to_string(request.id) + ".pptx";
+  filename += "_" + std::to_string(request.id);
+  if (extension.empty()) {
+    filename += ".pptx";
+  } else if (extension[0] == '.') {
+    filename += extension;
+  } else {
+    filename += "." + extension;
+  }
   return filename;
 }
 
@@ -757,6 +1048,216 @@ ByteRange ParseRangeHeader(const std::string& header, std::uint64_t file_size) {
   }
 }
 
+struct PptGenerationJob {
+  PptRequest ppt_request;
+  PptRequestInput input;
+  std::uint64_t user_id = 0;
+  std::string user_email;
+  std::string template_id;
+};
+
+void DoActualGeneration(
+    const PptGenerationJob& job,
+    std::shared_ptr<PptService> ppt_svc,
+    std::shared_ptr<TemplateService> template_svc,
+    std::shared_ptr<QwenClient> qwen_client,
+    std::shared_ptr<S3Client> s3_client,
+    std::shared_ptr<WanxiangImageClient> wanx_client,
+    GenerationConfig generation_config) {
+  using namespace std::chrono;
+  const auto start_time = steady_clock::now();
+  const std::uint64_t request_id = job.ppt_request.id;
+  PptMetrics::IncGenerationTotal();
+  Logger::Info("generation_start request_id=" + std::to_string(request_id));
+
+  const auto record_end = [&](bool success) {
+    const auto elapsed_ms = duration_cast<milliseconds>(steady_clock::now() - start_time).count();
+    PptMetrics::SetLastGenerationDurationMs(static_cast<std::uint64_t>(elapsed_ms));
+    if (success) {
+      PptMetrics::IncGenerationSuccess();
+    } else {
+      PptMetrics::IncGenerationFailed();
+    }
+    Logger::Info("generation_end request_id=" + std::to_string(request_id) +
+                 " status=" + (success ? "completed" : "failed") +
+                 " duration_ms=" + std::to_string(elapsed_ms));
+  };
+
+  const PptRequest& ppt_request = job.ppt_request;
+  const PptRequestInput& input = job.input;
+  std::string update_error;
+
+  auto template_info_opt = template_svc->FindById(job.template_id);
+  if (!template_info_opt) {
+    ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+    Logger::Error("DoActualGeneration: template not found " + job.template_id);
+    record_end(false);
+    return;
+  }
+
+  std::string template_prompt = template_info_opt->prompt.empty()
+                                    ? template_info_opt->description
+                                    : template_info_opt->prompt;
+  std::optional<std::string> template_file = template_svc->GetLocalFile(template_info_opt->id);
+  nlohmann::json template_analysis;
+  bool has_template_analysis = false;
+  if (template_file) {
+    std::string analysis_error;
+    if (EnsureTemplateAnalysis(generation_config, template_info_opt->id, *template_file,
+                               template_analysis, analysis_error)) {
+      has_template_analysis = true;
+    }
+  }
+
+  if (!qwen_client || !qwen_client->IsEnabled()) {
+    ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+    record_end(false);
+    return;
+  }
+
+  std::vector<OutlineItem> outline = input.outline;
+  if (!outline.empty() && static_cast<int>(outline.size()) > input.pages) {
+    outline.resize(static_cast<std::size_t>(input.pages));
+  }
+
+  std::vector<SlideContent> slides;
+  std::string qwen_error;
+  bool generated = false;
+
+  if (outline.empty()) {
+    std::string outline_error;
+    if (!qwen_client->GenerateOutline(input.topic, input.pages, template_prompt, outline, outline_error)) {
+      Logger::Warn("PPT outline generation failed: " + outline_error);
+    }
+  }
+
+  std::string layout_guide_json;
+  const int layout_slide_count = outline.empty()
+                                     ? std::max(1, std::min(input.pages, 10))
+                                     : static_cast<int>(outline.size());
+  if (has_template_analysis && layout_slide_count > 0 && template_file) {
+    std::string layout_error;
+    if (!LoadLayoutGuide(generation_config, template_info_opt->id, *template_file,
+                         layout_slide_count, template_prompt, template_analysis,
+                         *qwen_client, layout_guide_json, layout_error)) {
+      layout_guide_json.clear();
+    }
+  }
+
+  if (!outline.empty()) {
+    if (qwen_client->GenerateSlidesFromOutlineWithLayout(input.topic, outline, input.include_images,
+                                                          layout_guide_json, slides, qwen_error)) {
+      generated = true;
+    } else {
+      slides = BuildSlidesFromOutline(outline, input.topic, input.include_images);
+      generated = !slides.empty();
+    }
+  }
+  if (!generated) {
+    if (qwen_client->GenerateSlidesWithLayout(input.topic, input.pages, template_prompt,
+                                              input.include_images, layout_guide_json,
+                                              slides, qwen_error)) {
+      generated = true;
+    }
+  }
+
+  if (!generated) {
+    Logger::Warn("Qwen slide generation failed: " + qwen_error);
+    ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+    record_end(false);
+    return;
+  }
+
+  if (input.enable_section_slides && static_cast<int>(slides.size()) > input.section_slide_interval) {
+    std::vector<SlideContent> with_sections;
+    int section_num = 1;
+    for (size_t i = 0; i < slides.size(); i++) {
+      if (i > 0 && i % static_cast<size_t>(input.section_slide_interval) == 0) {
+        SlideContent sec;
+        sec.title = "第" + std::to_string(++section_num) + "部分";
+        sec.layout_hint = "section";
+        with_sections.push_back(sec);
+      }
+      with_sections.push_back(slides[i]);
+    }
+    slides = std::move(with_sections);
+  }
+
+  if (input.include_images) {
+    AttachImagesWithWanxiangAndUnsplash(generation_config, wanx_client.get(), slides, ppt_request.id, input.topic);
+  }
+
+  std::string output_path = BuildOutputPath(generation_config, ppt_request.id, input.title, job.user_email);
+  Logger::Info("Generating PPT (async): " + output_path);
+  std::string generate_error;
+  bool gen_ok = false;
+
+  if (input.generate_mode == "style") {
+    nlohmann::json style_options;
+    if (!input.theme_preset.empty()) {
+      style_options["themePreset"] = input.theme_preset;
+    }
+    std::string options_json = style_options.empty() ? "" : style_options.dump();
+    gen_ok = RunPptxGenFromPreset(slides, output_path, input.style, options_json, generation_config, generate_error);
+  } else {
+    if (!template_file) {
+      Logger::Warn("Template file missing for id: " + template_info_opt->id);
+      ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+      record_end(false);
+      return;
+    }
+    nlohmann::json template_options;
+    template_options["builderMode"] = "template";
+    if (!input.theme_preset.empty()) {
+      template_options["themePreset"] = input.theme_preset;
+    }
+    std::string options_json = template_options.dump();
+    gen_ok = ppt_svc->GeneratePptxFile(*template_file, slides, output_path, generate_error, layout_guide_json, options_json);
+  }
+
+  if (gen_ok) {
+    ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, output_path, "completed", update_error);
+    if (!outline.empty()) {
+      AppendOutlineToPreviewJson(output_path, outline);
+    }
+    if (s3_client && s3_client->IsEnabled()) {
+      const auto object_key = BuildObjectKey(generation_config, output_path);
+      if (!object_key.empty()) {
+        std::string upload_error;
+        if (s3_client->UploadFile(output_path, object_key, upload_error)) {
+          Logger::Info("S3 upload success: key=" + object_key);
+        } else {
+          Logger::Warn("S3 upload failed: " + upload_error);
+        }
+      }
+    }
+    std::string pdf_error;
+    std::filesystem::path pdf_path(output_path);
+    pdf_path.replace_extension(".pdf");
+    const std::string pdf_path_str = pdf_path.string();
+    if (EnsurePdfFromPptx(output_path, pdf_path_str, generation_config.soffice_binary, pdf_error)) {
+      if (s3_client && s3_client->IsEnabled()) {
+        const auto pdf_key = BuildObjectKeyPdf(generation_config, output_path);
+        if (!pdf_key.empty()) {
+          std::string upload_error;
+          if (s3_client->UploadFile(pdf_path_str, pdf_key, upload_error)) {
+            Logger::Info("S3 PDF upload success: key=" + pdf_key);
+          } else {
+            Logger::Warn("S3 PDF upload failed: " + upload_error);
+          }
+        }
+      }
+    } else {
+      Logger::Warn("PDF generation skipped: " + pdf_error);
+    }
+    record_end(true);
+  } else {
+    Logger::Warn("PPTX generation failed: " + generate_error);
+    ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+    record_end(false);
+  }
+}
+
 }  // namespace
 
 PptController::PptController(std::shared_ptr<AuthService> auth_service,
@@ -766,7 +1267,8 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
                            GenerationConfig generation_config,
                            std::shared_ptr<QwenClient> qwen_client,
                            std::shared_ptr<S3Client> s3_client,
-                           std::shared_ptr<DoubaoImageClient> doubao_client)
+                           std::shared_ptr<WanxiangImageClient> wanx_client,
+                           std::shared_ptr<ThreadPool> thread_pool)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
@@ -774,21 +1276,25 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
       generation_config_(std::move(generation_config)),
       qwen_client_(std::move(qwen_client)),
       s3_client_(std::move(s3_client)),
-      doubao_client_(std::move(doubao_client)) {}
+      wanx_client_(std::move(wanx_client)),
+      thread_pool_(std::move(thread_pool)) {}
 
 HttpResponse PptController::Generate(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
-    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
   }
 
   auto model = model_service_->FindById("qwen-turbo");
   if (!model) {
-    return HttpResponse::Json(500, {{"message", "Model not found"}});
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
   }
 
   try {
+    if (request.body.find('\0') != std::string::npos) {
+      return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
+    }
     auto input = PptRequestInput::FromJson(nlohmann::json::parse(request.body));
 
     if (input.pages < 1) {
@@ -798,14 +1304,22 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     }
 
     if (input.title.empty() || input.topic.empty()) {
-      return HttpResponse::Json(400, {{"message", "Title and topic cannot be empty"}});
+      return HttpResponse::Json(400, ErrorJson("ERR_PPT_TITLE_TOPIC_EMPTY", "Title and topic cannot be empty"));
     }
 
     std::string template_id;
-    if (auto it = request.query_params.find("template"); it != request.query_params.end() && !it->second.empty()) {
-      template_id = it->second;
-    } else if (!input.template_id.empty()) {
-      template_id = input.template_id;
+    const bool use_style_only = (input.generate_mode == "style");
+    if (use_style_only) {
+      const auto& templates = template_service_->GetAll();
+      if (!templates.empty()) {
+        template_id = templates.front().id;
+      }
+    } else {
+      if (auto it = request.query_params.find("template"); it != request.query_params.end() && !it->second.empty()) {
+        template_id = it->second;
+      } else if (!input.template_id.empty()) {
+        template_id = input.template_id;
+      }
     }
 
     std::optional<RemoteTemplate> template_info_opt;
@@ -819,160 +1333,91 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     }
 
     if (!template_info_opt) {
-      return HttpResponse::Json(400, {{"message", "Invalid template"}});
+      return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_TEMPLATE", "Invalid template"));
     }
 
     input.template_id = template_info_opt->id;
-
-    std::string template_prompt = template_info_opt->prompt.empty()
-                                      ? template_info_opt->description
-                                      : template_info_opt->prompt;
+    std::string display_template_name = template_info_opt->name;
+    if (use_style_only) {
+      static const std::unordered_map<std::string, std::string> kStyleNames = {
+          {"business", "商务"}, {"academic", "学术"}, {"creative", "创意"}, {"minimal", "简约"}};
+      auto it = kStyleNames.find(input.style);
+      const std::string style_label = (it != kStyleNames.end()) ? it->second : input.style;
+      display_template_name = "预设主题: " + style_label;
+    }
 
     PptRequest ppt_request;
-    if (!ppt_service_->CreateRequest(input, user->id, model->name, template_info_opt->name, ppt_request, error)) {
-      return HttpResponse::Json(500, {{"message", error.empty() ? "Generation failed" : error}});
+    if (!ppt_service_->CreateRequest(input, user->id, model->name, display_template_name, ppt_request, error)) {
+      Logger::Error(std::string("CreateRequest failed: ") + (error.empty() ? "Generation failed" : error));
+      return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
     }
+
+    PptGenerationJob job;
+    job.ppt_request = ppt_request;
+    job.input = input;
+    job.user_id = user->id;
+    job.user_email = user->email;
+    job.template_id = template_info_opt->id;
+
+    auto ppt_svc = ppt_service_;
+    auto template_svc = template_service_;
+    auto qwen = qwen_client_;
+    auto s3 = s3_client_;
+    auto wanx = wanx_client_;
+    GenerationConfig config = generation_config_;
+    thread_pool_->EnqueueDetached([job, ppt_svc, template_svc, qwen, s3, wanx, config]() {
+      DoActualGeneration(job, ppt_svc, template_svc, qwen, s3, wanx, config);
+    });
 
     nlohmann::json payload{{"request", RequestToJson(ppt_request)}};
-    std::optional<std::string> template_file;
-    nlohmann::json template_analysis;
-    bool has_template_analysis = false;
-    if (qwen_client_ && qwen_client_->IsEnabled()) {
-      template_file = template_service_->GetLocalFile(template_info_opt->id);
-      if (template_file) {
-        std::string analysis_error;
-        if (EnsureTemplateAnalysis(generation_config_, template_info_opt->id, *template_file,
-                                   template_analysis, analysis_error)) {
-          has_template_analysis = true;
-        } else {
-          Logger::Warn("Template analysis failed: " + analysis_error);
-        }
-      }
-    }
-    if (input.model_id == "qwen-turbo" && qwen_client_ && qwen_client_->IsEnabled()) {
-      std::vector<OutlineItem> outline = input.outline;
-      if (!outline.empty() && static_cast<int>(outline.size()) > input.pages) {
-        outline.resize(static_cast<std::size_t>(input.pages));
-      }
-
-      std::vector<SlideContent> slides;
-      std::string qwen_error;
-      bool generated = false;
-
-      if (outline.empty()) {
-        std::string outline_error;
-        if (!qwen_client_->GenerateOutline(input.topic, input.pages, template_prompt, outline, outline_error)) {
-          Logger::Warn("PPT outline generation failed: " + outline_error);
-        }
-      }
-
-      std::string layout_guide_json;
-      const int layout_slide_count = outline.empty()
-                                         ? std::max(1, std::min(input.pages, 10))
-                                         : static_cast<int>(outline.size());
-      if (has_template_analysis && layout_slide_count > 0) {
-        std::string layout_error;
-        if (!LoadLayoutGuide(generation_config_, template_info_opt->id, *template_file,
-                             layout_slide_count, template_prompt, template_analysis,
-                             *qwen_client_, layout_guide_json, layout_error)) {
-          Logger::Warn("Layout guide generation failed: " + layout_error);
-          layout_guide_json.clear();
-        }
-      }
-
-      if (!outline.empty()) {
-        if (qwen_client_->GenerateSlidesFromOutlineWithLayout(input.topic, outline, input.include_images,
-                                                              layout_guide_json, slides, qwen_error)) {
-          generated = true;
-        } else {
-          Logger::Warn("PPT content generation from outline failed: " + qwen_error);
-          slides = BuildSlidesFromOutline(outline, input.topic, input.include_images);
-          generated = !slides.empty();
-        }
-      }
-
-      if (!generated) {
-        if (qwen_client_->GenerateSlidesWithLayout(input.topic, input.pages, template_prompt,
-                                                   input.include_images, layout_guide_json,
-                                                   slides, qwen_error)) {
-          generated = true;
-        }
-      }
-
-      if (generated) {
-        payload["preview"] = nlohmann::json::array();
-        if (!outline.empty()) {
-          payload["outline"] = OutlineToJson(outline);
-        }
-        const auto& layouts = template_info_opt->layouts;
-        const auto* theme = &template_info_opt->theme;
-        for (size_t i = 0; i < slides.size(); ++i) {
-          const TemplateLayout* layout = layouts.empty() ? nullptr : &layouts[i % layouts.size()];
-          payload["preview"].push_back(SlideToJson(slides[i], layout, theme));
-        }
-
-        if (input.include_images && doubao_client_ && doubao_client_->IsEnabled()) {
-          AttachImagesToSlides(generation_config_, *doubao_client_, slides, ppt_request.id, input.topic);
-        }
-
-        if (!template_file) {
-          Logger::Warn("Template file missing or invalid for id: " + template_info_opt->id +
-                       ", local=" + template_info_opt->local_file_path);
-          std::string update_error;
-          ppt_request.status = "failed";
-          ppt_service_->UpdateRequestOutput(ppt_request.id, ppt_request.user_id, "", "failed", update_error);
-          payload["request"] = RequestToJson(ppt_request);
-          payload["fileError"] = "Template file missing or invalid";
-        } else {
-          std::string output_path = BuildOutputPath(generation_config_, ppt_request.id, input.title, user->email);
-          Logger::Info("Generating PPT: " + output_path);
-          std::string generate_error;
-          if (ppt_service_->GeneratePptxFile(*template_file, slides, output_path, generate_error)) {
-            std::string update_error;
-            ppt_request.output_path = output_path;
-            ppt_request.status = "completed";
-            ppt_service_->UpdateRequestOutput(ppt_request.id, ppt_request.user_id, output_path, "completed", update_error);
-            if (!outline.empty()) {
-              AppendOutlineToPreviewJson(output_path, outline);
-            }
-            std::string signed_url;
-            if (s3_client_ && s3_client_->IsEnabled()) {
-              const auto object_key = BuildObjectKey(generation_config_, output_path);
-              if (!object_key.empty()) {
-                std::string upload_error;
-                if (s3_client_->UploadFile(output_path, object_key, upload_error)) {
-                  signed_url = s3_client_->PresignGetUrl(object_key);
-                  Logger::Info("S3 upload success: key=" + object_key);
-                } else {
-                  Logger::Warn("S3 upload failed: " + upload_error);
-                }
-              }
-            }
-            payload["request"] = RequestToJson(ppt_request, signed_url);
-          } else {
-            Logger::Warn("PPTX generation failed: " + generate_error);
-            std::string update_error;
-            ppt_request.status = "failed";
-            ppt_service_->UpdateRequestOutput(ppt_request.id, ppt_request.user_id, "", "failed", update_error);
-            payload["request"] = RequestToJson(ppt_request);
-          }
-        }
-      } else {
-        Logger::Warn("Qwen slide generation failed: " + qwen_error);
-      }
-    }
-    return HttpResponse::Json(201, payload);
+    return HttpResponse::Json(202, payload);
   } catch (const std::exception& ex) {
     Logger::Error(std::string("Failed to parse PPT request: ") + ex.what());
-    return HttpResponse::Json(400, {{"message", "Invalid JSON"}});
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
   }
+}
+
+HttpResponse PptController::GetRequestStatus(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  std::uint64_t request_id = 0;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    request_id = ParseId(it->second);
+  }
+  if (request_id == 0) {
+    return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_REQUEST_ID", "Invalid request ID"));
+  }
+
+  PptRequest ppt_request;
+  if (!ppt_service_->GetRequest(user->id, request_id, ppt_request, error)) {
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_REQUEST_NOT_FOUND", error.empty() ? "Request not found" : error));
+  }
+
+  std::string signed_url;
+  std::string signed_url_pdf;
+  if (s3_client_ && s3_client_->IsEnabled() && !ppt_request.output_path.empty()) {
+    const auto object_key = BuildObjectKey(generation_config_, ppt_request.output_path);
+    if (!object_key.empty()) {
+      signed_url = s3_client_->PresignGetUrl(object_key);
+    }
+    const auto pdf_key = BuildObjectKeyPdf(generation_config_, ppt_request.output_path);
+    if (!pdf_key.empty()) {
+      signed_url_pdf = s3_client_->PresignGetUrl(pdf_key);
+    }
+  }
+  nlohmann::json payload{{"request", RequestToJson(ppt_request, signed_url, signed_url_pdf)}};
+  return HttpResponse::Json(200, payload);
 }
 
 HttpResponse PptController::History(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
-    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
   }
 
   std::string query;
@@ -982,20 +1427,26 @@ HttpResponse PptController::History(const HttpRequest& request) {
 
   auto list = ppt_service_->GetHistory(user->id, query, error);
   if (!error.empty()) {
-    return HttpResponse::Json(500, {{"message", error}});
+    Logger::Error(std::string("GetHistory failed: ") + error);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
   }
 
   nlohmann::json payload;
   payload["items"] = nlohmann::json::array();
   for (const auto& item : list) {
     std::string signed_url;
+    std::string signed_url_pdf;
     if (s3_client_ && s3_client_->IsEnabled() && !item.output_path.empty()) {
       const auto object_key = BuildObjectKey(generation_config_, item.output_path);
       if (!object_key.empty()) {
         signed_url = s3_client_->PresignGetUrl(object_key);
       }
+      const auto pdf_key = BuildObjectKeyPdf(generation_config_, item.output_path);
+      if (!pdf_key.empty()) {
+        signed_url_pdf = s3_client_->PresignGetUrl(pdf_key);
+      }
     }
-    payload["items"].push_back(RequestToJson(item, signed_url));
+    payload["items"].push_back(RequestToJson(item, signed_url, signed_url_pdf));
   }
 
   return HttpResponse::Json(200, payload);
@@ -1005,10 +1456,10 @@ HttpResponse PptController::AdminHistory(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
-    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
   }
   if (!user->is_admin) {
-    return HttpResponse::Json(403, {{"message", "Forbidden"}});
+    return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", "Forbidden"));
   }
 
   std::string query;
@@ -1018,20 +1469,26 @@ HttpResponse PptController::AdminHistory(const HttpRequest& request) {
 
   auto list = ppt_service_->GetAdminHistory(query, error);
   if (!error.empty()) {
-    return HttpResponse::Json(500, {{"message", error}});
+    Logger::Error(std::string("GetAdminHistory failed: ") + error);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
   }
 
   nlohmann::json payload;
   payload["items"] = nlohmann::json::array();
   for (const auto& item : list) {
     std::string signed_url;
+    std::string signed_url_pdf;
     if (s3_client_ && s3_client_->IsEnabled() && !item.output_path.empty()) {
       const auto object_key = BuildObjectKey(generation_config_, item.output_path);
       if (!object_key.empty()) {
         signed_url = s3_client_->PresignGetUrl(object_key);
       }
+      const auto pdf_key = BuildObjectKeyPdf(generation_config_, item.output_path);
+      if (!pdf_key.empty()) {
+        signed_url_pdf = s3_client_->PresignGetUrl(pdf_key);
+      }
     }
-    payload["items"].push_back(RequestToJson(item, signed_url));
+    payload["items"].push_back(RequestToJson(item, signed_url, signed_url_pdf));
   }
 
   return HttpResponse::Json(200, payload);
@@ -1041,10 +1498,10 @@ HttpResponse PptController::AdminMetrics(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
-    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
   }
   if (!user->is_admin) {
-    return HttpResponse::Json(403, {{"message", "Forbidden"}});
+    return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", "Forbidden"));
   }
 
   std::string range = "week";
@@ -1057,7 +1514,8 @@ HttpResponse PptController::AdminMetrics(const HttpRequest& request) {
 
   PptService::AdminMetrics metrics;
   if (!ppt_service_->GetAdminMetrics(range, metrics, error)) {
-    return HttpResponse::Json(500, {{"message", error.empty() ? "获取统计数据失败" : error}});
+    Logger::Error(std::string("GetAdminMetrics failed: ") + (error.empty() ? "获取统计数据失败" : error));
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
   }
 
   nlohmann::json payload;
@@ -1097,10 +1555,13 @@ HttpResponse PptController::Outline(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
-    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
   }
 
   try {
+    if (request.body.find('\0') != std::string::npos) {
+      return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
+    }
     auto input = PptRequestInput::FromJson(nlohmann::json::parse(request.body));
     if (input.pages < 1) {
       input.pages = 1;
@@ -1108,7 +1569,7 @@ HttpResponse PptController::Outline(const HttpRequest& request) {
       input.pages = 50;
     }
     if (input.title.empty() || input.topic.empty()) {
-      return HttpResponse::Json(400, {{"message", "Title and topic cannot be empty"}});
+      return HttpResponse::Json(400, ErrorJson("ERR_PPT_TITLE_TOPIC_EMPTY", "Title and topic cannot be empty"));
     }
 
     std::string template_id;
@@ -1125,20 +1586,21 @@ HttpResponse PptController::Outline(const HttpRequest& request) {
       }
     }
     if (!template_info_opt) {
-      return HttpResponse::Json(400, {{"message", "Invalid template"}});
+      return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_TEMPLATE", "Invalid template"));
     }
     std::string template_prompt = template_info_opt->prompt.empty()
                                       ? template_info_opt->description
                                       : template_info_opt->prompt;
 
     if (!qwen_client_ || !qwen_client_->IsEnabled()) {
-      return HttpResponse::Json(500, {{"message", "Model not available"}});
+      return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
     }
 
     std::vector<OutlineItem> outline;
     std::string outline_error;
     if (!qwen_client_->GenerateOutline(input.topic, input.pages, template_prompt, outline, outline_error)) {
-      return HttpResponse::Json(500, {{"message", outline_error.empty() ? "Outline generation failed" : outline_error}});
+      Logger::Error(std::string("GenerateOutline failed: ") + (outline_error.empty() ? "Outline generation failed" : outline_error));
+      return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
     }
 
     nlohmann::json payload;
@@ -1147,7 +1609,7 @@ HttpResponse PptController::Outline(const HttpRequest& request) {
     return HttpResponse::Json(200, payload);
   } catch (const std::exception& ex) {
     Logger::Error(std::string("Failed to parse outline request: ") + ex.what());
-    return HttpResponse::Json(400, {{"message", "Invalid JSON"}});
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
   }
 }
 
@@ -1155,14 +1617,14 @@ HttpResponse PptController::Delete(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
-    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
   }
 
   std::uint64_t request_id = 0;
   if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
     request_id = ParseId(it->second);
   }
-  if (request_id == 0 && !request.body.empty()) {
+  if (request_id == 0 && !request.body.empty() && request.body.find('\0') == std::string::npos) {
     try {
       const auto body = nlohmann::json::parse(request.body);
       if (body.contains("id")) {
@@ -1178,12 +1640,12 @@ HttpResponse PptController::Delete(const HttpRequest& request) {
   }
 
   if (request_id == 0) {
-    return HttpResponse::Json(400, {{"message", "Invalid request ID"}});
+    return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_REQUEST_ID", "Invalid request ID"));
   }
 
   PptRequest ppt_request;
   if (!ppt_service_->GetRequest(user->id, request_id, ppt_request, error)) {
-    return HttpResponse::Json(404, {{"message", error.empty() ? "Request not found" : error}});
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_REQUEST_NOT_FOUND", error.empty() ? "Request not found" : error));
   }
 
   if (s3_client_ && s3_client_->IsEnabled() && !ppt_request.output_path.empty()) {
@@ -1192,17 +1654,26 @@ HttpResponse PptController::Delete(const HttpRequest& request) {
       std::string delete_error;
       if (!s3_client_->DeleteObject(object_key, delete_error)) {
         Logger::Warn("S3 delete failed: key=" + object_key + " error=" + delete_error);
-        return HttpResponse::Json(500, {{"message", "Failed to delete remote file"}});
+        return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
       }
       Logger::Info("S3 delete success: key=" + object_key);
+    }
+    const auto pdf_key = BuildObjectKeyPdf(generation_config_, ppt_request.output_path);
+    if (!pdf_key.empty()) {
+      std::string delete_error;
+      if (!s3_client_->DeleteObject(pdf_key, delete_error)) {
+        Logger::Warn("S3 PDF delete failed: key=" + pdf_key + " error=" + delete_error);
+      } else {
+        Logger::Info("S3 PDF delete success: key=" + pdf_key);
+      }
     }
   }
 
   if (!ppt_service_->DeleteRequest(user->id, request_id, error)) {
     if (error == "记录不存在或已删除") {
-      return HttpResponse::Json(404, {{"message", error}});
+      return HttpResponse::Json(404, ErrorJson("ERR_PPT_REQUEST_NOT_FOUND", error));
     }
-    return HttpResponse::Json(400, {{"message", error.empty() ? "Deletion failed" : error}});
+    return HttpResponse::Json(400, ErrorJson("ERR_PPT_DELETE_FAILED", error.empty() ? "Deletion failed" : error));
   }
 
   if (!ppt_request.output_path.empty()) {
@@ -1218,6 +1689,9 @@ HttpResponse PptController::Delete(const HttpRequest& request) {
       std::filesystem::path payload_json(output_path);
       payload_json.replace_extension(".json");
       RemoveFileQuietly(payload_json);
+      std::filesystem::path pdf_path(output_path);
+      pdf_path.replace_extension(".pdf");
+      RemoveFileQuietly(pdf_path);
     }
   }
 
@@ -1233,7 +1707,7 @@ HttpResponse PptController::Download(const HttpRequest& request) {
                  " path=" + request.target +
                  " has_token=" + std::string(token.empty() ? "0" : "1") +
                  " error=" + (error.empty() ? "unknown" : error));
-    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
   }
   const bool is_head = request.method == "HEAD" || request.method == "head";
 
@@ -1242,19 +1716,76 @@ HttpResponse PptController::Download(const HttpRequest& request) {
     request_id = ParseId(it->second);
   }
   if (request_id == 0) {
-    return HttpResponse::Json(400, {{"message", "Invalid request ID"}});
+    return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_REQUEST_ID", "Invalid request ID"));
   }
 
   PptRequest ppt_request;
   if (!ppt_service_->GetRequest(user->id, request_id, ppt_request, error)) {
     Logger::Warn("PPT download request not found: user_id=" + std::to_string(user->id) +
                  " request_id=" + std::to_string(request_id));
-    return HttpResponse::Json(404, {{"message", error.empty() ? "Request not found" : error}});
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_REQUEST_NOT_FOUND", error.empty() ? "Request not found" : error));
   }
   if (ppt_request.output_path.empty()) {
     Logger::Warn("PPT download missing output_path: user_id=" + std::to_string(user->id) +
                  " request_id=" + std::to_string(request_id));
-    return HttpResponse::Json(404, {{"message", "PPT file not generated"}});
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_FILE_NOT_GENERATED", "PPT file not generated"));
+  }
+
+  const bool want_pdf = [&]() {
+    auto it = request.query_params.find("format");
+    if (it == request.query_params.end()) return false;
+    std::string v = it->second;
+    for (auto& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return v == "pdf";
+  }();
+
+  if (want_pdf) {
+    std::filesystem::path pdf_path(ppt_request.output_path);
+    pdf_path.replace_extension(".pdf");
+    const std::string pdf_path_str = pdf_path.string();
+    if (!EnsurePdfFromPptx(ppt_request.output_path, pdf_path_str, generation_config_.soffice_binary, error)) {
+      Logger::Warn("PDF conversion failed: " + error);
+      return HttpResponse::Json(503, ErrorJson("ERR_PDF_CONVERSION_FAILED", "PDF generation failed, please try again or download PPTX"));
+    }
+    if (s3_client_ && s3_client_->IsEnabled()) {
+      const auto pdf_key = BuildObjectKeyPdf(generation_config_, ppt_request.output_path);
+      if (!pdf_key.empty()) {
+        std::string upload_error;
+        if (s3_client_->UploadFile(pdf_path_str, pdf_key, upload_error)) {
+          Logger::Info("S3 PDF upload on demand: key=" + pdf_key);
+        }
+      }
+    }
+    std::error_code size_ec;
+    const auto file_size = std::filesystem::file_size(pdf_path_str, size_ec);
+    if (size_ec || file_size == 0) {
+      return HttpResponse::Json(404, ErrorJson("ERR_PPT_FILE_MISSING", "PDF file is missing"));
+    }
+    const std::string filename = BuildDownloadFilename(ppt_request, *user, ".pdf");
+    if (is_head) {
+      HttpResponse response;
+      response.status_code = 200;
+      response.status_message = "OK";
+      response.headers["content-length"] = std::to_string(file_size);
+      response.headers["content-type"] = "application/pdf";
+      response.headers["content-disposition"] = "attachment; filename=\"" + filename + "\"";
+      response.body.clear();
+      return response;
+    }
+    std::ifstream input(pdf_path_str, std::ios::binary);
+    if (!input.is_open()) {
+      return HttpResponse::Json(404, ErrorJson("ERR_PPT_FILE_MISSING", "PDF file is missing"));
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    HttpResponse response;
+    response.status_code = 200;
+    response.status_message = "OK";
+    response.headers["content-type"] = "application/pdf";
+    response.headers["content-disposition"] = "attachment; filename=\"" + filename + "\"";
+    response.headers["content-length"] = std::to_string(buffer.str().size());
+    response.body = buffer.str();
+    return response;
   }
 
   std::error_code size_ec;
@@ -1262,7 +1793,7 @@ HttpResponse PptController::Download(const HttpRequest& request) {
   if (size_ec || file_size == 0) {
     Logger::Warn("PPT download file missing: path=" + ppt_request.output_path +
                  " error=" + size_ec.message());
-    return HttpResponse::Json(404, {{"message", "PPT file is missing"}});
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_FILE_MISSING", "PPT file is missing"));
   }
 
   const auto range_header = request.Header("range");
@@ -1319,7 +1850,7 @@ HttpResponse PptController::Download(const HttpRequest& request) {
 
   std::ifstream input(ppt_request.output_path, std::ios::binary);
   if (!input.is_open()) {
-    return HttpResponse::Json(404, {{"message", "PPT file is missing"}});
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_FILE_MISSING", "PPT file is missing"));
   }
 
   std::string body;
@@ -1368,7 +1899,7 @@ HttpResponse PptController::Preview(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
-    return HttpResponse::Json(401, {{"message", error.empty() ? "Unauthorized" : error}});
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
   }
 
   std::uint64_t request_id = 0;
@@ -1376,15 +1907,15 @@ HttpResponse PptController::Preview(const HttpRequest& request) {
     request_id = ParseId(it->second);
   }
   if (request_id == 0) {
-    return HttpResponse::Json(400, {{"message", "Invalid request ID"}});
+    return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_REQUEST_ID", "Invalid request ID"));
   }
 
   PptRequest ppt_request;
   if (!ppt_service_->GetRequest(user->id, request_id, ppt_request, error)) {
-    return HttpResponse::Json(404, {{"message", error.empty() ? "Request not found" : error}});
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_REQUEST_NOT_FOUND", error.empty() ? "Request not found" : error));
   }
   if (ppt_request.output_path.empty()) {
-    return HttpResponse::Json(404, {{"message", "PPT file not generated"}});
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_FILE_NOT_GENERATED", "PPT file not generated"));
   }
 
   std::filesystem::path output_path(ppt_request.output_path);
@@ -1394,12 +1925,12 @@ HttpResponse PptController::Preview(const HttpRequest& request) {
   const std::filesystem::path base_dir(generation_config_.output_dir);
   if (!IsUnderDirectory(base_dir, preview_path)) {
     Logger::Warn("Refusing to read preview outside generated directory: " + preview_path.string());
-    return HttpResponse::Json(403, {{"message", "Preview not accessible"}});
+    return HttpResponse::Json(403, ErrorJson("ERR_PPT_PREVIEW_FORBIDDEN", "Preview not accessible"));
   }
 
   std::ifstream input(preview_path);
   if (!input.is_open()) {
-    return HttpResponse::Json(404, {{"message", "Preview data not found"}});
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_PREVIEW_NOT_FOUND", "Preview data not found"));
   }
   std::ostringstream buffer;
   buffer << input.rdbuf();

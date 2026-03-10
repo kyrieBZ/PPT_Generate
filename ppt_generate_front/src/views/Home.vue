@@ -224,17 +224,15 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;700&display=swap');
-
 .home-shell {
-  --ink: #0b1020;
-  --muted: #6b7280;
-  --accent: #2563eb;
-  --accent-2: #22c55e;
-  --accent-3: #f97316;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --accent: #0EA5E9;
+  --accent-2: #38BDF8;
+  --accent-3: #0284C7;
   --surface: rgba(255, 255, 255, 0.85);
   --glass: rgba(255, 255, 255, 0.7);
-  --shadow: 0 18px 36px rgba(15, 23, 42, 0.12);
+  --shadow: 0 18px 36px rgba(14, 165, 233, 0.1);
   --page-x: clamp(16px, 6vw, 96px);
   --space-2xs: clamp(6px, 0.8vw, 10px);
   --space-xs: clamp(10px, 1.2vw, 16px);
@@ -245,9 +243,9 @@ onBeforeUnmount(() => {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.18), transparent 60%),
-    linear-gradient(120deg, #f8fafc 0%, #eef2ff 45%, #ecfeff 100%);
-  font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
+  background: radial-gradient(circle at top left, rgba(14, 165, 233, 0.2), transparent 60%),
+    linear-gradient(120deg, #f8fafc 0%, #f0f9ff 45%, #e0f2fe 100%);
+  font-family: 'Plus Jakarta Sans', 'Noto Sans SC', sans-serif;
   color: var(--ink);
   position: relative;
   overflow: hidden;
@@ -265,7 +263,7 @@ onBeforeUnmount(() => {
 .orb-a {
   width: 13.75rem;
   height: 13.75rem;
-  background: radial-gradient(circle at 30% 30%, rgba(37, 99, 235, 0.35), rgba(37, 99, 235, 0.05));
+  background: radial-gradient(circle at 30% 30%, rgba(14, 165, 233, 0.35), rgba(14, 165, 233, 0.05));
   top: -5rem;
   left: -3.75rem;
 }
@@ -273,7 +271,7 @@ onBeforeUnmount(() => {
 .orb-b {
   width: 17.5rem;
   height: 17.5rem;
-  background: radial-gradient(circle at 30% 30%, rgba(34, 197, 94, 0.3), rgba(34, 197, 94, 0.05));
+  background: radial-gradient(circle at 30% 30%, rgba(56, 189, 248, 0.28), rgba(56, 189, 248, 0.05));
   bottom: -8.75rem;
   right: -7.5rem;
   animation-delay: -4s;
@@ -296,8 +294,9 @@ onBeforeUnmount(() => {
   position: sticky;
   top: 0;
   z-index: 5;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.85) 0%, rgba(248, 250, 252, 0) 100%);
-  backdrop-filter: blur(4px);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.9) 0%, rgba(248, 250, 252, 0) 100%);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-nav);
   gap: var(--space-sm);
   flex-wrap: wrap;
 }
@@ -350,9 +349,10 @@ onBeforeUnmount(() => {
 }
 
 .nav-link.active {
-  background: var(--ink);
-  color: #f8fafc;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.25);
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  box-shadow: 0 12px 30px rgba(14, 165, 233, 0.3);
 }
 
 .nav-link.disabled {
@@ -361,10 +361,10 @@ onBeforeUnmount(() => {
 }
 
 .home-main {
-  padding: var(--space-md) var(--page-x) var(--space-lg);
+  padding: var(--space-lg) var(--page-x) var(--space-xl);
   display: flex;
   flex-direction: column;
-  gap: var(--space-lg);
+  gap: var(--space-2xl);
   position: relative;
   z-index: 2;
   flex: 1;
@@ -382,9 +382,10 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-md);
   background: var(--surface);
-  border-radius: 1.5rem;
+  border-radius: var(--radius-card);
   padding: var(--space-lg);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-card);
+  border: 1px solid rgba(0, 0, 0, 0.06);
   position: relative;
   overflow: hidden;
   animation: fadeUp 0.6s ease;
@@ -395,8 +396,8 @@ onBeforeUnmount(() => {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 1.5rem;
-  border: 1px solid rgba(37, 99, 235, 0.15);
+  border-radius: var(--radius-card);
+  border: 1px solid rgba(14, 165, 233, 0.15);
   pointer-events: none;
 }
 
@@ -435,14 +436,21 @@ onBeforeUnmount(() => {
 .primary-btn,
 .ghost-btn {
   padding: 0.75rem 1.25rem;
-  border-radius: 0.75rem;
+  border-radius: var(--radius-btn);
   font-weight: 600;
 }
 
 .primary-btn {
-  background: linear-gradient(135deg, #0f172a, #2563eb);
-  color: #f8fafc;
-  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.3);
+  background: linear-gradient(135deg, #0EA5E9 0%, #38BDF8 100%);
+  color: #fff;
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+  transition: box-shadow var(--transition-default), transform var(--transition-default);
+}
+
+.primary-btn:hover {
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-2px);
 }
 
 .ghost-btn {
@@ -458,10 +466,11 @@ onBeforeUnmount(() => {
 }
 
 .panel-card {
-  background: rgba(255, 255, 255, 0.92);
-  padding: var(--space-md);
-  border-radius: 1.25rem;
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.1);
+  background: var(--color-bg-card);
+  padding: var(--space-lg);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  border: 1px solid rgba(0, 0, 0, 0.06);
   animation: fadeUp 0.6s ease;
 }
 
@@ -490,35 +499,45 @@ onBeforeUnmount(() => {
 }
 
 .projects h2 {
-  margin-bottom: 1rem;
-  font-family: 'Fraunces', serif;
+  margin-bottom: var(--space-md);
+  font-size: var(--text-title-section);
+  font-weight: 600;
+  line-height: var(--line-height-tight);
 }
 
 .project-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(13.75rem, 1fr));
-  gap: var(--space-sm);
+  gap: var(--space-md);
 }
 
 .project-card {
-  padding: var(--space-sm);
-  border-radius: 1.125rem;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.1);
+  padding: var(--space-lg);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-card);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow-card);
   position: relative;
   overflow: hidden;
+  transition: box-shadow var(--transition-default), transform var(--transition-default);
+  cursor: pointer;
+}
+
+.project-card:not(.disabled):hover {
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-2px);
 }
 
 .project-card.disabled {
   opacity: 0.6;
+  cursor: default;
 }
 
 .project-card.active::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at top right, rgba(37, 99, 235, 0.18), transparent 55%);
+  background: radial-gradient(circle at top right, rgba(14, 165, 233, 0.15), transparent 55%);
   pointer-events: none;
 }
 
@@ -526,7 +545,13 @@ onBeforeUnmount(() => {
   display: inline-block;
   margin-top: 0.75rem;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--accent);
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.card-link:hover {
+  color: var(--accent-3);
 }
 
 .card-link.disabled {

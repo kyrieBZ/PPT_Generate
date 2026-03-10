@@ -152,7 +152,8 @@ const handleRegister = async () => {
         ElMessage.success('注册成功！')
         router.push('/login')
       } catch (error) {
-        ElMessage.error(error.message || '注册失败')
+        // 拦截器已统一 ElMessage
+        console.error('注册失败:', error.userMessage || error.message)
       } finally {
         loading.value = false
       }
@@ -169,32 +170,34 @@ const handleRegister = async () => {
   justify-content: center;
   align-items: center;
   min-height: 100vh;
-  background: linear-gradient(135deg, #72c2f8, #4a90e2, #0a4db0);
-  padding: 20px;
+  background: linear-gradient(135deg, #E0F2FE 0%, #F0F9FF 50%, #BAE6FD 100%);
+  padding: var(--space-lg);
 }
 
 .register-form {
   width: 100%;
   max-width: 420px;
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-card-hover);
+  border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 .logo-section {
   text-align: center;
-  margin-bottom: 30px;
+  margin-bottom: var(--space-xl);
 }
 
 .logo-icon {
-  color: #409EFF;
-  margin-bottom: 15px;
+  color: var(--color-primary);
+  margin-bottom: var(--space-md);
 }
 
 .title {
-  font-size: 22px;
+  font-size: var(--text-title-section);
   font-weight: 600;
-  color: #303133;
+  color: var(--color-text);
   margin: 0;
+  line-height: var(--line-height-tight);
 }
 
 .btn-content {
@@ -210,9 +213,9 @@ const handleRegister = async () => {
 
 .login-link {
   text-align: center;
-  margin-top: 20px;
-  font-size: 14px;
-  color: #606266;
+  margin-top: var(--space-lg);
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
 }
 
 .login-link .el-link {

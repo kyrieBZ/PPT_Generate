@@ -97,7 +97,7 @@ bool PptService::CreateRequest(const PptRequestInput& input,
     params[11].buffer = (void*)template_name.c_str();
     params[11].buffer_length = template_name.length();
 
-    std::string status_value = "processing";
+    std::string status_value = "pending";
     params[12].buffer_type = MYSQL_TYPE_STRING;
     params[12].buffer = status_value.data();
     params[12].buffer_length = status_value.length();
@@ -933,7 +933,9 @@ void PptService::SetPowerPointServiceFactory(std::shared_ptr<IPowerPointServiceF
 bool PptService::GeneratePptxFile(const std::string& template_path,
                                  const std::vector<SlideContent>& slides,
                                  const std::string& output_path,
-                                 std::string& error) {
+                                 std::string& error,
+                                 const std::string& layout_guide_json,
+                                 const std::string& options_json) {
     if (!powerpoint_factory_) {
         error = "PowerPoint服务工厂未设置";
         return false;
@@ -965,8 +967,8 @@ bool PptService::GeneratePptxFile(const std::string& template_path,
         }
     }
 
-    // 保存文件
-    if (!service->Save(output_path)) {
+    // 保存文件（传入 layout_guide 与 options 供 builder 使用）
+    if (!service->Save(output_path, layout_guide_json, options_json)) {
         error = "无法保存PowerPoint文件";
         return false;
     }

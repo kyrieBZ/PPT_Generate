@@ -18,7 +18,12 @@ struct PptRequestInput {
   bool include_notes = false;
   std::string model_id = "qwen-turbo";
   std::string template_id;
+  /** "template" = 基于模板, "style" = 基于风格；空则视为 template */
+  std::string generate_mode;
   std::vector<OutlineItem> outline;
+  bool enable_section_slides = false;
+  int section_slide_interval = 4;
+  std::string theme_preset;
 
   static PptRequestInput FromJson(const nlohmann::json& data);
 };

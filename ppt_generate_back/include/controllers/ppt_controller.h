@@ -7,12 +7,13 @@
 #include "app_config.h"
 #include "http/http_types.h"
 #include "services/auth_service.h"
-#include "services/doubao_image_client.h"
 #include "services/model_service.h"
 #include "services/ppt_service.h"
 #include "services/qwen_client.h"
 #include "services/s3_client.h"
 #include "services/template_service.h"
+#include "services/wanxiang_image_client.h"
+#include "utils/thread_pool.h"
 
 class PptController {
  public:
@@ -23,9 +24,12 @@ class PptController {
                 GenerationConfig generation_config,
                 std::shared_ptr<QwenClient> qwen_client,
                 std::shared_ptr<S3Client> s3_client,
-                std::shared_ptr<DoubaoImageClient> doubao_client);
+                std::shared_ptr<WanxiangImageClient> wanx_client,
+                std::shared_ptr<ThreadPool> thread_pool);
 
   HttpResponse Generate(const HttpRequest& request);
+  /** 轮询单条请求状态，用于异步生成后查询 completed/failed */
+  HttpResponse GetRequestStatus(const HttpRequest& request);
   HttpResponse History(const HttpRequest& request);
   HttpResponse AdminHistory(const HttpRequest& request);
   HttpResponse AdminMetrics(const HttpRequest& request);
@@ -45,5 +49,6 @@ class PptController {
   GenerationConfig generation_config_;
   std::shared_ptr<QwenClient> qwen_client_;
   std::shared_ptr<S3Client> s3_client_;
-  std::shared_ptr<DoubaoImageClient> doubao_client_;
+  std::shared_ptr<WanxiangImageClient> wanx_client_;
+  std::shared_ptr<ThreadPool> thread_pool_;
 };
