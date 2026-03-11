@@ -1,7 +1,19 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
+
+struct ChartDataItem {
+  std::string label;
+  double value = 0.0;
+};
+
+struct ChartData {
+  std::string type;   // "pie" | "bar" | "line" | "doughnut"
+  std::string title;  // 图表标题（可选）
+  std::vector<ChartDataItem> items;
+};
 
 struct SlideContent {
   std::string title;
@@ -14,4 +26,5 @@ struct SlideContent {
   std::vector<std::string> suggestions;
   std::string layout_hint;
   std::string notes;
+  std::optional<ChartData> chart_data;  // 图表数据（可选）
 };

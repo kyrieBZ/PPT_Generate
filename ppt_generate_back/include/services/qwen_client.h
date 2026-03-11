@@ -31,7 +31,8 @@ class QwenClient {
                                  const std::vector<OutlineItem>& outline,
                                  bool include_images,
                                  std::vector<SlideContent>& out_slides,
-                                 std::string& error_message) const;
+                                 std::string& error_message,
+                                 bool include_charts = false) const;
 
   bool GenerateLayoutGuide(const std::string& template_summary_json,
                            int slide_count,
@@ -44,7 +45,8 @@ class QwenClient {
                                            bool include_images,
                                            const std::string& layout_guide_json,
                                            std::vector<SlideContent>& out_slides,
-                                           std::string& error_message) const;
+                                           std::string& error_message,
+                                           bool include_charts = false) const;
 
   bool GenerateSlidesWithLayout(const std::string& topic,
                                 int slide_count,
@@ -52,7 +54,8 @@ class QwenClient {
                                 bool include_images,
                                 const std::string& layout_guide_json,
                                 std::vector<SlideContent>& out_slides,
-                                std::string& error_message) const;
+                                std::string& error_message,
+                                bool include_charts = false) const;
 
  private:
   std::string api_key_;

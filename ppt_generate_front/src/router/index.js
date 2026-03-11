@@ -3,6 +3,7 @@ import Login from '@/views/Login.vue'
 import Register from '@/views/Register.vue'
 import Main from '@/views/Main.vue'
 import Admin from '@/views/Admin.vue'
+import PptEditor from '@/views/PptEditor.vue'
 import Home from '@/views/Home.vue'
 import store from '@/store'
 
@@ -33,6 +34,12 @@ const routes = [
     path: '/main/:section?',
     name: 'Main',
     component: Main,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/main/edit/:id',
+    name: 'PptEditor',
+    component: PptEditor,
     meta: { requiresAuth: true }
   },
   {

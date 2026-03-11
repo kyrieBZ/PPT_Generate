@@ -82,6 +82,13 @@ struct GenerationConfig {
   std::string pptxgen_builder_script = "scripts/pptxgen_builder.js";
 };
 
+struct MaterialConfig {
+  std::string upload_dir = "assets/materials";
+  std::uint64_t max_file_size_mb = 20;
+  std::vector<std::string> allowed_types = {"pdf", "docx", "txt"};
+  std::string extract_script = "scripts/extract_material.py";
+};
+
 struct S3Config {
   std::string endpoint;
   std::string public_endpoint;
@@ -114,6 +121,7 @@ class AppConfig {
   const EmailConfig& email() const { return email_; }
   const GenerationConfig& generation() const { return generation_; }
   const S3Config& s3() const { return s3_; }
+  const MaterialConfig& material() const { return material_; }
 
  private:
   ServerConfig server_{};
@@ -126,4 +134,5 @@ class AppConfig {
   EmailConfig email_{};
   GenerationConfig generation_{};
   S3Config s3_{};
+  MaterialConfig material_{};
 };

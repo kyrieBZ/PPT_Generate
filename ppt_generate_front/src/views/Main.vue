@@ -124,6 +124,111 @@
             </div>
 
             <div v-if="activeGeneratePanel === 'settings'" class="generate-workbench">
+
+              <!-- 来源选择卡片 -->
+              <div class="step-card source-card">
+                <div class="step-header">
+                  <span class="step-index">00</span>
+                  <div>
+                    <h3>内容来源</h3>
+                    <p>选择手动输入主题，或从已上传的文档中提取内容。</p>
+                  </div>
+                </div>
+                <div class="step-body">
+                  <div class="source-tabs">
+                    <button
+                      class="source-tab"
+                      :class="{ active: generateSource === 'manual' }"
+                      @click="generateSource = 'manual'; generateForm.materialId = ''"
+                    >手动输入主题</button>
+                    <button
+                      class="source-tab"
+                      :class="{ active: generateSource === 'material' }"
+                      @click="generateSource = 'material'"
+                    >从文档提取</button>
+                  </div>
+
+                  <!-- 文档上传区 -->
+                  <div v-if="generateSource === 'material'" class="material-upload-area">
+                    <div class="upload-zone" @click="$refs.materialFileInput.click()">
+                      <el-icon style="font-size:2rem;color:#0EA5E9"><Document /></el-icon>
+                      <p v-if="!materialUploadFile">点击或拖拽上传文件（PDF / DOCX / TXT，最大 20MB）</p>
+                      <p v-else class="upload-filename">{{ materialUploadFile.name }}</p>
+                    </div>
+                    <input
+                      ref="materialFileInput"
+                      type="file"
+                      accept=".pdf,.docx,.txt"
+                      style="display:none"
+                      @change="handleMaterialFileChange"
+                    />
+
+                    <div v-if="materialUploadFile && !materialCurrentId" class="upload-actions">
+                      <button
+                        class="action-primary"
+                        :disabled="materialUploading"
+                        @click="handleMaterialUpload"
+                      >
+                        {{ materialUploading ? `上传中 ${materialUploadProgress}%` : '开始上传并提取' }}
+                      </button>
+                    </div>
+
+                    <!-- 提取进度 -->
+                    <div v-if="materialCurrentId" class="extract-status">
+                      <el-tag :type="materialStatusType(materialStatus)" size="large">
+                        {{ materialStatusLabel(materialStatus) }}
+                      </el-tag>
+                      <div v-if="materialStatus === 'extracting' || materialStatus === 'pending'" class="extract-spinner">
+                        <span class="spinner-dot"></span> AI 正在分析文档内容...
+                      </div>
+                    </div>
+
+                    <!-- 提取结果预览 -->
+                    <div v-if="materialExtractResult" class="extract-result-card">
+                      <h4>提取结果预览</h4>
+                      <div class="extract-field" v-if="materialExtractResult.title">
+                        <span class="field-label">标题</span>
+                        <span>{{ materialExtractResult.title }}</span>
+                      </div>
+                      <div class="extract-field" v-if="materialExtractResult.summary">
+                        <span class="field-label">摘要</span>
+                        <span>{{ materialExtractResult.summary }}</span>
+                      </div>
+                      <div class="extract-field" v-if="materialExtractResult.outline?.length">
+                        <span class="field-label">大纲</span>
+                        <ul class="extract-list">
+                          <li v-for="(item, i) in materialExtractResult.outline" :key="i">{{ item }}</li>
+                        </ul>
+                      </div>
+                      <div class="extract-field" v-if="materialExtractResult.keywords?.length">
+                        <span class="field-label">关键词</span>
+                        <div class="keyword-tags">
+                          <el-tag v-for="kw in materialExtractResult.keywords" :key="kw" size="small" type="info">{{ kw }}</el-tag>
+                        </div>
+                      </div>
+                      <div class="extract-actions">
+                        <button class="action-primary" @click="useMaterialForGenerate">
+                          使用此内容填充生成参数
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- 也可从历史材料选择 -->
+                    <div v-if="!materialCurrentId" class="material-history-hint">
+                      <span>或从</span>
+                      <button class="link-btn" @click="activeMenu = 'materials'; router.push('/main/materials')">我的材料</button>
+                      <span>中选择已提取的文档</span>
+                    </div>
+                  </div>
+
+                  <!-- 已绑定材料提示 -->
+                  <div v-if="generateSource === 'manual' && generateForm.materialId" class="material-bound-hint">
+                    <el-tag type="success" size="small">已关联文档材料</el-tag>
+                    <button class="link-btn" @click="generateForm.materialId = ''">取消关联</button>
+                  </div>
+                </div>
+              </div>
+
               <div class="step-card">
                 <div class="step-header">
                   <span class="step-index">01</span>
@@ -329,75 +434,193 @@
             </div>
 
             <div v-if="activeGeneratePanel === 'outline'" class="outline-panel">
-              <div class="step-header">
-                <span class="step-index">OUTLINE</span>
-                <div>
-                  <h3>大纲设计实验室</h3>
-                  <p>单独调整结构，确保逻辑顺序与节奏感。</p>
+              <div class="outline-panel-header">
+                <div class="outline-panel-title">
+                  <span class="step-index">OUTLINE</span>
+                  <div>
+                    <h3>大纲设计</h3>
+                    <p>共 <strong>{{ outlineItems.length }}</strong> 页 · 可拖拽调整顺序，点击卡片展开编辑</p>
+                  </div>
                 </div>
-              </div>
-              <div class="step-body">
-                <div class="outline-actions">
+                <div class="outline-toolbar">
                   <button
                     class="outline-btn primary"
                     @click="handleGenerateOutline"
                     :disabled="outlineLoading"
                   >
-                    {{ outlineLoading ? '生成中...' : '生成大纲' }}
-                  </button>
-                  <button
-                    v-if="outlineReady"
-                    class="outline-btn"
-                    @click="handleGenerateOutline"
-                    :disabled="outlineLoading"
-                  >
-                    重新生成
+                    <span v-if="outlineLoading" class="outline-spinner"></span>
+                    <span v-else>{{ outlineReady ? '重新生成' : 'AI 生成大纲' }}</span>
                   </button>
                   <button
                     v-if="outlineReady"
                     class="outline-btn"
                     @click="addOutlineItem"
+                    title="在末尾新增一页"
                   >
-                    新增页
+                    + 新增页
                   </button>
                 </div>
+              </div>
 
-                <div v-if="outlineLoading" class="outline-loading">正在生成大纲，请稍候...</div>
-                <div v-else-if="outlineReady" class="outline-list">
-                  <div v-for="(item, index) in outlineItems" :key="`outline-${index}`" class="outline-item">
-                    <div class="outline-item-header">
-                      <span>第 {{ index + 1 }} 页</span>
-                      <button class="outline-remove" @click="removeOutlineItem(index)">删除</button>
+              <!-- 加载骨架屏 -->
+              <div v-if="outlineLoading" class="outline-skeleton">
+                <div v-for="n in 4" :key="n" class="outline-skeleton-item">
+                  <div class="skeleton-line short"></div>
+                  <div class="skeleton-line"></div>
+                  <div class="skeleton-line medium"></div>
+                </div>
+              </div>
+
+              <!-- 大纲列表 -->
+              <div v-else-if="outlineReady" class="outline-list">
+                <div
+                  v-for="(item, index) in outlineItems"
+                  :key="`outline-${index}`"
+                  class="outline-item"
+                  :class="[`outline-type-${item.pageType || 'content'}`, { 'is-expanded': outlineExpandedIndex === index }]"
+                >
+                  <!-- 卡片头部：点击折叠/展开 -->
+                  <div class="outline-item-header" @click="toggleOutlineExpand(index)">
+                    <div class="outline-item-meta">
+                      <span class="outline-page-badge">P{{ index + 1 }}</span>
+                      <span class="outline-type-tag" :class="`tag-${item.pageType || 'content'}`">
+                        {{ outlinePageTypeLabel(item.pageType) }}
+                      </span>
+                      <span class="outline-item-title-preview">{{ item.title || '（未填写标题）' }}</span>
                     </div>
-                    <input
-                      v-model="item.title"
-                      type="text"
-                      placeholder="页标题"
-                    />
-                    <textarea
-                      :value="item.keyPoints.join('\n')"
-                      rows="3"
-                      placeholder="要点（每行一个）"
-                      @input="updateOutlineKeyPoints(index, $event.target.value)"
-                    ></textarea>
-                    <input
-                      v-model="item.summary"
-                      type="text"
-                      placeholder="本页总结（可选）"
-                    />
+                    <div class="outline-item-actions">
+                      <button
+                        class="outline-icon-btn"
+                        title="上移"
+                        :disabled="index === 0"
+                        @click.stop="moveOutlineItem(index, -1)"
+                      >↑</button>
+                      <button
+                        class="outline-icon-btn"
+                        title="下移"
+                        :disabled="index === outlineItems.length - 1"
+                        @click.stop="moveOutlineItem(index, 1)"
+                      >↓</button>
+                      <button
+                        class="outline-icon-btn danger"
+                        title="删除此页"
+                        @click.stop="removeOutlineItem(index)"
+                      >✕</button>
+                      <span class="outline-expand-arrow">{{ outlineExpandedIndex === index ? '▲' : '▼' }}</span>
+                    </div>
+                  </div>
+
+                  <!-- 展开编辑区 -->
+                  <div v-show="outlineExpandedIndex === index" class="outline-item-body">
+                    <!-- 页面类型选择 -->
+                    <div class="outline-field">
+                      <label class="outline-field-label">页面类型</label>
+                      <div class="outline-type-selector">
+                        <button
+                          v-for="pt in outlinePageTypes"
+                          :key="pt.value"
+                          class="type-option"
+                          :class="{ active: item.pageType === pt.value }"
+                          @click="item.pageType = pt.value"
+                        >{{ pt.label }}</button>
+                      </div>
+                    </div>
+
+                    <!-- 标题 -->
+                    <div class="outline-field">
+                      <label class="outline-field-label">
+                        页面标题
+                        <span class="outline-char-count" :class="{ warn: item.title.length > 16 }">
+                          {{ item.title.length }}/18
+                        </span>
+                      </label>
+                      <input
+                        v-model="item.title"
+                        type="text"
+                        class="outline-input"
+                        placeholder="请输入页面标题（≤18字）"
+                        maxlength="18"
+                      />
+                    </div>
+
+                    <!-- 要点列表 -->
+                    <div class="outline-field">
+                      <label class="outline-field-label">
+                        内容要点
+                        <span class="outline-hint">每条独立编辑，按 Enter 可快速新增</span>
+                      </label>
+                      <div class="outline-keypoints">
+                        <div
+                          v-for="(kp, kpIndex) in item.keyPoints"
+                          :key="`kp-${index}-${kpIndex}`"
+                          class="outline-keypoint-row"
+                        >
+                          <span class="kp-dot">·</span>
+                          <input
+                            v-model="item.keyPoints[kpIndex]"
+                            type="text"
+                            class="outline-input kp-input"
+                            :placeholder="`要点 ${kpIndex + 1}（≤25字）`"
+                            maxlength="25"
+                            @keydown.enter.prevent="addKeyPoint(index, kpIndex)"
+                            @keydown.backspace="onKeyPointBackspace(index, kpIndex, $event)"
+                          />
+                          <button
+                            class="kp-remove-btn"
+                            title="删除此要点"
+                            @click="removeKeyPoint(index, kpIndex)"
+                          >✕</button>
+                        </div>
+                        <button
+                          v-if="item.keyPoints.length < 6"
+                          class="kp-add-btn"
+                          @click="addKeyPoint(index, item.keyPoints.length - 1)"
+                        >+ 添加要点</button>
+                      </div>
+                    </div>
+
+                    <!-- 摘要 -->
+                    <div class="outline-field">
+                      <label class="outline-field-label">
+                        页面摘要
+                        <span class="outline-hint">可选，用于辅助 AI 生成内容</span>
+                        <span class="outline-char-count" :class="{ warn: item.summary.length > 36 }">
+                          {{ item.summary.length }}/40
+                        </span>
+                      </label>
+                      <input
+                        v-model="item.summary"
+                        type="text"
+                        class="outline-input"
+                        placeholder="本页核心目的（≤40字，可留空）"
+                        maxlength="40"
+                      />
+                    </div>
                   </div>
                 </div>
-                <div v-else class="outline-empty">请先生成大纲后再开始生成。</div>
 
-                <div v-if="outlineReady" class="action-bar outline-generate-bar">
-                  <button
-                    class="action-primary"
-                    @click="handleGenerate"
-                    :disabled="generating || outlineLoading"
-                  >
-                    {{ generating ? '生成中...' : '开始生成PPT' }}
-                  </button>
-                </div>
+                <!-- 末尾新增按钮 -->
+                <button class="outline-add-card" @click="addOutlineItem">
+                  <span>＋ 新增一页</span>
+                </button>
+              </div>
+
+              <!-- 空状态 -->
+              <div v-else class="outline-empty">
+                <div class="outline-empty-icon">📋</div>
+                <p>点击「AI 生成大纲」，根据您的主题自动规划页面结构</p>
+              </div>
+
+              <!-- 底部操作栏 -->
+              <div v-if="outlineReady" class="outline-footer">
+                <span class="outline-footer-tip">确认大纲后开始生成 PPT</span>
+                <button
+                  class="action-primary"
+                  @click="handleGenerate"
+                  :disabled="generating || outlineLoading"
+                >
+                  {{ generating ? '生成中...' : '开始生成 PPT →' }}
+                </button>
               </div>
             </div>
 
@@ -721,6 +944,117 @@
           </div>
         </section>
 
+        <!-- ===== 我的材料 ===== -->
+        <section v-if="activeMenu === 'materials'" class="materials-section">
+          <div class="materials-header">
+            <div>
+              <h2>我的材料</h2>
+              <p>上传教学材料或论文文献，AI 自动提取关键信息，一键用于 PPT 生成。</p>
+            </div>
+            <button class="generate-btn" @click="activeMenu = 'generate'; router.push('/main/generate'); generateSource = 'material'">
+              <el-icon class="btn-icon"><Plus /></el-icon>
+              <span>上传新材料</span>
+            </button>
+          </div>
+
+          <div v-if="materialsLoading" class="materials-loading">加载中...</div>
+
+          <div v-else-if="!materialsList.length" class="materials-empty">
+            <el-icon style="font-size:3rem;color:#94a3b8"><Document /></el-icon>
+            <p>暂无材料，前往智能生成页上传文档</p>
+            <button class="action-primary" @click="activeMenu = 'generate'; router.push('/main/generate'); generateSource = 'material'">
+              去上传
+            </button>
+          </div>
+
+          <div v-else class="materials-grid">
+            <div v-for="mat in materialsList" :key="mat.id" class="material-card">
+              <div class="material-card-header">
+                <div class="material-icon">
+                  <el-icon style="font-size:1.5rem"><Document /></el-icon>
+                </div>
+                <div class="material-info">
+                  <div class="material-filename">{{ mat.filename }}</div>
+                  <div class="material-meta">
+                    <span class="material-type">{{ mat.fileType?.toUpperCase() }}</span>
+                    <span>{{ (mat.fileSize / 1024).toFixed(1) }} KB</span>
+                    <span>{{ formatDate(mat.createdAt) }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="material-card-footer">
+                <el-tag :type="materialStatusType(mat.status)" size="small">
+                  {{ materialStatusLabel(mat.status) }}
+                </el-tag>
+                <div class="material-actions">
+                  <button
+                    v-if="mat.status === 'completed'"
+                    class="mat-btn primary"
+                    @click="viewMaterialDetail(mat.id)"
+                  >查看结果</button>
+                  <button
+                    class="mat-btn danger"
+                    @click="deleteMaterial(mat.id, mat.filename)"
+                  >删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 材料详情对话框 -->
+        <div v-if="materialDetailVisible" class="material-modal-overlay" @click.self="materialDetailVisible = false">
+          <div class="material-modal">
+            <div class="material-modal-header">
+              <h3>提取结果详情</h3>
+              <button class="modal-close" @click="materialDetailVisible = false">✕</button>
+            </div>
+            <div class="material-modal-body" v-if="materialDetailData">
+              <div class="extract-field" v-if="materialDetailData.extractResult?.title">
+                <span class="field-label">标题</span>
+                <span>{{ materialDetailData.extractResult.title }}</span>
+              </div>
+              <div class="extract-field" v-if="materialDetailData.extractResult?.summary">
+                <span class="field-label">摘要</span>
+                <p>{{ materialDetailData.extractResult.summary }}</p>
+              </div>
+              <div class="extract-field" v-if="materialDetailData.extractResult?.outline?.length">
+                <span class="field-label">大纲</span>
+                <ul class="extract-list">
+                  <li v-for="(item, i) in materialDetailData.extractResult.outline" :key="i">{{ item }}</li>
+                </ul>
+              </div>
+              <div class="extract-field" v-if="materialDetailData.extractResult?.key_points?.length">
+                <span class="field-label">核心论点</span>
+                <ul class="extract-list">
+                  <li v-for="(kp, i) in materialDetailData.extractResult.key_points" :key="i">{{ kp }}</li>
+                </ul>
+              </div>
+              <div class="extract-field" v-if="materialDetailData.extractResult?.data_mentions?.length">
+                <span class="field-label">关键数据</span>
+                <ul class="extract-list">
+                  <li v-for="(d, i) in materialDetailData.extractResult.data_mentions" :key="i">{{ d }}</li>
+                </ul>
+              </div>
+              <div class="extract-field" v-if="materialDetailData.extractResult?.keywords?.length">
+                <span class="field-label">关键词</span>
+                <div class="keyword-tags">
+                  <el-tag v-for="kw in materialDetailData.extractResult.keywords" :key="kw" size="small" type="info">{{ kw }}</el-tag>
+                </div>
+              </div>
+            </div>
+            <div v-else class="material-modal-loading">加载中...</div>
+            <div class="material-modal-footer">
+              <button class="modal-btn secondary" @click="materialDetailVisible = false">关闭</button>
+              <button
+                v-if="materialDetailData?.extractResult"
+                class="modal-btn primary"
+                @click="useMaterialFromList(materialDetailData)"
+              >用于生成 PPT</button>
+            </div>
+          </div>
+        </div>
+
         <section v-if="activeMenu === 'settings'" class="settings-section">
           <div class="settings-card">
             <h2>系统设置</h2>
@@ -787,6 +1121,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick, Download, Delete, EditPen, Search, Setting, SwitchButton, Plus, DataAnalysis, Brush, Document, Timer, Star, RefreshRight, ArrowDown } from '@element-plus/icons-vue'
 import templatesAPI from '@/api/templates'
 import pptAPI from '@/api/ppt'
+import materialAPI from '@/api/material'
 import dayjs from 'dayjs'
 
 const route = useRoute()
@@ -824,6 +1159,70 @@ const previewDownloadUrlPdf = ref('')
 const previewTitle = ref('')
 const outlineItems = ref([])
 const outlineLoading = ref(false)
+const outlineExpandedIndex = ref(null)
+
+const outlinePageTypes = [
+  { value: 'cover', label: '封面' },
+  { value: 'toc', label: '目录' },
+  { value: 'content', label: '内容' },
+  { value: 'summary', label: '总结' }
+]
+
+const outlinePageTypeLabel = (type) => {
+  const found = outlinePageTypes.find(t => t.value === type)
+  return found ? found.label : '内容'
+}
+
+const toggleOutlineExpand = (index) => {
+  outlineExpandedIndex.value = outlineExpandedIndex.value === index ? null : index
+}
+
+const moveOutlineItem = (index, direction) => {
+  const target = index + direction
+  if (target < 0 || target >= outlineItems.value.length) return
+  const items = outlineItems.value
+  const temp = items[index]
+  items[index] = items[target]
+  items[target] = temp
+  outlineExpandedIndex.value = target
+}
+
+const addKeyPoint = (itemIndex, afterKpIndex) => {
+  const item = outlineItems.value[itemIndex]
+  if (!item) return
+  item.keyPoints.splice(afterKpIndex + 1, 0, '')
+}
+
+const removeKeyPoint = (itemIndex, kpIndex) => {
+  const item = outlineItems.value[itemIndex]
+  if (!item || item.keyPoints.length <= 1) return
+  item.keyPoints.splice(kpIndex, 1)
+}
+
+const onKeyPointBackspace = (itemIndex, kpIndex, event) => {
+  const item = outlineItems.value[itemIndex]
+  if (!item) return
+  if (item.keyPoints[kpIndex] === '' && item.keyPoints.length > 1) {
+    event.preventDefault()
+    removeKeyPoint(itemIndex, kpIndex)
+  }
+}
+
+// ---- 文档材料相关状态 ----
+const generateSource = ref('manual')  // 'manual' | 'material'
+const materialUploadFile = ref(null)
+const materialUploadProgress = ref(0)
+const materialUploading = ref(false)
+const materialCurrentId = ref('')
+const materialStatus = ref('')  // pending / extracting / completed / failed
+const materialExtractResult = ref(null)
+const materialPollingTimer = ref(null)
+const materialsList = ref([])
+const materialsLoading = ref(false)
+const materialDetailId = ref('')
+const materialDetailData = ref(null)
+const materialDetailVisible = ref(false)
+
 const generatePanels = [
   { id: 'settings', label: '生成设置', index: '01' },
   { id: 'outline', label: '大纲设计', index: '02' },
@@ -945,13 +1344,18 @@ const normalizePreviewSlide = (slide) => {
   }
 }
 
-const normalizeOutlineItem = (item = {}) => ({
-  title: item.title || '',
-  summary: item.summary || '',
-  keyPoints: Array.isArray(item.keyPoints || item.key_points)
-    ? (item.keyPoints || item.key_points)
+const normalizeOutlineItem = (item = {}) => {
+  const kps = Array.isArray(item.keyPoints || item.key_points)
+    ? [...(item.keyPoints || item.key_points)]
     : []
-})
+  if (kps.length === 0) kps.push('')
+  return {
+    title: item.title || '',
+    summary: item.summary || '',
+    keyPoints: kps,
+    pageType: item.pageType || item.page_type || 'content'
+  }
+}
 
 const outlineReady = computed(() => Array.isArray(outlineItems.value) && outlineItems.value.length > 0)
 const canGoPrevPanel = computed(() => generatePanels.findIndex(p => p.id === activeGeneratePanel.value) > 0)
@@ -972,16 +1376,24 @@ const addOutlineItem = () => {
   outlineItems.value.push({
     title: '',
     summary: '',
-    keyPoints: []
+    keyPoints: [''],
+    pageType: 'content'
   })
+  // 同步 pages 字段，保持与实际大纲条数一致
+  generateForm.value.pages = outlineItems.value.length
+  // 自动展开新增的卡片
+  outlineExpandedIndex.value = outlineItems.value.length - 1
 }
 
 const removeOutlineItem = (index) => {
+  // 至少保留 1 条，防止大纲被清空为 0 导致无法继续生成
   if (outlineItems.value.length <= 1) {
-    outlineItems.value.splice(index, 1)
+    ElMessage.warning('至少保留一页大纲')
     return
   }
   outlineItems.value.splice(index, 1)
+  // 同步 pages 字段，保持与实际大纲条数一致
+  generateForm.value.pages = outlineItems.value.length
 }
 
 const setGeneratePanel = (panelId) => {
@@ -1150,6 +1562,7 @@ const userInitials = computed(() => {
 const baseMenuItems = [
   { id: 'dashboard', text: '仪表板', icon: DataAnalysis, path: '/main', description: '系统概览与快速操作' },
   { id: 'generate', text: '智能生成', icon: MagicStick, path: '/main/generate', description: 'GenAI智能PPT生成' },
+  { id: 'materials', text: '我的材料', icon: Document, path: '/main/materials', description: '上传教学材料/论文文献，提取关键信息' },
   { id: 'templates', text: '模板中心', icon: Brush, path: '/main/templates', description: '精选PPT模板库' },
   { id: 'history', text: '历史记录', icon: Document, path: '/main/history', description: '历史生成记录管理' },
   { id: 'settings', text: '系统设置', icon: Setting, path: '/main/settings', description: '个性化系统配置' }
@@ -1185,7 +1598,8 @@ const generateForm = ref({
   sectionSlideInterval: 4,
   themePreset: '',
   modelId: '',
-  templateId: ''
+  templateId: '',
+  materialId: ''
 })
 
 watch(
@@ -1555,10 +1969,12 @@ const resetGenerateForm = () => {
     sectionSlideInterval: 4,
     themePreset: '',
     modelId: selectedModel.value || 'qwen-turbo',
-    templateId: keepTemplateId
+    templateId: keepTemplateId,
+    materialId: ''
   }
   outlineItems.value = []
   activeGeneratePanel.value = 'settings'
+  generateSource.value = 'manual'
 }
 
 const openGeneratePanel = () => {
@@ -1584,6 +2000,18 @@ const handleGenerateOutline = async () => {
     ElMessage.warning('请选择模板')
     return
   }
+  // 已有大纲时提示用户确认，防止误覆盖手动编辑内容
+  if (outlineReady.value) {
+    try {
+      await ElMessageBox.confirm(
+        '重新生成将覆盖当前所有已编辑的大纲内容，确定继续吗？',
+        '重新生成确认',
+        { confirmButtonText: '确定重新生成', cancelButtonText: '取消', type: 'warning' }
+      )
+    } catch {
+      return
+    }
+  }
   outlineLoading.value = true
   try {
     const templateIdForOutline = generateForm.value.generateMode === 'template'
@@ -1596,13 +2024,15 @@ const handleGenerateOutline = async () => {
       style: generateForm.value.style,
       modelId: generateForm.value.modelId || selectedModel.value,
       templateId: templateIdForOutline,
-      generateMode: generateForm.value.generateMode
+      generateMode: generateForm.value.generateMode,
+      materialId: generateForm.value.materialId || ''
     }
     const response = await pptAPI.outline(payload)
     const outline = Array.isArray(response.data?.outline) ? response.data.outline : []
     outlineItems.value = outline.map(normalizeOutlineItem)
     if (outlineItems.value.length) {
       activeGeneratePanel.value = 'outline'
+      outlineExpandedIndex.value = 0
     }
     if (!outlineItems.value.length) {
       ElMessage.warning('未生成大纲内容')
@@ -1651,8 +2081,9 @@ const handleGenerate = async () => {
       outline: outlineItems.value.map(item => ({
         title: item.title || '',
         summary: item.summary || '',
-        key_points: item.keyPoints || []
-      }))
+        key_points: (item.keyPoints || []).filter(kp => kp.trim() !== '')
+      })),
+      materialId: generateForm.value.materialId || ''
     }
     const result = await store.dispatch('createPptRequest', payload)
     if (!result?.request) {
@@ -1685,7 +2116,11 @@ const handleGenerate = async () => {
 }
 
 const editPPT = (item) => {
-  ElMessage.info(`编辑功能即将上线：${item.title}`)
+  if (!item?.id) {
+    ElMessage.warning('无法识别该记录的 ID')
+    return
+  }
+  router.push(`/main/edit/${item.id}`)
 }
 
 const downloadPPT = (item) => {
@@ -1772,6 +2207,173 @@ const handleModelChange = (modelId) => {
   store.dispatch('updateDefaultModel', modelId)
   generateForm.value.modelId = modelId
 }
+
+// ---- 文档材料功能 ----
+
+const stopMaterialPolling = () => {
+  if (materialPollingTimer.value) {
+    clearInterval(materialPollingTimer.value)
+    materialPollingTimer.value = null
+  }
+}
+
+const startMaterialPolling = (id) => {
+  stopMaterialPolling()
+  materialPollingTimer.value = setInterval(async () => {
+    try {
+      const res = await materialAPI.getStatus(id)
+      const mat = res.data?.material
+      if (!mat) return
+      materialStatus.value = mat.status
+      if (mat.status === 'completed') {
+        stopMaterialPolling()
+        const resultRes = await materialAPI.getResult(id)
+        materialExtractResult.value = resultRes.data?.material?.extractResult || null
+        ElMessage.success('文档提取完成，可查看提取结果')
+      } else if (mat.status === 'failed') {
+        stopMaterialPolling()
+        ElMessage.error('文档提取失败：' + (mat.errorMsg || '未知错误'))
+      }
+    } catch (e) {
+      console.error('轮询提取状态失败', e)
+    }
+  }, 2500)
+}
+
+const handleMaterialFileChange = (e) => {
+  const file = e.target.files?.[0]
+  if (!file) return
+  const allowed = ['pdf', 'docx', 'txt']
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  if (!allowed.includes(ext)) {
+    ElMessage.warning('仅支持 PDF、DOCX、TXT 格式')
+    e.target.value = ''
+    return
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    ElMessage.warning('文件大小不能超过 20MB')
+    e.target.value = ''
+    return
+  }
+  materialUploadFile.value = file
+}
+
+const handleMaterialUpload = async () => {
+  if (!materialUploadFile.value) {
+    ElMessage.warning('请先选择文件')
+    return
+  }
+  materialUploading.value = true
+  materialUploadProgress.value = 0
+  materialStatus.value = ''
+  materialExtractResult.value = null
+  materialCurrentId.value = ''
+  try {
+    const res = await materialAPI.upload(materialUploadFile.value, (pct) => {
+      materialUploadProgress.value = pct
+    })
+    const mat = res.data?.material
+    if (!mat?.id) throw new Error('上传失败')
+    materialCurrentId.value = mat.id
+    materialStatus.value = mat.status
+    ElMessage.success('上传成功，正在提取关键信息...')
+    startMaterialPolling(mat.id)
+  } catch (e) {
+    ElMessage.error('上传失败：' + (e?.response?.data?.message || e?.message || '未知错误'))
+  } finally {
+    materialUploading.value = false
+  }
+}
+
+const useMaterialForGenerate = () => {
+  if (!materialExtractResult.value) return
+  const er = materialExtractResult.value
+  if (er.title) generateForm.value.title = er.title
+  if (er.summary) generateForm.value.topic = er.summary
+  if (er.outline?.length) {
+    generateForm.value.topic = (er.summary || '') + '\n主要章节：' + er.outline.join('；')
+  }
+  generateForm.value.materialId = materialCurrentId.value
+  generateSource.value = 'manual'
+  ElMessage.success('已填充提取内容，请确认后继续生成')
+}
+
+const loadMaterialsList = async () => {
+  materialsLoading.value = true
+  try {
+    const res = await materialAPI.list()
+    materialsList.value = res.data?.materials || []
+  } catch (e) {
+    ElMessage.error('加载材料列表失败')
+  } finally {
+    materialsLoading.value = false
+  }
+}
+
+const deleteMaterial = async (id, filename) => {
+  try {
+    await ElMessageBox.confirm(`确定删除《${filename}》吗？`, '删除确认', {
+      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning'
+    })
+    await materialAPI.remove(id)
+    materialsList.value = materialsList.value.filter(m => m.id !== id)
+    ElMessage.success('删除成功')
+  } catch (e) {
+    if (e === 'cancel' || e === 'close' || e?.message === 'cancel') return
+    ElMessage.error('删除失败')
+  }
+}
+
+const viewMaterialDetail = async (id) => {
+  materialDetailId.value = id
+  materialDetailData.value = null
+  materialDetailVisible.value = true
+  try {
+    const res = await materialAPI.getResult(id)
+    materialDetailData.value = res.data?.material || null
+  } catch (e) {
+    ElMessage.error('加载提取结果失败')
+  }
+}
+
+const useMaterialFromList = (mat) => {
+  if (!mat?.extractResult) {
+    ElMessage.warning('该材料尚未提取完成')
+    return
+  }
+  const er = mat.extractResult
+  if (er.title) generateForm.value.title = er.title
+  if (er.summary) generateForm.value.topic = er.summary
+  if (er.outline?.length) {
+    generateForm.value.topic = (er.summary || '') + '\n主要章节：' + er.outline.join('；')
+  }
+  generateForm.value.materialId = mat.id
+  materialDetailVisible.value = false
+  activeMenu.value = 'generate'
+  router.push('/main/generate')
+  ElMessage.success('已填充提取内容，请确认后继续生成')
+}
+
+const materialStatusLabel = (status) => {
+  const map = { pending: '等待提取', extracting: '提取中...', completed: '提取完成', failed: '提取失败' }
+  return map[status] || status
+}
+
+const materialStatusType = (status) => {
+  const map = { pending: 'info', extracting: 'warning', completed: 'success', failed: 'danger' }
+  return map[status] || 'info'
+}
+
+watch(
+  () => activeMenu.value,
+  (val) => {
+    if (val === 'materials') loadMaterialsList()
+  }
+)
+
+onBeforeUnmount(() => {
+  stopMaterialPolling()
+})
 
 const handleLogout = async () => {
   try {
@@ -3206,97 +3808,487 @@ h4 {
   }
 }
 
-.outline-actions {
+/* ===== 大纲面板重构样式 ===== */
+.outline-panel-header {
   display: flex;
-  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  margin-bottom: 16px;
 }
 
-.outline-btn {
-  padding: 6px 14px;
-  border-radius: 8px;
-  border: 1px solid #cbd5f5;
-  background: #ffffff;
-  color: #334155;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.outline-btn.primary {
-  background: #0EA5E9;
-  color: #ffffff;
-  border-color: #0EA5E9;
-}
-
-.outline-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.outline-loading {
-  margin-top: 8px;
-  color: #64748b;
-  font-size: 0.9rem;
-}
-
-.outline-empty {
-  margin-top: 8px;
-  color: #94a3b8;
-  font-size: 0.9rem;
-}
-
-.outline-list {
+.outline-panel-title {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 12px;
 }
 
-.outline-item {
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  border-left: 4px solid #38BDF8;
+.outline-panel-title h3 {
+  margin: 0 0 2px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.outline-panel-title p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #64748b;
+}
+
+.outline-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.outline-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #334155;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  white-space: nowrap;
+}
+
+.outline-btn:hover:not(:disabled) {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.outline-btn.primary {
+  background: linear-gradient(120deg, #0EA5E9, #38BDF8);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.28);
+}
+
+.outline-btn.primary:hover:not(:disabled) {
+  box-shadow: 0 6px 16px rgba(14, 165, 233, 0.38);
+  transform: translateY(-1px);
+}
+
+.outline-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 加载旋转动画 */
+.outline-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 骨架屏 */
+.outline-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.outline-skeleton-item {
   border-radius: 12px;
-  padding: 14px;
-  background: linear-gradient(135deg, rgba(224, 231, 255, 0.55), rgba(255, 255, 255, 0.9));
+  padding: 16px;
+  background: #f1f5f9;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  box-shadow: 0 10px 22px rgba(99, 102, 241, 0.08);
 }
 
+.skeleton-line {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  width: 100%;
+}
+
+.skeleton-line.short { width: 30%; }
+.skeleton-line.medium { width: 60%; }
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* 大纲列表 */
+.outline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 大纲卡片 */
+.outline-item {
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #38BDF8;
+  background: #fff;
+  overflow: hidden;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.outline-item:hover {
+  box-shadow: 0 4px 16px rgba(14, 165, 233, 0.1);
+}
+
+.outline-item.is-expanded {
+  border-color: #7dd3fc;
+  box-shadow: 0 6px 20px rgba(14, 165, 233, 0.14);
+}
+
+/* 不同页面类型左边框颜色 */
+.outline-type-cover  { border-left-color: #a78bfa; }
+.outline-type-toc    { border-left-color: #34d399; }
+.outline-type-content{ border-left-color: #38BDF8; }
+.outline-type-summary{ border-left-color: #fb923c; }
+
+/* 卡片头部 */
 .outline-item-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  gap: 8px;
+  background: #fafbfc;
+  transition: background 0.15s;
+}
+
+.outline-item-header:hover {
+  background: #f1f5f9;
+}
+
+.outline-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.outline-page-badge {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #e0f2fe;
+  color: #0369a1;
+  font-size: 0.75rem;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+.outline-type-tag {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
   font-weight: 600;
+}
+
+.tag-cover   { background: #ede9fe; color: #6d28d9; }
+.tag-toc     { background: #d1fae5; color: #065f46; }
+.tag-content { background: #e0f2fe; color: #0369a1; }
+.tag-summary { background: #ffedd5; color: #9a3412; }
+
+.outline-item-title-preview {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.outline-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.outline-icon-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #64748b;
+  font-size: 0.8rem;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: all 0.15s;
+  padding: 0;
+}
+
+.outline-icon-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: #334155;
+  border-color: #cbd5e1;
+}
+
+.outline-icon-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.outline-icon-btn.danger:hover:not(:disabled) {
+  background: #fef2f2;
+  color: #ef4444;
+  border-color: #fecaca;
+}
+
+.outline-expand-arrow {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  margin-left: 4px;
+}
+
+/* 展开编辑区 */
+.outline-item-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-top: 1px solid #f1f5f9;
+  background: #fff;
+}
+
+.outline-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.outline-field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.outline-hint {
+  font-weight: 400;
+  color: #94a3b8;
+  font-size: 0.75rem;
+}
+
+.outline-char-count {
+  margin-left: auto;
+  font-weight: 400;
+  color: #94a3b8;
+  font-size: 0.75rem;
+}
+
+.outline-char-count.warn {
+  color: #f59e0b;
+}
+
+/* 页面类型选择器 */
+.outline-type-selector {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.type-option {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.type-option:hover {
+  border-color: #94a3b8;
   color: #334155;
 }
 
-.outline-item-header span {
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(14, 165, 233, 0.12);
-  color: #3730a3;
-  font-size: 0.85rem;
+.type-option.active {
+  background: #0EA5E9;
+  color: #fff;
+  border-color: #0EA5E9;
 }
 
-.outline-item input,
-.outline-item textarea {
+/* 输入框统一样式 */
+.outline-input {
   width: 100%;
-  padding: 8px 10px;
+  padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid rgba(99, 102, 241, 0.25);
-  background: rgba(255, 255, 255, 0.9);
-  font-size: 0.9rem;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  font-size: 0.875rem;
+  color: #1e293b;
+  transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+  box-sizing: border-box;
 }
 
-.outline-remove {
-  background: transparent;
+.outline-input:focus {
+  outline: none;
+  border-color: #7dd3fc;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+}
+
+/* 要点列表 */
+.outline-keypoints {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.outline-keypoint-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kp-dot {
+  color: #94a3b8;
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.kp-input {
+  flex: 1;
+}
+
+.kp-remove-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
   border: none;
+  background: transparent;
+  color: #cbd5e1;
+  font-size: 0.75rem;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: all 0.15s;
+  padding: 0;
+}
+
+.kp-remove-btn:hover {
+  background: #fef2f2;
   color: #ef4444;
+}
+
+.kp-add-btn {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px dashed #cbd5e1;
+  background: transparent;
+  color: #64748b;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-top: 2px;
+}
+
+.kp-add-btn:hover {
+  border-color: #0EA5E9;
+  color: #0EA5E9;
+  background: #f0f9ff;
+}
+
+/* 末尾新增卡片按钮 */
+.outline-add-card {
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  border: 2px dashed #e2e8f0;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 0.875rem;
   font-weight: 600;
   cursor: pointer;
+  transition: all 0.18s;
+  text-align: center;
+}
+
+.outline-add-card:hover {
+  border-color: #7dd3fc;
+  color: #0EA5E9;
+  background: #f0f9ff;
+}
+
+/* 空状态 */
+.outline-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 20px;
+  color: #94a3b8;
+  text-align: center;
+}
+
+.outline-empty-icon {
+  font-size: 2.4rem;
+  line-height: 1;
+}
+
+.outline-empty p {
+  font-size: 0.875rem;
+  max-width: 280px;
+  line-height: 1.6;
+}
+
+/* 底部操作栏 */
+.outline-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0 0;
+  border-top: 1px solid #f1f5f9;
+  margin-top: 4px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.outline-footer-tip {
+  font-size: 0.82rem;
+  color: #94a3b8;
+}
+
+/* 旧的 outline-generate-bar 兼容 */
+.outline-generate-bar {
+  padding-top: 14px;
+  border-top: 1px solid #f1f5f9;
 }
 
 .form-group label {
@@ -3614,5 +4606,404 @@ h4 {
     text-align: center;
   }
 
+}
+
+/* ===== 来源选择 / 文档上传 ===== */
+.source-card {
+  border-left: 4px solid #0EA5E9;
+}
+
+.source-tabs {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.source-tab {
+  padding: 8px 22px;
+  border: 2px solid #e2e8f0;
+  border-radius: 999px;
+  background: transparent;
+  color: #475569;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.source-tab.active {
+  border-color: #0EA5E9;
+  background: #e0f2fe;
+  color: #0369a1;
+  font-weight: 600;
+}
+
+.material-upload-area {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.upload-zone {
+  border: 2px dashed #cbd5e1;
+  border-radius: 12px;
+  padding: 32px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: #64748b;
+}
+
+.upload-zone:hover {
+  border-color: #0EA5E9;
+  background: #f0f9ff;
+}
+
+.upload-filename {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.upload-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.extract-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  background: #f8fafc;
+  border-radius: 10px;
+}
+
+.extract-spinner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.spinner-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #0EA5E9;
+  animation: pulse 1.2s infinite;
+  display: inline-block;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+
+.extract-result-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.extract-result-card h4 {
+  margin: 0 0 4px;
+  color: #0f172a;
+  font-size: 1rem;
+}
+
+.extract-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #0EA5E9;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.extract-list {
+  margin: 4px 0 0 16px;
+  padding: 0;
+  color: #334155;
+  font-size: 0.9rem;
+  line-height: 1.7;
+}
+
+.keyword-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.extract-actions {
+  margin-top: 8px;
+}
+
+.material-history-hint {
+  font-size: 0.88rem;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: #0EA5E9;
+  cursor: pointer;
+  font-size: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.material-bound-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #f0fdf4;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+/* ===== 材料管理页 ===== */
+.materials-section {
+  padding: 0;
+}
+
+.materials-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.materials-header h2 {
+  margin: 0 0 6px;
+  font-size: 1.6rem;
+  color: #0f172a;
+}
+
+.materials-header p {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.95rem;
+}
+
+.materials-loading,
+.materials-empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: #94a3b8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.materials-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.material-card {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  transition: box-shadow 0.2s;
+}
+
+.material-card:hover {
+  box-shadow: 0 6px 20px rgba(14,165,233,0.12);
+  border-color: #bae6fd;
+}
+
+.material-card-header {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.material-icon {
+  width: 42px;
+  height: 42px;
+  background: #e0f2fe;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #0EA5E9;
+  flex-shrink: 0;
+}
+
+.material-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.material-filename {
+  font-weight: 600;
+  color: #0f172a;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.material-meta {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 0.8rem;
+  color: #94a3b8;
+  flex-wrap: wrap;
+}
+
+.material-type {
+  background: #f1f5f9;
+  color: #475569;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+.material-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.material-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.mat-btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: none;
+  font-size: 0.85rem;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.mat-btn.primary {
+  background: #0EA5E9;
+  color: white;
+}
+
+.mat-btn.primary:hover {
+  background: #0284c7;
+}
+
+.mat-btn.danger {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.mat-btn.danger:hover {
+  background: #fecaca;
+}
+
+/* ===== 材料详情弹窗 ===== */
+.material-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.material-modal {
+  background: white;
+  border-radius: 16px;
+  width: 100%;
+  max-width: 600px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+}
+
+.material-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.material-modal-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #0f172a;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  color: #94a3b8;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+
+.modal-close:hover {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.material-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.material-modal-loading {
+  padding: 40px;
+  text-align: center;
+  color: #94a3b8;
+}
+
+.material-modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
 }
 </style>

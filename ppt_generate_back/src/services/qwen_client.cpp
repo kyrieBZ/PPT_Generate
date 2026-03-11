@@ -170,9 +170,23 @@ std::string BuildOutlinePrompt(const std::string& topic,
   if (!template_hint.empty()) {
     prompt << "模板风格参考：" << template_hint << "。";
   }
-  prompt << "输出严格的JSON数组，数组中每个元素包含字段："
+  // 结构约束：封面、目录、内容、总结页分工明确
+  prompt << "页面结构要求：";
+  if (slide_count >= 1) {
+    prompt << "第1页为封面页（page_type=\"cover\"，title为PPT标题，key_points为副标题或作者/日期等信息，1-2条）；";
+  }
+  if (slide_count >= 3) {
+    prompt << "第2页为目录页（page_type=\"toc\"，title为目录，key_points列出各章节标题，与内容页数量对应）；";
+    prompt << "最后1页为总结/致谢页（page_type=\"summary\"，title为总结或谢谢，key_points为核心结论或致谢语，1-3条）；";
+    prompt << "其余页为内容页（page_type=\"content\"）。";
+  } else {
+    prompt << "所有页均为内容页（page_type=\"content\"）。";
+  }
+  prompt << "输出严格的JSON数组，数组长度必须恰好等于" << slide_count << "，"
+         << "数组中每个元素包含字段："
+         << "page_type（字符串，值为cover/toc/content/summary之一），"
          << "title（字符串，<=18个汉字），"
-         << "key_points（长度2-4的字符串数组，单条<=25字），"
+         << "key_points（字符串数组，内容页2-4条单条<=25字，封面/目录/总结页1-3条），"
          << "summary（字符串，<=40字，用于概括该页目的）。"
          << "禁止输出除JSON以外的任何字符。";
   return prompt.str();
@@ -201,7 +215,8 @@ std::string BuildLayoutGuidePrompt(const std::string& template_summary_json,
 
 std::string BuildSlidesPromptFromOutline(const std::string& topic,
                                          const std::vector<OutlineItem>& outline,
-                                         bool include_images) {
+                                         bool include_images,
+                                         bool include_charts = false) {
   std::ostringstream outline_text;
   for (std::size_t i = 0; i < outline.size(); ++i) {
     outline_text << (i + 1) << ". " << outline[i].title;
@@ -224,21 +239,41 @@ std::string BuildSlidesPromptFromOutline(const std::string& topic,
   prompt << "你是一名资深中文PPT设计专家，请根据以下大纲为主题【" << topic << "】"
          << "生成每页PPT内容：\n"
          << outline_text.str();
+  prompt << "注意：大纲中的 title、key_points、summary 只是提纲，请你基于它们进行归纳、重写和适度扩展，"
+         << "严禁逐字照抄原文。每页的 bullets 需要："
+         << "1）用完整通顺的短句表达关键信息；"
+         << "2）可以适当补充背景说明、简单示例或过渡语；"
+         << "3）在保持主题不改变的前提下，允许新增1-2条补充要点；"
+         << "4）单条建议控制在40字以内，避免堆砌长段落。";
   if (include_images) {
     prompt << "每页需要1-2个图片创意描述，突出场景、风格或配色，供后续图片检索使用。";
+  }
+  if (include_charts) {
+    prompt << "若某页内容包含可量化的数据（如占比、数量对比、趋势数据），"
+           << "请在该页JSON中额外输出chart_data字段，格式为："
+           << "{\"type\":\"pie|bar|line|doughnut\",\"title\":\"图表标题\","
+           << "\"items\":[{\"label\":\"名称\",\"value\":数值},...]}，"
+           << "数据项3-6条，value为数字（占比类型value为百分比数字如45.0）。"
+           << "图表类型选择规则：各项之和为100%或占比分布用pie，"
+           << "各项独立数量对比用bar，时间序列或趋势用line，少量分类占比(<=5项)用doughnut。"
+           << "若该页无适合的量化数据则省略chart_data字段。";
   }
   prompt << "输出严格的JSON数组，数组中每个元素包含字段："
          << "title（字符串，需与大纲对应），"
          << "bullets（长度3-5的字符串数组，单条<=40字），"
-         << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）。"
-         << "禁止输出除JSON以外的任何字符。";
+         << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）";
+  if (include_charts) {
+    prompt << "，chart_data（可选，图表数据对象，格式见上）";
+  }
+  prompt << "。禁止输出除JSON以外的任何字符。";
   return prompt.str();
 }
 
 std::string BuildSlidesPromptFromOutlineWithLayout(const std::string& topic,
                                                    const std::vector<OutlineItem>& outline,
                                                    bool include_images,
-                                                   const std::string& layout_guide_json) {
+                                                   const std::string& layout_guide_json,
+                                                   bool include_charts = false) {
   std::ostringstream outline_text;
   for (std::size_t i = 0; i < outline.size(); ++i) {
     outline_text << (i + 1) << ". " << outline[i].title;
@@ -263,16 +298,35 @@ std::string BuildSlidesPromptFromOutlineWithLayout(const std::string& topic,
          << outline_text.str();
   prompt << "版式约束 layout_guide(JSON数组，索引对应页码，从0开始)如下：\n"
          << layout_guide_json << "\n";
+  prompt << "注意：大纲中的 title、summary、key_points 只是提纲，请你在满足版式约束的前提下进行归纳、重写和适度扩展，"
+         << "严禁逐字照抄原文。每页的 bullet_groups / bullets 需要："
+         << "1）使用简洁有力的短句；"
+         << "2）可以补充背景说明或简单示例；"
+         << "3）在不超出对应 max_bullets/max_chars 的范围内，适度新增1-2条补充要点；"
+         << "4）保持层次清晰，避免把大纲原文整段搬运。";
   if (include_images) {
     prompt << "每页需要1-2个图片创意描述，突出场景、风格或配色，供后续图片检索使用。";
+  }
+  if (include_charts) {
+    prompt << "若某页内容包含可量化的数据（如占比、数量对比、趋势数据），"
+           << "请在该页JSON中额外输出chart_data字段，格式为："
+           << "{\"type\":\"pie|bar|line|doughnut\",\"title\":\"图表标题\","
+           << "\"items\":[{\"label\":\"名称\",\"value\":数值},...]}，"
+           << "数据项3-6条，value为数字（占比类型value为百分比数字如45.0）。"
+           << "图表类型选择规则：各项之和为100%或占比分布用pie，"
+           << "各项独立数量对比用bar，时间序列或趋势用line，少量分类占比(<=5项)用doughnut。"
+           << "若该页无适合的量化数据则省略chart_data字段。";
   }
   prompt << "输出严格的JSON数组，数组中每个元素包含字段："
          << "title（字符串，需与大纲对应），"
          << "bullet_groups（数组，长度需与layout_guide中groups长度一致；"
          << "每个分组是字符串数组，条数<=对应max_bullets，单条字数<=对应max_chars），"
          << "bullets（可选，flatten后的要点数组，单条<=40字），"
-         << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）。"
-         << "禁止输出除JSON以外的任何字符。";
+         << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）";
+  if (include_charts) {
+    prompt << "，chart_data（可选，图表数据对象，格式见上）";
+  }
+  prompt << "。禁止输出除JSON以外的任何字符。";
   return prompt.str();
 }
 
@@ -280,7 +334,8 @@ std::string BuildSlidesPromptWithLayout(const std::string& topic,
                                         int slide_count,
                                         const std::string& template_hint,
                                         bool include_images,
-                                        const std::string& layout_guide_json) {
+                                        const std::string& layout_guide_json,
+                                        bool include_charts = false) {
   std::ostringstream prompt;
   prompt << "你是一名资深中文PPT设计专家，请围绕主题【" << topic << "】"
          << "策划" << slide_count << "页结构化PPT。";
@@ -292,13 +347,26 @@ std::string BuildSlidesPromptWithLayout(const std::string& topic,
   if (include_images) {
     prompt << "每页需要1-2个图片创意描述，突出场景、风格或配色，供后续图片检索使用。";
   }
+  if (include_charts) {
+    prompt << "若某页内容包含可量化的数据（如占比、数量对比、趋势数据），"
+           << "请在该页JSON中额外输出chart_data字段，格式为："
+           << "{\"type\":\"pie|bar|line|doughnut\",\"title\":\"图表标题\","
+           << "\"items\":[{\"label\":\"名称\",\"value\":数值},...]}，"
+           << "数据项3-6条，value为数字（占比类型value为百分比数字如45.0）。"
+           << "图表类型选择规则：各项之和为100%或占比分布用pie，"
+           << "各项独立数量对比用bar，时间序列或趋势用line，少量分类占比(<=5项)用doughnut。"
+           << "若该页无适合的量化数据则省略chart_data字段。";
+  }
   prompt << "输出严格的JSON数组，数组中每个元素包含字段："
          << "title（字符串，<=18个汉字），"
          << "bullet_groups（数组，长度需与layout_guide中groups长度一致；"
          << "每个分组是字符串数组，条数<=对应max_bullets，单条字数<=对应max_chars），"
          << "bullets（可选，flatten后的要点数组，单条<=40字），"
-         << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）。"
-         << "禁止输出除JSON以外的任何字符。";
+         << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）";
+  if (include_charts) {
+    prompt << "，chart_data（可选，图表数据对象，格式见上）";
+  }
+  prompt << "。禁止输出除JSON以外的任何字符。";
   return prompt.str();
 }
 
@@ -322,6 +390,12 @@ bool ParseOutlineJson(const nlohmann::json& data, std::vector<OutlineItem>& out_
     OutlineItem outline;
     outline.title = item.value("title", "");
     outline.summary = item.value("summary", "");
+    outline.page_type = item.value("page_type", item.value("pageType", "content"));
+    // 校验 page_type 合法性，不合法则默认 content
+    static const std::vector<std::string> kValidPageTypes = {"cover", "toc", "content", "summary"};
+    if (std::find(kValidPageTypes.begin(), kValidPageTypes.end(), outline.page_type) == kValidPageTypes.end()) {
+      outline.page_type = "content";
+    }
     if (auto it = item.find("key_points"); it != item.end() && it->is_array()) {
       for (const auto& point : *it) {
         if (point.is_string()) {
@@ -683,6 +757,47 @@ bool ParseSlidesText(const std::string& slides_text,
       }
       AppendImagePlaceholders(slide, prompts, include_images);
 
+      // 解析 chart_data 字段（可选）
+      const nlohmann::json* chart_json_ptr = nullptr;
+      if (auto it = slide_json.find("chart_data"); it != slide_json.end() && it->is_object()) {
+        chart_json_ptr = &(*it);
+      } else if (auto it = slide_json.find("chartData"); it != slide_json.end() && it->is_object()) {
+        chart_json_ptr = &(*it);
+      }
+      if (chart_json_ptr != nullptr) {
+        const auto& cj = *chart_json_ptr;
+        ChartData cd;
+        cd.type = cj.value("type", "bar");
+        cd.title = cj.value("title", "");
+        // 校验 type 合法性，不合法则默认 bar
+        static const std::vector<std::string> kValidTypes = {"pie", "bar", "line", "doughnut"};
+        if (std::find(kValidTypes.begin(), kValidTypes.end(), cd.type) == kValidTypes.end()) {
+          cd.type = "bar";
+        }
+        if (auto items_it = cj.find("items"); items_it != cj.end() && items_it->is_array()) {
+          for (const auto& item : *items_it) {
+            if (!item.is_object()) continue;
+            ChartDataItem cdi;
+            cdi.label = item.value("label", "");
+            if (item.contains("value")) {
+              const auto& v = item["value"];
+              if (v.is_number()) {
+                cdi.value = v.get<double>();
+              } else if (v.is_string()) {
+                try { cdi.value = std::stod(v.get<std::string>()); } catch (...) { cdi.value = 0.0; }
+              }
+            }
+            if (!cdi.label.empty()) {
+              cd.items.push_back(std::move(cdi));
+            }
+          }
+        }
+        // 至少需要 2 个数据项才有意义
+        if (cd.items.size() >= 2) {
+          slide.chart_data = std::move(cd);
+        }
+      }
+
       out_slides.push_back(std::move(slide));
     }
     if (out_slides.empty()) {
@@ -768,28 +883,73 @@ QwenClient::QwenClient(std::string api_key, std::uint32_t timeout_seconds)
   curl_global_init(CURL_GLOBAL_DEFAULT);
 }
 
+// 从 AI 返回文本中提取 JSON 数组内容，去除 markdown 代码块包裹及多余文字
+static std::string ExtractJsonArray(const std::string& text) {
+  // 先尝试去除 ```json ... ``` 或 ``` ... ``` 包裹
+  std::string cleaned = text;
+  auto fence_start = cleaned.find("```");
+  if (fence_start != std::string::npos) {
+    auto content_start = cleaned.find('\n', fence_start);
+    if (content_start != std::string::npos) {
+      auto fence_end = cleaned.rfind("```");
+      if (fence_end != std::string::npos && fence_end > content_start) {
+        cleaned = cleaned.substr(content_start + 1, fence_end - content_start - 1);
+      }
+    }
+  }
+  // 截取第一个 '[' 到最后一个 ']' 之间的内容
+  auto arr_start = cleaned.find('[');
+  auto arr_end = cleaned.rfind(']');
+  if (arr_start != std::string::npos && arr_end != std::string::npos && arr_end > arr_start) {
+    return cleaned.substr(arr_start, arr_end - arr_start + 1);
+  }
+  return cleaned;
+}
+
 bool QwenClient::GenerateOutline(const std::string& topic,
                                  int slide_count,
                                  const std::string& template_hint,
                                  std::vector<OutlineItem>& out_outline,
                                  std::string& error_message) const {
-  slide_count = std::max(1, std::min(slide_count, 10));
+  // 问题1：上限与控制器保持一致，允许最多 50 页
+  slide_count = std::max(1, std::min(slide_count, 50));
   const auto prompt = BuildOutlinePrompt(topic, slide_count, template_hint);
-  std::string outline_text;
-  if (!CallQwen(api_key_, prompt, outline_text, error_message, timeout_seconds_)) {
-    return false;
-  }
-  try {
-    auto outline_json = nlohmann::json::parse(outline_text);
-    if (!ParseOutlineJson(outline_json, out_outline)) {
-      error_message = "大纲解析失败";
+
+  // 问题4：最多尝试 2 次（首次 + 1 次重试）
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    std::string outline_text;
+    std::string call_error;
+    if (!CallQwen(api_key_, prompt, outline_text, call_error, timeout_seconds_)) {
+      error_message = call_error;
+      if (attempt == 0) {
+        Logger::Warn(std::string("GenerateOutline attempt 1 failed, retrying: ") + call_error);
+        continue;
+      }
       return false;
     }
-    return true;
-  } catch (const std::exception& ex) {
-    error_message = ex.what();
-    return false;
+    // 清洗 AI 返回文本，提取纯 JSON 数组
+    const std::string json_text = ExtractJsonArray(outline_text);
+    try {
+      auto outline_json = nlohmann::json::parse(json_text);
+      if (!ParseOutlineJson(outline_json, out_outline)) {
+        error_message = "大纲解析失败";
+        if (attempt == 0) {
+          Logger::Warn("GenerateOutline attempt 1 parse failed, retrying");
+          continue;
+        }
+        return false;
+      }
+      return true;
+    } catch (const std::exception& ex) {
+      error_message = ex.what();
+      if (attempt == 0) {
+        Logger::Warn(std::string("GenerateOutline attempt 1 json parse exception, retrying: ") + ex.what());
+        continue;
+      }
+      return false;
+    }
   }
+  return false;
 }
 
 bool QwenClient::GenerateLayoutGuide(const std::string& template_summary_json,
@@ -842,12 +1002,13 @@ bool QwenClient::GenerateSlidesFromOutline(const std::string& topic,
                                            const std::vector<OutlineItem>& outline,
                                            bool include_images,
                                            std::vector<SlideContent>& out_slides,
-                                           std::string& error_message) const {
+                                           std::string& error_message,
+                                           bool include_charts) const {
   if (outline.empty()) {
     error_message = "大纲为空";
     return false;
   }
-  const auto prompt = BuildSlidesPromptFromOutline(topic, outline, include_images);
+  const auto prompt = BuildSlidesPromptFromOutline(topic, outline, include_images, include_charts);
   std::string slides_text;
   if (!CallQwen(api_key_, prompt, slides_text, error_message, timeout_seconds_)) {
     return false;
@@ -860,16 +1021,18 @@ bool QwenClient::GenerateSlidesFromOutlineWithLayout(const std::string& topic,
                                                      bool include_images,
                                                      const std::string& layout_guide_json,
                                                      std::vector<SlideContent>& out_slides,
-                                                     std::string& error_message) const {
+                                                     std::string& error_message,
+                                                     bool include_charts) const {
   if (layout_guide_json.empty()) {
-    return GenerateSlidesFromOutline(topic, outline, include_images, out_slides, error_message);
+    return GenerateSlidesFromOutline(topic, outline, include_images, out_slides, error_message,
+                                     include_charts);
   }
   if (outline.empty()) {
     error_message = "大纲为空";
     return false;
   }
   const auto prompt = BuildSlidesPromptFromOutlineWithLayout(topic, outline, include_images,
-                                                             layout_guide_json);
+                                                             layout_guide_json, include_charts);
   std::string slides_text;
   if (!CallQwen(api_key_, prompt, slides_text, error_message, timeout_seconds_)) {
     return false;
@@ -940,7 +1103,8 @@ bool QwenClient::GenerateSlidesWithLayout(const std::string& topic,
                                           bool include_images,
                                           const std::string& layout_guide_json,
                                           std::vector<SlideContent>& out_slides,
-                                          std::string& error_message) const {
+                                          std::string& error_message,
+                                          bool include_charts) const {
   if (layout_guide_json.empty()) {
     return GenerateSlides(topic, slide_count, template_hint, include_images, out_slides, error_message);
   }
@@ -948,7 +1112,7 @@ bool QwenClient::GenerateSlidesWithLayout(const std::string& topic,
 
   std::ostringstream prompt;
   prompt << BuildSlidesPromptWithLayout(topic, slide_count, template_hint, include_images,
-                                        layout_guide_json);
+                                        layout_guide_json, include_charts);
   std::string slides_text;
   if (!CallQwen(api_key_, prompt.str(), slides_text, error_message, timeout_seconds_)) {
     return false;

@@ -19,5 +19,15 @@ export default {
   },
   remove(id) {
     return apiClient.delete(`/ppt/history?id=${encodeURIComponent(id)}`)
+  },
+  // 在线编辑：获取 / 保存结构化 PPT JSON + 再生成
+  getStructure(id) {
+    return apiClient.get('/ppt/structure', { params: { id } })
+  },
+  saveStructure(id, payload) {
+    return apiClient.put('/ppt/structure', payload, { params: { id } })
+  },
+  regenerateFromStructure(id, payload) {
+    return apiClient.post('/ppt/structure/regenerate', payload, { params: { id } })
   }
 }

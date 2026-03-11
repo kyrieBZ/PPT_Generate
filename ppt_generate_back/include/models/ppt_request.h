@@ -24,6 +24,7 @@ struct PptRequestInput {
   bool enable_section_slides = false;
   int section_slide_interval = 4;
   std::string theme_preset;
+  std::string material_id;
 
   static PptRequestInput FromJson(const nlohmann::json& data);
 };

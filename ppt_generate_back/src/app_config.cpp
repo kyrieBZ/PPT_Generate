@@ -245,6 +245,38 @@ GenerationConfig ParseGeneration(const nlohmann::json& json, const std::filesyst
   return cfg;
 }
 
+MaterialConfig ParseMaterial(const nlohmann::json& json, const std::filesystem::path& base_dir) {
+  MaterialConfig cfg;
+  if (auto it = json.find("upload_dir"); it != json.end() && it->is_string()) {
+    cfg.upload_dir = *it;
+  }
+  if (auto it = json.find("max_file_size_mb"); it != json.end() && it->is_number_unsigned()) {
+    cfg.max_file_size_mb = it->get<std::uint64_t>();
+  }
+  if (auto it = json.find("allowed_types"); it != json.end() && it->is_array()) {
+    cfg.allowed_types.clear();
+    for (const auto& item : *it) {
+      if (item.is_string()) {
+        cfg.allowed_types.push_back(item.get<std::string>());
+      }
+    }
+  }
+  if (auto it = json.find("extract_script"); it != json.end() && it->is_string()) {
+    cfg.extract_script = *it;
+  }
+  auto make_absolute = [&](const std::string& value) {
+    if (value.empty()) return value;
+    std::filesystem::path path(value);
+    if (path.is_relative()) {
+      path = (base_dir / path).lexically_normal();
+    }
+    return path.lexically_normal().string();
+  };
+  cfg.upload_dir = make_absolute(cfg.upload_dir);
+  cfg.extract_script = make_absolute(cfg.extract_script);
+  return cfg;
+}
+
 S3Config ParseS3(const nlohmann::json& json) {
   S3Config cfg;
   if (auto it = json.find("endpoint"); it != json.end() && it->is_string()) {
@@ -327,6 +359,11 @@ AppConfig AppConfig::Load(const std::string& path) {
   }
   if (auto it = data.find("s3"); it != data.end()) {
     config.s3_ = ParseS3(*it);
+  }
+  if (auto it = data.find("material"); it != data.end()) {
+    config.material_ = ParseMaterial(*it, project_root);
+  } else {
+    config.material_ = ParseMaterial(nlohmann::json::object(), project_root);
   }
 
   if (config.database_.user.empty() || config.database_.name.empty()) {

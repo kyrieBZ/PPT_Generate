@@ -11,6 +11,7 @@
 #include "controllers/admin_controller.h"
 #include "controllers/ppt_controller.h"
 #include "controllers/template_controller.h"
+#include "controllers/material_controller.h"
 #include "controllers/model_controller.h"
 #include "database/mysql_connection_pool.h"
 #include "http/http_server.h"
@@ -19,6 +20,7 @@
 #include "services/email_service.h"
 #include "services/ppt_service.h"
 #include "services/qwen_client.h"
+#include "services/material_service.h"
 #include "services/template_service.h"
 #include "services/ppt_service_interface.h"
 #include "services/libreoffice_powerpoint_service.h"
@@ -89,9 +91,15 @@ int main(int argc, char* argv[]) {
     }
 
     auto thread_pool = std::make_shared<ThreadPool>(4);
+
+    std::string qwen_key = config.providers().qwen_api_key;
+    auto material_service = std::make_shared<MaterialService>(
+        pool, config.material(), qwen_key, config.generation().python_binary);
+
     Router router;
     AuthController auth_controller(auth_service);
     AdminController admin_controller(auth_service);
+    MaterialController material_controller(auth_service, material_service, thread_pool);
     PptController ppt_controller(auth_service,
                                  ppt_service,
                                  model_service,
@@ -100,7 +108,8 @@ int main(int argc, char* argv[]) {
                                  qwen_client,
                                  s3_client,
                                  wanx_client,
-                                 thread_pool);
+                                 thread_pool,
+                                 material_service);
     TemplateController template_controller(template_service);
     ModelController model_controller(model_service);
 
@@ -178,6 +187,15 @@ int main(int argc, char* argv[]) {
     router.AddRoute("GET", "/api/ppt/preview", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Preview(request);
     });
+    router.AddRoute("GET", "/api/ppt/structure", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.GetStructure(request);
+    });
+    router.AddRoute("PUT", "/api/ppt/structure", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.UpdateStructure(request);
+    });
+    router.AddRoute("POST", "/api/ppt/structure/regenerate", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.RegenerateFromStructure(request);
+    });
 
     router.AddRoute("GET", "/api/templates", [&template_controller](const HttpRequest& request) {
       return template_controller.List(request);
@@ -191,6 +209,25 @@ int main(int argc, char* argv[]) {
     });
     router.AddRoute("POST", "/api/ppt/outline", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Outline(request);
+    });
+
+    router.AddRoute("POST", "/api/material/upload", [&material_controller](const HttpRequest& request) {
+      return material_controller.Upload(request);
+    });
+    router.AddRoute("GET", "/api/material/status", [&material_controller](const HttpRequest& request) {
+      return material_controller.GetStatus(request);
+    });
+    router.AddRoute("GET", "/api/material/result", [&material_controller](const HttpRequest& request) {
+      return material_controller.GetResult(request);
+    });
+    router.AddRoute("PUT", "/api/material/result", [&material_controller](const HttpRequest& request) {
+      return material_controller.SaveResult(request);
+    });
+    router.AddRoute("GET", "/api/material/list", [&material_controller](const HttpRequest& request) {
+      return material_controller.List(request);
+    });
+    router.AddRoute("DELETE", "/api/material", [&material_controller](const HttpRequest& request) {
+      return material_controller.Delete(request);
     });
 
     HttpServer server(config.server(), router);

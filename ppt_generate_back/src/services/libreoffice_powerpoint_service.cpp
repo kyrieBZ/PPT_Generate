@@ -118,6 +118,23 @@ bool LibreOfficePowerPointService::Save(const std::string&, const std::string& l
     if (!slide.layout_hint.empty()) {
       item["layoutHint"] = slide.layout_hint;
     }
+    if (slide.chart_data.has_value()) {
+      const auto& cd = slide.chart_data.value();
+      nlohmann::json chart_json;
+      chart_json["type"] = cd.type;
+      if (!cd.title.empty()) {
+        chart_json["title"] = cd.title;
+      }
+      nlohmann::json items_json = nlohmann::json::array();
+      for (const auto& cdi : cd.items) {
+        nlohmann::json cdi_json;
+        cdi_json["label"] = cdi.label;
+        cdi_json["value"] = cdi.value;
+        items_json.push_back(std::move(cdi_json));
+      }
+      chart_json["items"] = std::move(items_json);
+      item["chartData"] = std::move(chart_json);
+    }
     payload["slides"].push_back(item);
   }
 

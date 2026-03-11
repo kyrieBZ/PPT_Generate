@@ -115,7 +115,7 @@ function getImageSource(slide, baseDir) {
   return null;
 }
 
-const LAYOUT_TYPES = ["cover", "section", "closing", "content_text_image", "content_text_only", "content_bullets_heavy", "content_quote"];
+const LAYOUT_TYPES = ["cover", "section", "closing", "content_text_image", "content_text_only", "content_bullets_heavy", "content_quote", "content_chart"];
 const QUOTE_MAX_LEN = 80;
 
 function getLayoutType(slideData, index, total, dataDir) {
@@ -123,6 +123,8 @@ function getLayoutType(slideData, index, total, dataDir) {
   if (hint && LAYOUT_TYPES.includes(hint)) return hint;
   if (index === 0) return "cover";
   if (index === total - 1) return "closing";
+  // 有图表数据时优先使用图表布局
+  if (isValidChartData(slideData.chartData || slideData.chart_data)) return "content_chart";
   const bullets = flattenBullets(slideData);
   const hasImage = !!getImageSource(slideData, dataDir);
   if (hasImage && bullets.length <= 4) return "content_text_image";
@@ -132,6 +134,146 @@ function getLayoutType(slideData, index, total, dataDir) {
   }
   if (bullets.length >= 6) return "content_bullets_heavy";
   return "content_text_only";
+}
+
+/** 验证图表数据是否合法（至少2个数据项，每项有 label 和数字 value） */
+function isValidChartData(cd) {
+  if (!cd || typeof cd !== "object") return false;
+  if (!Array.isArray(cd.items) || cd.items.length < 2) return false;
+  return cd.items.every((item) => item && item.label && typeof item.value === "number");
+}
+
+/** 根据主题色生成图表配色板（6色） */
+function generateChartColors(theme) {
+  // 以 primary、secondary、accent 为基础，派生出 6 个颜色
+  const base = [theme.primary, theme.secondary, theme.accent];
+  const lighten = (hex, amount) => {
+    const num = parseInt(hex.replace(/^#/, ""), 16);
+    const r = Math.min(255, ((num >> 16) & 0xff) + amount);
+    const g = Math.min(255, ((num >> 8) & 0xff) + amount);
+    const b = Math.min(255, (num & 0xff) + amount);
+    return ((r << 16) | (g << 8) | b).toString(16).padStart(6, "0").toUpperCase();
+  };
+  return [
+    base[0],
+    base[1],
+    base[2],
+    lighten(base[0], 40),
+    lighten(base[1], 40),
+    lighten(base[2], 40),
+  ];
+}
+
+/** 构建图表幻灯片（content_chart 布局） */
+function buildChartSlide(slide, pres, slideData, theme, typo, sz) {
+  const cd = slideData.chartData || slideData.chart_data;
+  const CHART_TYPE_MAP = {
+    pie: pres.charts.PIE,
+    bar: pres.charts.BAR,
+    line: pres.charts.LINE,
+    doughnut: pres.charts.DOUGHNUT,
+  };
+  const chartType = CHART_TYPE_MAP[(cd.type || "bar").toLowerCase()] || pres.charts.BAR;
+  const dataForChart = [
+    {
+      name: cd.title || slideData.title || "",
+      labels: cd.items.map((i) => String(i.label)),
+      values: cd.items.map((i) => Number(i.value)),
+    },
+  ];
+  const chartColors = generateChartColors(theme);
+  const title = String(slideData.title || "").trim() || " ";
+  const bullets = flattenBullets(slideData);
+  const hasBullets = bullets.length > 0;
+
+  addContentSlideBase(slide, pres, theme, MARGIN_X);
+
+  if (hasBullets) {
+    // 左文右图布局
+    const textW = 4.3;
+    const chartX = MARGIN_X + 0.06 + GAP_ACCENT_CONTENT + textW + GAP_TEXT_IMAGE;
+    const chartW = 10 - chartX - MARGIN_X;
+    const chartH = 3.8;
+    const chartY = 1.0;
+
+    slide.addText(title, {
+      x: MARGIN_X + 0.06 + GAP_ACCENT_CONTENT,
+      y: 0.4,
+      w: textW,
+      h: 0.65,
+      fontSize: sz.contentTitleSmall,
+      bold: true,
+      color: theme.primary,
+      fontFace: typo.titleFont,
+      margin: 0,
+    });
+    const runs = bullets.map((b, idx) => ({
+      text: String(b).trim() || " ",
+      options: {
+        bullet: true,
+        breakLine: idx < bullets.length - 1,
+        fontSize: sz.body,
+        color: "334155",
+        fontFace: typo.bodyFont,
+      },
+    }));
+    slide.addText(runs, {
+      x: MARGIN_X + 0.06 + GAP_ACCENT_CONTENT,
+      y: 1.15,
+      w: textW,
+      h: 4.0,
+      fontSize: sz.body,
+      color: "334155",
+      fontFace: typo.bodyFont,
+      valign: "top",
+      margin: 0,
+    });
+    slide.addChart(chartType, dataForChart, {
+      x: chartX,
+      y: chartY,
+      w: chartW,
+      h: chartH,
+      showLegend: true,
+      legendPos: "b",
+      legendFontSize: 9,
+      showTitle: !!(cd.title),
+      title: cd.title || "",
+      titleFontSize: 11,
+      chartColors: chartColors,
+      dataLabelFontSize: 9,
+      showValue: chartType !== pres.charts.PIE && chartType !== pres.charts.DOUGHNUT,
+      showPercent: chartType === pres.charts.PIE || chartType === pres.charts.DOUGHNUT,
+    });
+  } else {
+    // 全幅图表布局：标题在顶，图表占主体
+    slide.addText(title, {
+      x: MARGIN_X + 0.06 + GAP_ACCENT_CONTENT,
+      y: 0.4,
+      w: 10 - MARGIN_X - 0.06 - GAP_ACCENT_CONTENT - MARGIN_X,
+      h: 0.65,
+      fontSize: sz.contentTitle,
+      bold: true,
+      color: theme.primary,
+      fontFace: typo.titleFont,
+      margin: 0,
+    });
+    slide.addChart(chartType, dataForChart, {
+      x: MARGIN_X + 0.06 + GAP_ACCENT_CONTENT,
+      y: 1.15,
+      w: 10 - MARGIN_X - 0.06 - GAP_ACCENT_CONTENT - MARGIN_X,
+      h: 4.1,
+      showLegend: true,
+      legendPos: "b",
+      legendFontSize: 10,
+      showTitle: !!(cd.title),
+      title: cd.title || "",
+      titleFontSize: 12,
+      chartColors: chartColors,
+      dataLabelFontSize: 10,
+      showValue: chartType !== pres.charts.PIE && chartType !== pres.charts.DOUGHNUT,
+      showPercent: chartType === pres.charts.PIE || chartType === pres.charts.DOUGHNUT,
+    });
+  }
 }
 
 function addContentSlideBase(slide, pres, theme, marginX, contentX, contentW) {
@@ -250,6 +392,11 @@ function buildPresentation(payload, outputPath) {
     const contentX = MARGIN_X + accentW + GAP_ACCENT_CONTENT;
     const contentW = 10 - contentX - MARGIN_X;
     const imgSrc = getImageSource(slideData, dataDir);
+
+    if (layoutType === "content_chart") {
+      buildChartSlide(slide, pres, slideData, theme, typo, sz);
+      continue;
+    }
 
     if (layoutType === "content_quote") {
       slide.background = { color: "F8FAFC" };

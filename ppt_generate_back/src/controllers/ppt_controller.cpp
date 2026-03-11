@@ -19,6 +19,7 @@
 #include "logger.h"
 #include "models/outline_item.h"
 #include "models/slide_content.h"
+#include "services/material_service.h"
 #include "utils/ppt_metrics.h"
 
 #include <chrono>
@@ -383,7 +384,8 @@ nlohmann::json OutlineItemToJson(const OutlineItem& item) {
   nlohmann::json result = {
       {"title", item.title},
       {"summary", item.summary},
-      {"keyPoints", item.key_points}
+      {"keyPoints", item.key_points},
+      {"pageType", item.page_type.empty() ? "content" : item.page_type}
   };
   return result;
 }
@@ -1054,7 +1056,133 @@ struct PptGenerationJob {
   std::uint64_t user_id = 0;
   std::string user_email;
   std::string template_id;
+  std::shared_ptr<MaterialService> material_service;
 };
+
+std::filesystem::path BuildStructurePath(const GenerationConfig& config,
+                                         const std::string& output_path) {
+  if (output_path.empty()) {
+    return {};
+  }
+  std::filesystem::path p(output_path);
+  std::filesystem::path base_dir(config.output_dir);
+  std::error_code ec;
+  const auto canonical_base = std::filesystem::weakly_canonical(base_dir, ec);
+  const auto canonical_target = std::filesystem::weakly_canonical(p, ec);
+  if (ec) {
+    return {};
+  }
+  if (!IsUnderDirectory(canonical_base, canonical_target)) {
+    return {};
+  }
+  p.replace_extension(".structure.json");
+  return p;
+}
+
+// 统一 schema: 将 SlideContent 列表转换为前端可编辑 JSON
+nlohmann::json SlidesToEditableJson(const PptRequest& request,
+                                    const std::vector<SlideContent>& slides) {
+  nlohmann::json result;
+  result["title"] = request.title;
+  // 先简单把 style 当成 theme_id 传回前端，后续可根据需要做映射
+  result["theme_id"] = request.style.empty() ? "business" : request.style;
+  nlohmann::json slide_array = nlohmann::json::array();
+  for (std::size_t i = 0; i < slides.size(); ++i) {
+    const auto& s = slides[i];
+    nlohmann::json item;
+    item["id"] = "slide_" + std::to_string(i + 1);
+    std::string layout = s.layout_hint.empty() ? "title_content" : s.layout_hint;
+    item["layout"] = layout;
+    item["title"] = s.title;
+    item["subtitle"] = "";
+    nlohmann::json content;
+    content["bullets"] = s.bullets;
+    std::string image_url;
+    if (!s.image_urls.empty()) {
+      image_url = s.image_urls.front();
+    }
+    content["image_url"] = image_url;
+    content["notes"] = s.notes;
+    item["content"] = std::move(content);
+    slide_array.push_back(std::move(item));
+  }
+  result["slides"] = std::move(slide_array);
+  nlohmann::json options;
+  options["show_page_number"] = true;
+  options["lang"] = "zh";
+  result["options"] = std::move(options);
+  return result;
+}
+
+// 将前端编辑后的 JSON 转换回 SlideContent 列表
+bool EditableJsonToSlides(const nlohmann::json& data,
+                          std::vector<SlideContent>& out_slides,
+                          std::string& error) {
+  if (!data.is_object()) {
+    error = "结构数据格式不正确";
+    return false;
+  }
+  auto it = data.find("slides");
+  if (it == data.end() || !it->is_array()) {
+    error = "缺少 slides 数组";
+    return false;
+  }
+  const auto& slides = *it;
+  if (slides.empty()) {
+    error = "slides 不能为空";
+    return false;
+  }
+  if (slides.size() > 100) {
+    error = "slides 数量过多";
+    return false;
+  }
+
+  std::vector<SlideContent> result;
+  result.reserve(slides.size());
+  for (const auto& item : slides) {
+    if (!item.is_object()) {
+      continue;
+    }
+    SlideContent slide;
+    slide.title = item.value("title", "");
+    if (slide.title.size() > 512) {
+      slide.title.resize(512);
+    }
+    const auto& content = item.value("content", nlohmann::json::object());
+    if (content.is_object()) {
+      if (auto it_b = content.find("bullets"); it_b != content.end() && it_b->is_array()) {
+        for (const auto& bullet : *it_b) {
+          if (bullet.is_string()) {
+            auto text = bullet.get<std::string>();
+            if (!text.empty()) {
+              if (text.size() > 1024) {
+                text.resize(1024);
+              }
+              slide.bullets.push_back(std::move(text));
+            }
+          }
+        }
+      }
+      std::string image_url = content.value("image_url", "");
+      if (!image_url.empty()) {
+        slide.image_urls.push_back(std::move(image_url));
+      }
+      slide.notes = content.value("notes", "");
+      if (slide.notes.size() > 2048) {
+        slide.notes.resize(2048);
+      }
+    }
+    slide.layout_hint = item.value("layout", "title_content");
+    // raw_text 简单拼一个，方便后续预览使用
+    slide.raw_text = slide.title;
+    for (const auto& b : slide.bullets) {
+      slide.raw_text.append("\n").append(b);
+    }
+    result.push_back(std::move(slide));
+  }
+  out_slides = std::move(result);
+  return true;
+}
 
 void DoActualGeneration(
     const PptGenerationJob& job,
@@ -1120,13 +1248,78 @@ void DoActualGeneration(
     outline.resize(static_cast<std::size_t>(input.pages));
   }
 
+  // Build material context string if material_id is provided
+  std::string material_context;
+  if (!input.material_id.empty() && job.material_service) {
+    Material mat;
+    std::string mat_error;
+    if (job.material_service->GetMaterial(input.material_id, job.user_id, mat, mat_error)) {
+      if (mat.status == "completed" && !mat.extract_result.empty()) {
+        try {
+          auto er = nlohmann::json::parse(mat.extract_result);
+          std::ostringstream ctx;
+          ctx << "以下是用户提供的参考材料的关键信息：\n";
+          if (er.contains("title") && er["title"].is_string() && !er["title"].get<std::string>().empty()) {
+            ctx << "  标题: " << er["title"].get<std::string>() << "\n";
+          }
+          if (er.contains("summary") && er["summary"].is_string() && !er["summary"].get<std::string>().empty()) {
+            ctx << "  摘要: " << er["summary"].get<std::string>() << "\n";
+          }
+          if (er.contains("outline") && er["outline"].is_array() && !er["outline"].empty()) {
+            ctx << "  原文大纲: ";
+            for (std::size_t i = 0; i < er["outline"].size(); ++i) {
+              if (i > 0) ctx << "；";
+              ctx << er["outline"][i].get<std::string>();
+            }
+            ctx << "\n";
+          }
+          if (er.contains("key_points") && er["key_points"].is_array() && !er["key_points"].empty()) {
+            ctx << "  核心论点: ";
+            for (std::size_t i = 0; i < er["key_points"].size(); ++i) {
+              if (i > 0) ctx << "；";
+              ctx << er["key_points"][i].get<std::string>();
+            }
+            ctx << "\n";
+          }
+          if (er.contains("data_mentions") && er["data_mentions"].is_array() && !er["data_mentions"].empty()) {
+            ctx << "  关键数据: ";
+            for (std::size_t i = 0; i < er["data_mentions"].size(); ++i) {
+              if (i > 0) ctx << "；";
+              ctx << er["data_mentions"][i].get<std::string>();
+            }
+            ctx << "\n";
+          }
+          if (er.contains("keywords") && er["keywords"].is_array() && !er["keywords"].empty()) {
+            ctx << "  关键词: ";
+            for (std::size_t i = 0; i < er["keywords"].size(); ++i) {
+              if (i > 0) ctx << "、";
+              ctx << er["keywords"][i].get<std::string>();
+            }
+            ctx << "\n";
+          }
+          material_context = ctx.str();
+          Logger::Info("DoActualGeneration: injecting material context for " + input.material_id);
+        } catch (const std::exception& ex) {
+          Logger::Warn("DoActualGeneration: failed to parse material extract_result: " + std::string(ex.what()));
+        }
+      }
+    } else {
+      Logger::Warn("DoActualGeneration: material not found: " + input.material_id + " err=" + mat_error);
+    }
+  }
+
+  // Build enriched topic that includes material context
+  const std::string enriched_topic = material_context.empty()
+      ? input.topic
+      : material_context + "\n请基于以上内容，为主题「" + input.topic + "」生成结构清晰的PPT大纲。";
+
   std::vector<SlideContent> slides;
   std::string qwen_error;
   bool generated = false;
 
   if (outline.empty()) {
     std::string outline_error;
-    if (!qwen_client->GenerateOutline(input.topic, input.pages, template_prompt, outline, outline_error)) {
+    if (!qwen_client->GenerateOutline(enriched_topic, input.pages, template_prompt, outline, outline_error)) {
       Logger::Warn("PPT outline generation failed: " + outline_error);
     }
   }
@@ -1145,18 +1338,25 @@ void DoActualGeneration(
   }
 
   if (!outline.empty()) {
-    if (qwen_client->GenerateSlidesFromOutlineWithLayout(input.topic, outline, input.include_images,
-                                                          layout_guide_json, slides, qwen_error)) {
+    if (qwen_client->GenerateSlidesFromOutlineWithLayout(enriched_topic, outline, input.include_images,
+                                                         layout_guide_json, slides, qwen_error,
+                                                         input.include_charts)) {
       generated = true;
     } else {
-      slides = BuildSlidesFromOutline(outline, input.topic, input.include_images);
-      generated = !slides.empty();
+      // 带版式的大纲生成失败时，再尝试一次不带版式的大纲生成，避免直接把大纲原样搬进PPT。
+      std::string slides_error;
+      if (qwen_client->GenerateSlidesFromOutline(enriched_topic, outline, input.include_images,
+                                                 slides, slides_error, input.include_charts)) {
+        generated = true;
+      } else {
+        Logger::Warn("Qwen slides-from-outline fallback failed: " + slides_error);
+      }
     }
   }
   if (!generated) {
-    if (qwen_client->GenerateSlidesWithLayout(input.topic, input.pages, template_prompt,
+    if (qwen_client->GenerateSlidesWithLayout(enriched_topic, input.pages, template_prompt,
                                               input.include_images, layout_guide_json,
-                                              slides, qwen_error)) {
+                                              slides, qwen_error, input.include_charts)) {
       generated = true;
     }
   }
@@ -1268,7 +1468,8 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
                            std::shared_ptr<QwenClient> qwen_client,
                            std::shared_ptr<S3Client> s3_client,
                            std::shared_ptr<WanxiangImageClient> wanx_client,
-                           std::shared_ptr<ThreadPool> thread_pool)
+                           std::shared_ptr<ThreadPool> thread_pool,
+                           std::shared_ptr<MaterialService> material_service)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
@@ -1277,7 +1478,8 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
       qwen_client_(std::move(qwen_client)),
       s3_client_(std::move(s3_client)),
       wanx_client_(std::move(wanx_client)),
-      thread_pool_(std::move(thread_pool)) {}
+      thread_pool_(std::move(thread_pool)),
+      material_service_(std::move(material_service)) {}
 
 HttpResponse PptController::Generate(const HttpRequest& request) {
   std::string error;
@@ -1358,6 +1560,7 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     job.user_id = user->id;
     job.user_email = user->email;
     job.template_id = template_info_opt->id;
+    job.material_service = material_service_;
 
     auto ppt_svc = ppt_service_;
     auto template_svc = template_service_;
@@ -1596,9 +1799,69 @@ HttpResponse PptController::Outline(const HttpRequest& request) {
       return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
     }
 
+    // 若携带 material_id，构建与 DoActualGeneration 一致的 enriched_topic
+    std::string enriched_topic = input.topic;
+    if (!input.material_id.empty() && material_service_) {
+      Material mat;
+      std::string mat_error;
+      if (material_service_->GetMaterial(input.material_id, user->id, mat, mat_error)) {
+        if (mat.status == "completed" && !mat.extract_result.empty()) {
+          try {
+            auto er = nlohmann::json::parse(mat.extract_result);
+            std::ostringstream ctx;
+            ctx << "以下是用户提供的参考材料的关键信息：\n";
+            if (er.contains("title") && er["title"].is_string() && !er["title"].get<std::string>().empty()) {
+              ctx << "  标题: " << er["title"].get<std::string>() << "\n";
+            }
+            if (er.contains("summary") && er["summary"].is_string() && !er["summary"].get<std::string>().empty()) {
+              ctx << "  摘要: " << er["summary"].get<std::string>() << "\n";
+            }
+            if (er.contains("outline") && er["outline"].is_array() && !er["outline"].empty()) {
+              ctx << "  原文大纲: ";
+              for (std::size_t i = 0; i < er["outline"].size(); ++i) {
+                if (i > 0) ctx << "；";
+                ctx << er["outline"][i].get<std::string>();
+              }
+              ctx << "\n";
+            }
+            if (er.contains("key_points") && er["key_points"].is_array() && !er["key_points"].empty()) {
+              ctx << "  核心论点: ";
+              for (std::size_t i = 0; i < er["key_points"].size(); ++i) {
+                if (i > 0) ctx << "；";
+                ctx << er["key_points"][i].get<std::string>();
+              }
+              ctx << "\n";
+            }
+            if (er.contains("data_mentions") && er["data_mentions"].is_array() && !er["data_mentions"].empty()) {
+              ctx << "  关键数据: ";
+              for (std::size_t i = 0; i < er["data_mentions"].size(); ++i) {
+                if (i > 0) ctx << "；";
+                ctx << er["data_mentions"][i].get<std::string>();
+              }
+              ctx << "\n";
+            }
+            if (er.contains("keywords") && er["keywords"].is_array() && !er["keywords"].empty()) {
+              ctx << "  关键词: ";
+              for (std::size_t i = 0; i < er["keywords"].size(); ++i) {
+                if (i > 0) ctx << "、";
+                ctx << er["keywords"][i].get<std::string>();
+              }
+              ctx << "\n";
+            }
+            enriched_topic = ctx.str() + "\n请基于以上内容，为主题「" + input.topic + "」生成结构清晰的PPT大纲。";
+            Logger::Info("Outline: injecting material context for " + input.material_id);
+          } catch (const std::exception& ex) {
+            Logger::Warn(std::string("Outline: failed to parse material extract_result: ") + ex.what());
+          }
+        }
+      } else {
+        Logger::Warn("Outline: material not found: " + input.material_id + " err=" + mat_error);
+      }
+    }
+
     std::vector<OutlineItem> outline;
     std::string outline_error;
-    if (!qwen_client_->GenerateOutline(input.topic, input.pages, template_prompt, outline, outline_error)) {
+    if (!qwen_client_->GenerateOutline(enriched_topic, input.pages, template_prompt, outline, outline_error)) {
       Logger::Error(std::string("GenerateOutline failed: ") + (outline_error.empty() ? "Outline generation failed" : outline_error));
       return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
     }
@@ -1941,6 +2204,216 @@ HttpResponse PptController::Preview(const HttpRequest& request) {
   response.headers["content-type"] = "application/json";
   response.body = buffer.str();
   return response;
+}
+
+HttpResponse PptController::GetStructure(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  std::uint64_t request_id = 0;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    request_id = ParseId(it->second);
+  }
+  if (request_id == 0) {
+    return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_REQUEST_ID", "Invalid request ID"));
+  }
+
+  PptRequest ppt_request;
+  if (!ppt_service_->GetRequest(user->id, request_id, ppt_request, error)) {
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_REQUEST_NOT_FOUND", error.empty() ? "Request not found" : error));
+  }
+  if (ppt_request.output_path.empty()) {
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_FILE_NOT_GENERATED", "PPT file not generated"));
+  }
+
+  const auto structure_path = BuildStructurePath(generation_config_, ppt_request.output_path);
+  nlohmann::json structure_json;
+  if (!structure_path.empty()) {
+    ReadJsonFile(structure_path, structure_json);
+  }
+
+  if (!structure_json.is_object() || !structure_json.contains("slides")) {
+    // 没有结构文件时，退回到预览 JSON，把 SlideContent 适配成结构 JSON
+    std::filesystem::path output_path(ppt_request.output_path);
+    std::filesystem::path preview_path = output_path;
+    preview_path.replace_extension(".json");
+    nlohmann::json preview_json;
+    if (ReadJsonFile(preview_path, preview_json) && preview_json.contains("slides")) {
+      const auto& slides_json = preview_json["slides"];
+      std::vector<SlideContent> slides;
+      if (slides_json.is_array()) {
+        for (const auto& s : slides_json) {
+          SlideContent sc;
+          sc.title = s.value("title", "");
+          if (auto it_b = s.find("bullets"); it_b != s.end() && it_b->is_array()) {
+            for (const auto& b : *it_b) {
+              if (b.is_string()) {
+                sc.bullets.push_back(b.get<std::string>());
+              }
+            }
+          }
+          if (auto it_u = s.find("imageUrls"); it_u != s.end() && it_u->is_array()) {
+            for (const auto& u : *it_u) {
+              if (u.is_string()) {
+                sc.image_urls.push_back(u.get<std::string>());
+              }
+            }
+          }
+          sc.notes = s.value("notes", "");
+          sc.layout_hint = s.value("layoutHint", "");
+          sc.raw_text = s.value("rawText", "");
+          slides.push_back(std::move(sc));
+        }
+      }
+      structure_json = SlidesToEditableJson(ppt_request, slides);
+    } else {
+      // 再没有预览就给一个空的结构骨架
+      std::vector<SlideContent> slides;
+      slides.push_back(SlideContent{ppt_request.title, {}, {}, {}, {}, {}, {}, {}, "title_content", {}});
+      structure_json = SlidesToEditableJson(ppt_request, slides);
+    }
+  }
+
+  return HttpResponse::Json(200, structure_json);
+}
+
+HttpResponse PptController::UpdateStructure(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+  if (request.body.empty() || request.body.find('\0') != std::string::npos) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
+  }
+
+  std::uint64_t request_id = 0;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    request_id = ParseId(it->second);
+  }
+  if (request_id == 0) {
+    return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_REQUEST_ID", "Invalid request ID"));
+  }
+
+  PptRequest ppt_request;
+  if (!ppt_service_->GetRequest(user->id, request_id, ppt_request, error)) {
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_REQUEST_NOT_FOUND", error.empty() ? "Request not found" : error));
+  }
+  if (ppt_request.output_path.empty()) {
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_FILE_NOT_GENERATED", "PPT file not generated"));
+  }
+
+  try {
+    auto data = nlohmann::json::parse(request.body);
+    const auto structure_path = BuildStructurePath(generation_config_, ppt_request.output_path);
+    if (structure_path.empty()) {
+      return HttpResponse::Json(500, ErrorJson("ERR_PPT_STRUCTURE_PATH", "Cannot determine structure path"));
+    }
+    if (!WriteJsonFile(structure_path, data)) {
+      return HttpResponse::Json(500, ErrorJson("ERR_PPT_STRUCTURE_WRITE_FAILED", "Failed to write structure file"));
+    }
+    return HttpResponse::Json(200, {{"message", "ok"}});
+  } catch (const std::exception& ex) {
+    Logger::Error(std::string("Failed to parse PPT structure: ") + ex.what());
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
+  }
+}
+
+HttpResponse PptController::RegenerateFromStructure(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  std::uint64_t request_id = 0;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    request_id = ParseId(it->second);
+  }
+  if (request_id == 0) {
+    return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_REQUEST_ID", "Invalid request ID"));
+  }
+
+  PptRequest ppt_request;
+  if (!ppt_service_->GetRequest(user->id, request_id, ppt_request, error)) {
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_REQUEST_NOT_FOUND", error.empty() ? "Request not found" : error));
+  }
+  if (ppt_request.output_path.empty()) {
+    return HttpResponse::Json(404, ErrorJson("ERR_PPT_FILE_NOT_GENERATED", "PPT file not generated"));
+  }
+
+  // 读取结构 JSON：优先 body，其次结构文件
+  nlohmann::json structure_json;
+  if (!request.body.empty() && request.body.find('\0') == std::string::npos) {
+    try {
+      structure_json = nlohmann::json::parse(request.body);
+    } catch (...) {
+      return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
+    }
+  }
+  if (!structure_json.is_object()) {
+    const auto structure_path = BuildStructurePath(generation_config_, ppt_request.output_path);
+    if (!structure_path.empty()) {
+      ReadJsonFile(structure_path, structure_json);
+    }
+  }
+  if (!structure_json.is_object()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_PPT_STRUCTURE_NOT_FOUND", "Structure data not found"));
+  }
+
+  std::vector<SlideContent> slides;
+  std::string convert_error;
+  if (!EditableJsonToSlides(structure_json, slides, convert_error)) {
+    return HttpResponse::Json(400, ErrorJson("ERR_PPT_STRUCTURE_INVALID", convert_error));
+  }
+
+  std::string generate_error;
+  bool gen_ok = false;
+
+  // 在线编辑再生成：统一走 PptxGenJS 纯样式模式，避免依赖模板复杂度
+  nlohmann::json style_options;
+  const std::string theme_id = structure_json.value("theme_id", ppt_request.style);
+  if (!theme_id.empty()) {
+    style_options["themePreset"] = theme_id;
+  }
+  const auto options_json = style_options.empty() ? "" : style_options.dump();
+  gen_ok = RunPptxGenFromPreset(slides, ppt_request.output_path, ppt_request.style, options_json, generation_config_, generate_error);
+
+  if (!gen_ok) {
+    Logger::Warn("PPTX regenerate-from-structure failed: " + generate_error);
+    return HttpResponse::Json(500, ErrorJson("ERR_PPT_REGENERATE_FAILED", "Regeneration failed"));
+  }
+
+  std::string update_error;
+  if (!ppt_service_->UpdateRequestOutput(ppt_request.id, user->id, ppt_request.output_path, "completed", update_error)) {
+    Logger::Warn("UpdateRequestOutput after regenerate failed: " + update_error);
+  }
+
+  // 重新生成本地预览 JSON，便于前端使用 /preview
+  nlohmann::json preview_payload;
+  preview_payload["slides"] = nlohmann::json::array();
+  for (const auto& s : slides) {
+    preview_payload["slides"].push_back(SlideToJson(s));
+  }
+  std::filesystem::path preview_path(ppt_request.output_path);
+  preview_path.replace_extension(".json");
+  WriteJsonFile(preview_path, preview_payload);
+
+  std::string signed_url;
+  std::string signed_url_pdf;
+  if (s3_client_ && s3_client_->IsEnabled()) {
+    const auto object_key = BuildObjectKey(generation_config_, ppt_request.output_path);
+    if (!object_key.empty()) {
+      signed_url = s3_client_->PresignGetUrl(object_key);
+    }
+  }
+  nlohmann::json payload;
+  payload["downloadUrl"] = signed_url.empty() ? "/api/ppt/file?id=" + std::to_string(ppt_request.id)
+                                              : signed_url;
+  return HttpResponse::Json(200, payload);
 }
 
 std::shared_ptr<User> PptController::Authenticate(const HttpRequest& request, std::string& error) const {

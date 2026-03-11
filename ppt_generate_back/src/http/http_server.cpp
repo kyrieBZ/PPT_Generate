@@ -17,7 +17,7 @@
 #include "utils/string_utils.h"
 
 namespace {
-constexpr std::size_t kMaxRequestSize = 1 * 1024 * 1024;  // 1 MB
+constexpr std::size_t kMaxRequestSize = 25 * 1024 * 1024;  // 25 MB (supports file uploads)
 }
 
 HttpServer::HttpServer(const ServerConfig& config, Router& router)
@@ -204,7 +204,11 @@ bool HttpServer::ParseRequest(int client_fd, HttpRequest& request) {
 
         const auto content_length_it = request.headers.find("content-length");
         if (content_length_it != request.headers.end()) {
-          content_length = static_cast<std::size_t>(std::stoul(content_length_it->second));
+          try {
+            content_length = static_cast<std::size_t>(std::stoul(content_length_it->second));
+          } catch (...) {
+            content_length = 0;
+          }
           if (content_length > kMaxRequestSize) {
             return false;
           }

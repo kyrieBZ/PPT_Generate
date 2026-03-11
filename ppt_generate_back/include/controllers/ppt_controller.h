@@ -7,6 +7,7 @@
 #include "app_config.h"
 #include "http/http_types.h"
 #include "services/auth_service.h"
+#include "services/material_service.h"
 #include "services/model_service.h"
 #include "services/ppt_service.h"
 #include "services/qwen_client.h"
@@ -25,7 +26,8 @@ class PptController {
                 std::shared_ptr<QwenClient> qwen_client,
                 std::shared_ptr<S3Client> s3_client,
                 std::shared_ptr<WanxiangImageClient> wanx_client,
-                std::shared_ptr<ThreadPool> thread_pool);
+                std::shared_ptr<ThreadPool> thread_pool,
+                std::shared_ptr<MaterialService> material_service = nullptr);
 
   HttpResponse Generate(const HttpRequest& request);
   /** 轮询单条请求状态，用于异步生成后查询 completed/failed */
@@ -37,6 +39,11 @@ class PptController {
   HttpResponse Download(const HttpRequest& request);
   HttpResponse Preview(const HttpRequest& request);
   HttpResponse Outline(const HttpRequest& request);
+
+  // 在线编辑：PPT 结构化 JSON 读写与再生成
+  HttpResponse GetStructure(const HttpRequest& request);
+  HttpResponse UpdateStructure(const HttpRequest& request);
+  HttpResponse RegenerateFromStructure(const HttpRequest& request);
 
  private:
   std::shared_ptr<User> Authenticate(const HttpRequest& request, std::string& error_message) const;
@@ -51,4 +58,5 @@ class PptController {
   std::shared_ptr<S3Client> s3_client_;
   std::shared_ptr<WanxiangImageClient> wanx_client_;
   std::shared_ptr<ThreadPool> thread_pool_;
+  std::shared_ptr<MaterialService> material_service_;
 };

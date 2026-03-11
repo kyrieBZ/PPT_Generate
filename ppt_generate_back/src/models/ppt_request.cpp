@@ -106,6 +106,7 @@ PptRequestInput PptRequestInput::FromJson(const nlohmann::json& data) {
     input.section_slide_interval = 10;
   }
   input.theme_preset = ReadString(data, "themePreset", "theme_preset");
+  input.material_id = ReadString(data, "materialId", "material_id");
   input.pages = std::clamp(input.pages, 1, 50);
   return input;
 }
