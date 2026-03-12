@@ -94,7 +94,7 @@ PptRequestInput PptRequestInput::FromJson(const nlohmann::json& data) {
   }
   input.template_id = ReadString(data, "templateId", "template_id");
   input.generate_mode = ReadString(data, "generateMode", "generate_mode");
-  if (input.generate_mode != "style") {
+  if (input.generate_mode != "style" && input.generate_mode != "ai_native") {
     input.generate_mode = "template";
   }
   input.outline = ReadOutline(data);
@@ -107,6 +107,7 @@ PptRequestInput PptRequestInput::FromJson(const nlohmann::json& data) {
   }
   input.theme_preset = ReadString(data, "themePreset", "theme_preset");
   input.material_id = ReadString(data, "materialId", "material_id");
+  input.ai_style_prompt = ReadString(data, "aiStylePrompt", "ai_style_prompt");
   input.pages = std::clamp(input.pages, 1, 50);
   return input;
 }

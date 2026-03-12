@@ -224,6 +224,9 @@ GenerationConfig ParseGeneration(const nlohmann::json& json, const std::filesyst
   if (auto it = json.find("pptxgen_builder_script"); it != json.end() && it->is_string()) {
     cfg.pptxgen_builder_script = *it;
   }
+  if (auto it = json.find("ai_native_builder_script"); it != json.end() && it->is_string()) {
+    cfg.ai_native_builder_script = *it;
+  }
 
   auto make_absolute = [&](const std::string& value) {
     if (value.empty()) {
@@ -242,6 +245,7 @@ GenerationConfig ParseGeneration(const nlohmann::json& json, const std::filesyst
   cfg.template_analyzer_script = make_absolute(cfg.template_analyzer_script);
   cfg.template_analysis_dir = make_absolute(cfg.template_analysis_dir);
   cfg.pptxgen_builder_script = make_absolute(cfg.pptxgen_builder_script);
+  cfg.ai_native_builder_script = make_absolute(cfg.ai_native_builder_script);
   return cfg;
 }
 

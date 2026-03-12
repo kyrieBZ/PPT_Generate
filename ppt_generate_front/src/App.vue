@@ -1,12 +1,15 @@
 <template>
   <router-view />
+  <AiAssistant v-if="isAuthenticated" />
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useStore } from 'vuex'
+import AiAssistant from '@/components/AiAssistant.vue'
 
 const store = useStore()
+const isAuthenticated = computed(() => store.getters.isAuthenticated)
 
 onMounted(() => {
   store.dispatch('bootstrapSession').catch((error) => {

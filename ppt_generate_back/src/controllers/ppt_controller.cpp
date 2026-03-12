@@ -19,6 +19,7 @@
 #include "logger.h"
 #include "models/outline_item.h"
 #include "models/slide_content.h"
+#include "services/ai_native_ppt_service.h"
 #include "services/material_service.h"
 #include "utils/ppt_metrics.h"
 
@@ -1084,8 +1085,7 @@ nlohmann::json SlidesToEditableJson(const PptRequest& request,
                                     const std::vector<SlideContent>& slides) {
   nlohmann::json result;
   result["title"] = request.title;
-  // 先简单把 style 当成 theme_id 传回前端，后续可根据需要做映射
-  result["theme_id"] = request.style.empty() ? "business" : request.style;
+  result["theme_id"] = request.style.empty() ? "midnight" : request.style;
   nlohmann::json slide_array = nlohmann::json::array();
   for (std::size_t i = 0; i < slides.size(); ++i) {
     const auto& s = slides[i];
@@ -1103,6 +1103,22 @@ nlohmann::json SlidesToEditableJson(const PptRequest& request,
     }
     content["image_url"] = image_url;
     content["notes"] = s.notes;
+    // 序列化图表数据，保证编辑链路不丢失
+    if (s.chart_data.has_value()) {
+      const auto& cd = s.chart_data.value();
+      nlohmann::json chart_json;
+      chart_json["type"] = cd.type;
+      chart_json["title"] = cd.title;
+      nlohmann::json items_arr = nlohmann::json::array();
+      for (const auto& it : cd.items) {
+        nlohmann::json it_json;
+        it_json["label"] = it.label;
+        it_json["value"] = it.value;
+        items_arr.push_back(std::move(it_json));
+      }
+      chart_json["items"] = std::move(items_arr);
+      content["chart_data"] = std::move(chart_json);
+    }
     item["content"] = std::move(content);
     slide_array.push_back(std::move(item));
   }
@@ -1170,6 +1186,26 @@ bool EditableJsonToSlides(const nlohmann::json& data,
       slide.notes = content.value("notes", "");
       if (slide.notes.size() > 2048) {
         slide.notes.resize(2048);
+      }
+      // 反序列化图表数据
+      if (auto it_cd = content.find("chart_data"); it_cd != content.end() && it_cd->is_object()) {
+        ChartData cd;
+        cd.type = it_cd->value("type", "bar");
+        cd.title = it_cd->value("title", "");
+        if (auto it_items = it_cd->find("items"); it_items != it_cd->end() && it_items->is_array()) {
+          for (const auto& it_item : *it_items) {
+            if (!it_item.is_object()) continue;
+            ChartDataItem cdi;
+            cdi.label = it_item.value("label", "");
+            cdi.value = it_item.value("value", 0.0);
+            if (!cdi.label.empty()) {
+              cd.items.push_back(std::move(cdi));
+            }
+          }
+        }
+        if (cd.items.size() >= 2) {
+          slide.chart_data = std::move(cd);
+        }
       }
     }
     slide.layout_hint = item.value("layout", "title_content");
@@ -1316,56 +1352,64 @@ void DoActualGeneration(
   std::vector<SlideContent> slides;
   std::string qwen_error;
   bool generated = false;
-
-  if (outline.empty()) {
-    std::string outline_error;
-    if (!qwen_client->GenerateOutline(enriched_topic, input.pages, template_prompt, outline, outline_error)) {
-      Logger::Warn("PPT outline generation failed: " + outline_error);
-    }
-  }
-
   std::string layout_guide_json;
-  const int layout_slide_count = outline.empty()
-                                     ? std::max(1, std::min(input.pages, 10))
-                                     : static_cast<int>(outline.size());
-  if (has_template_analysis && layout_slide_count > 0 && template_file) {
-    std::string layout_error;
-    if (!LoadLayoutGuide(generation_config, template_info_opt->id, *template_file,
-                         layout_slide_count, template_prompt, template_analysis,
-                         *qwen_client, layout_guide_json, layout_error)) {
-      layout_guide_json.clear();
-    }
-  }
 
-  if (!outline.empty()) {
-    if (qwen_client->GenerateSlidesFromOutlineWithLayout(enriched_topic, outline, input.include_images,
-                                                         layout_guide_json, slides, qwen_error,
-                                                         input.include_charts)) {
-      generated = true;
-    } else {
-      // 带版式的大纲生成失败时，再尝试一次不带版式的大纲生成，避免直接把大纲原样搬进PPT。
-      std::string slides_error;
-      if (qwen_client->GenerateSlidesFromOutline(enriched_topic, outline, input.include_images,
-                                                 slides, slides_error, input.include_charts)) {
-        generated = true;
-      } else {
-        Logger::Warn("Qwen slides-from-outline fallback failed: " + slides_error);
+  // ai_native 链路由 AiNativePptService 自行生成内容，跳过此处的 Qwen 幻灯片生成
+  const bool is_ai_native = (input.generate_mode == "ai_native");
+
+  if (!is_ai_native) {
+    if (outline.empty()) {
+      std::string outline_error;
+      if (!qwen_client->GenerateOutline(enriched_topic, input.pages, template_prompt, outline, outline_error)) {
+        Logger::Warn("PPT outline generation failed: " + outline_error);
       }
     }
-  }
-  if (!generated) {
-    if (qwen_client->GenerateSlidesWithLayout(enriched_topic, input.pages, template_prompt,
-                                              input.include_images, layout_guide_json,
-                                              slides, qwen_error, input.include_charts)) {
-      generated = true;
-    }
-  }
 
-  if (!generated) {
-    Logger::Warn("Qwen slide generation failed: " + qwen_error);
-    ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
-    record_end(false);
-    return;
+    const int layout_slide_count = outline.empty()
+                                       ? std::max(1, std::min(input.pages, 10))
+                                       : static_cast<int>(outline.size());
+    if (has_template_analysis && layout_slide_count > 0 && template_file) {
+      std::string layout_error;
+      if (!LoadLayoutGuide(generation_config, template_info_opt->id, *template_file,
+                           layout_slide_count, template_prompt, template_analysis,
+                           *qwen_client, layout_guide_json, layout_error)) {
+        layout_guide_json.clear();
+      }
+    }
+
+    if (!outline.empty()) {
+      if (qwen_client->GenerateSlidesFromOutlineWithLayout(enriched_topic, outline, input.include_images,
+                                                           layout_guide_json, slides, qwen_error,
+                                                           input.include_charts)) {
+        generated = true;
+      } else {
+        // 带版式的大纲生成失败时，再尝试一次不带版式的大纲生成
+        std::string slides_error;
+        if (qwen_client->GenerateSlidesFromOutline(enriched_topic, outline, input.include_images,
+                                                   slides, slides_error, input.include_charts)) {
+          generated = true;
+        } else {
+          Logger::Warn("Qwen slides-from-outline fallback failed: " + slides_error);
+        }
+      }
+    }
+    if (!generated) {
+      if (qwen_client->GenerateSlidesWithLayout(enriched_topic, input.pages, template_prompt,
+                                                input.include_images, layout_guide_json,
+                                                slides, qwen_error, input.include_charts)) {
+        generated = true;
+      }
+    }
+
+    if (!generated) {
+      Logger::Warn("Qwen slide generation failed: " + qwen_error);
+      ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+      record_end(false);
+      return;
+    }
+  } else {
+    // ai_native 模式：内容由 AiNativePptService 生成，此处标记为已生成以跳过后续检查
+    generated = true;
   }
 
   if (input.enable_section_slides && static_cast<int>(slides.size()) > input.section_slide_interval) {
@@ -1383,7 +1427,8 @@ void DoActualGeneration(
     slides = std::move(with_sections);
   }
 
-  if (input.include_images) {
+  // ai_native 模式图片由 AiNativePptService 内部处理，此处跳过
+  if (!is_ai_native && input.include_images) {
     AttachImagesWithWanxiangAndUnsplash(generation_config, wanx_client.get(), slides, ppt_request.id, input.topic);
   }
 
@@ -1399,6 +1444,65 @@ void DoActualGeneration(
     }
     std::string options_json = style_options.empty() ? "" : style_options.dump();
     gen_ok = RunPptxGenFromPreset(slides, output_path, input.style, options_json, generation_config, generate_error);
+  } else if (input.generate_mode == "ai_native") {
+    // 链路 3：AI 原生生成——由 LLM 全权决策视觉设计
+    AiNativeGenerationConfig ai_config;
+    ai_config.node_binary = generation_config.node_binary;
+    ai_config.ai_native_builder_script = generation_config.ai_native_builder_script;
+    ai_config.output_dir = generation_config.output_dir;
+    ai_config.image_dir = generation_config.image_dir;
+
+    auto ai_svc = std::make_unique<AiNativePptService>(
+        generation_config.qwen_api_key,
+        generation_config.qwen_timeout_seconds * 2);  // 链路 3 需要更长超时
+
+    gen_ok = ai_svc->Generate(
+        input.topic,
+        input.style,
+        input.pages,
+        input.ai_style_prompt,
+        outline,
+        output_path,
+        ai_config,
+        generate_error,
+        input.include_images,
+        input.include_charts,
+        wanx_client.get());
+
+    if (!gen_ok) {
+      const std::string fallback_reason = generate_error;
+      Logger::Warn("AiNative generation failed, falling back to style mode: " + fallback_reason);
+      // 降级到链路 2（style 模式）：先用 Qwen 生成幻灯片内容
+      generate_error.clear();
+      if (slides.empty()) {
+        // 需要先生成幻灯片内容供 style 模式渲染
+        std::string outline_error;
+        if (outline.empty()) {
+          qwen_client->GenerateOutline(enriched_topic, input.pages, template_prompt, outline, outline_error);
+        }
+        std::string slides_error;
+        if (!outline.empty()) {
+          qwen_client->GenerateSlidesFromOutline(enriched_topic, outline, input.include_images,
+                                                 slides, slides_error, input.include_charts);
+        }
+        if (slides.empty()) {
+          qwen_client->GenerateSlides(enriched_topic, input.pages, template_prompt,
+                                      input.include_images, slides, slides_error);
+        }
+      }
+      nlohmann::json style_options;
+      style_options["themePreset"] = "midnight";
+      gen_ok = RunPptxGenFromPreset(slides, output_path, input.style,
+                                    style_options.dump(), generation_config, generate_error);
+      // 将降级原因写入 warn 文件，供前端轮询时读取
+      if (gen_ok) {
+        const std::string warn_path = output_path + ".warn";
+        std::ofstream wf(warn_path, std::ios::trunc);
+        if (wf) {
+          wf << "AI 原生生成失败，已自动降级为预设主题模式。原因：" << fallback_reason;
+        }
+      }
+    }
   } else {
     if (!template_file) {
       Logger::Warn("Template file missing for id: " + template_info_opt->id);
@@ -1612,7 +1716,22 @@ HttpResponse PptController::GetRequestStatus(const HttpRequest& request) {
       signed_url_pdf = s3_client_->PresignGetUrl(pdf_key);
     }
   }
-  nlohmann::json payload{{"request", RequestToJson(ppt_request, signed_url, signed_url_pdf)}};
+  nlohmann::json req_json = RequestToJson(ppt_request, signed_url, signed_url_pdf);
+
+  // 若存在降级 warn 文件，附带到响应
+  if (!ppt_request.output_path.empty()) {
+    const std::string warn_path = ppt_request.output_path + ".warn";
+    std::ifstream wf(warn_path);
+    if (wf.good()) {
+      std::string warn_msg((std::istreambuf_iterator<char>(wf)),
+                            std::istreambuf_iterator<char>());
+      if (!warn_msg.empty()) {
+        req_json["warn"] = warn_msg;
+      }
+    }
+  }
+
+  nlohmann::json payload{{"request", req_json}};
   return HttpResponse::Json(200, payload);
 }
 

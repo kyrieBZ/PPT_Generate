@@ -9,6 +9,7 @@
 #include "app_config.h"
 #include "controllers/auth_controller.h"
 #include "controllers/admin_controller.h"
+#include "controllers/assistant_controller.h"
 #include "controllers/ppt_controller.h"
 #include "controllers/template_controller.h"
 #include "controllers/material_controller.h"
@@ -16,6 +17,7 @@
 #include "database/mysql_connection_pool.h"
 #include "http/http_server.h"
 #include "logger.h"
+#include "services/assistant_service.h"
 #include "services/auth_service.h"
 #include "services/email_service.h"
 #include "services/ppt_service.h"
@@ -96,15 +98,23 @@ int main(int argc, char* argv[]) {
     auto material_service = std::make_shared<MaterialService>(
         pool, config.material(), qwen_key, config.generation().python_binary);
 
+    auto assistant_service = std::make_shared<AssistantService>(qwen_key, 30);
+
+    // 将 Qwen 配置注入 GenerationConfig，供 AI 原生链路使用
+    GenerationConfig gen_config = config.generation();
+    gen_config.qwen_api_key = config.providers().qwen_api_key;
+    gen_config.qwen_timeout_seconds = config.providers().qwen_timeout_seconds;
+
     Router router;
     AuthController auth_controller(auth_service);
     AdminController admin_controller(auth_service);
+    AssistantController assistant_controller(auth_service, assistant_service);
     MaterialController material_controller(auth_service, material_service, thread_pool);
     PptController ppt_controller(auth_service,
                                  ppt_service,
                                  model_service,
                                  template_service,
-                                 config.generation(),
+                                 gen_config,
                                  qwen_client,
                                  s3_client,
                                  wanx_client,
@@ -228,6 +238,10 @@ int main(int argc, char* argv[]) {
     });
     router.AddRoute("DELETE", "/api/material", [&material_controller](const HttpRequest& request) {
       return material_controller.Delete(request);
+    });
+
+    router.AddRoute("POST", "/api/assistant/chat", [&assistant_controller](const HttpRequest& request) {
+      return assistant_controller.Chat(request);
     });
 
     HttpServer server(config.server(), router);

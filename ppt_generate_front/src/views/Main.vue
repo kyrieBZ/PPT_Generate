@@ -283,8 +283,28 @@
                     <el-radio-group v-model="generateForm.generateMode" class="generate-mode-radio">
                       <el-radio-button value="template">基于模板</el-radio-button>
                       <el-radio-button value="style">基于预设主题</el-radio-button>
+                      <el-radio-button value="ai_native">AI 原生创作</el-radio-button>
                     </el-radio-group>
                   </div>
+
+                  <!-- AI 原生创作：风格描述输入 -->
+                  <div v-if="generateForm.generateMode === 'ai_native'" class="form-group ai-native-panel">
+                    <div class="ai-native-badge">
+                      <el-icon style="color:#7C3AED"><MagicStick /></el-icon>
+                      <span>AI 全权设计配色、布局与视觉风格</span>
+                    </div>
+                    <label for="ai-style-prompt">风格描述（可选）</label>
+                    <textarea
+                      id="ai-style-prompt"
+                      v-model="generateForm.aiStylePrompt"
+                      rows="3"
+                      placeholder="描述你期望的视觉风格，例如：科技感强、深色背景、蓝色调；或留空让 AI 自主决定"
+                      maxlength="200"
+                      class="ai-style-textarea"
+                    ></textarea>
+                    <p class="form-hint">AI 将根据主题自动选择配色方案、字体和布局，生成时间约 60-90 秒</p>
+                  </div>
+
                   <div v-if="generateForm.generateMode === 'template'" class="form-group">
                     <label>选择模板</label>
                     <div class="template-options" v-if="!templatesLoading && templates.length">
@@ -1599,7 +1619,8 @@ const generateForm = ref({
   themePreset: '',
   modelId: '',
   templateId: '',
-  materialId: ''
+  materialId: '',
+  aiStylePrompt: ''
 })
 
 watch(
@@ -1970,7 +1991,8 @@ const resetGenerateForm = () => {
     themePreset: '',
     modelId: selectedModel.value || 'qwen-turbo',
     templateId: keepTemplateId,
-    materialId: ''
+    materialId: '',
+    aiStylePrompt: ''
   }
   outlineItems.value = []
   activeGeneratePanel.value = 'settings'
@@ -2083,7 +2105,8 @@ const handleGenerate = async () => {
         summary: item.summary || '',
         key_points: (item.keyPoints || []).filter(kp => kp.trim() !== '')
       })),
-      materialId: generateForm.value.materialId || ''
+      materialId: generateForm.value.materialId || '',
+      aiStylePrompt: generateForm.value.generateMode === 'ai_native' ? (generateForm.value.aiStylePrompt || '').trim() : ''
     }
     const result = await store.dispatch('createPptRequest', payload)
     if (!result?.request) {
@@ -2106,6 +2129,15 @@ const handleGenerate = async () => {
     await store.dispatch('fetchPptHistory')
     activeMenu.value = 'generate'
     activeGeneratePanel.value = 'preview'
+    // 若 AI 原生生成降级，显示警告提示
+    if (result.warn) {
+      ElMessage({
+        type: 'warning',
+        message: result.warn,
+        duration: 8000,
+        showClose: true
+      })
+    }
   } catch (error) {
     const msg = error?.message || error?.userMessage || error?.response?.data?.message || '生成失败，请稍后重试'
     ElMessage.error(msg)
@@ -2435,12 +2467,39 @@ const ensureSession = async () => {
   }
 }
 
+// 从 AI 助手跳转时读取 query params 预填生成表单
+const applyAssistantQueryParams = () => {
+  const q = route.query
+  if (!q.topic && !q.pages && !q.style) return
+  if (q.topic) generateForm.value.topic = String(q.topic)
+  if (q.pages) {
+    const p = parseInt(q.pages, 10)
+    if (!isNaN(p) && p > 0) generateForm.value.pages = p
+  }
+  if (q.style) generateForm.value.style = String(q.style)
+  // 清除 query params 避免刷新重复填充
+  router.replace({ path: route.path })
+}
+
+watch(
+  () => route.query,
+  (q) => {
+    if (activeMenu.value === 'generate' && (q.topic || q.pages || q.style)) {
+      applyAssistantQueryParams()
+    }
+  }
+)
+
 onMounted(() => {
   if (!store.state.isAuthenticated) {
     router.push('/login')
     return
   }
   ensureSession()
+  // 处理 AI 助手传入的预填参数
+  if (activeMenu.value === 'generate') {
+    applyAssistantQueryParams()
+  }
 })
 </script>
 
@@ -4354,6 +4413,49 @@ h4 {
   border-color: #0EA5E9;
   color: #0EA5E9;
   font-weight: 500;
+}
+
+.ai-native-panel {
+  background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);
+  border: 1.5px solid #c4b5fd;
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+
+.ai-native-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #7C3AED;
+  margin-bottom: 12px;
+}
+
+.ai-style-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1.5px solid #c4b5fd;
+  border-radius: 8px;
+  font-size: 14px;
+  resize: vertical;
+  background: #faf5ff;
+  color: #1a1a2e;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+
+.ai-style-textarea:focus {
+  outline: none;
+  border-color: #7C3AED;
+  background: #fff;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: #7C3AED;
+  margin-top: 6px;
+  opacity: 0.8;
 }
 
 .template-options {

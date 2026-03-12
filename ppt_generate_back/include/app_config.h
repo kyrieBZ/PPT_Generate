@@ -80,6 +80,11 @@ struct GenerationConfig {
   std::string builder_mode = "python";
   std::string node_binary = "node";
   std::string pptxgen_builder_script = "scripts/pptxgen_builder.js";
+  // AI Native builder (scheme C)
+  std::string ai_native_builder_script = "scripts/ai_native_builder.js";
+  // 由 main.cpp 在构造 PptController 前填充，不从 config.json 读取
+  std::string qwen_api_key;
+  std::uint32_t qwen_timeout_seconds = 60;
 };
 
 struct MaterialConfig {

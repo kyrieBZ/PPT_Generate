@@ -4,6 +4,7 @@ import pptAPI from '@/api/ppt'
 import templatesAPI from '@/api/templates'
 import modelsAPI from '@/api/models'
 import adminAPI from '@/api/admin'
+import assistantModule from './modules/assistant'
 
 const savedToken = localStorage.getItem('token') || sessionStorage.getItem('token')
 const savedModel = localStorage.getItem('defaultModel') || 'qwen-turbo'
@@ -40,6 +41,9 @@ const normalizeRequest = (item = {}) => {
 }
 
 export default createStore({
+  modules: {
+    assistant: assistantModule
+  },
   state: {
     user: null,
     token: savedToken || null,
@@ -254,7 +258,7 @@ export default createStore({
           const status = req.status
           if (status === 'completed') {
             await dispatch('fetchPptHistory')
-            return { request: normalizeRequest(req), preview: null }
+            return { request: normalizeRequest(req), preview: null, warn: req.warn || null }
           }
           if (status === 'failed') {
             await dispatch('fetchPptHistory')

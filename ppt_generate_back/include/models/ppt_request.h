@@ -25,6 +25,8 @@ struct PptRequestInput {
   int section_slide_interval = 4;
   std::string theme_preset;
   std::string material_id;
+  /** 链路 3（ai_native）：用户自然语言风格描述，可选 */
+  std::string ai_style_prompt;
 
   static PptRequestInput FromJson(const nlohmann::json& data);
 };
