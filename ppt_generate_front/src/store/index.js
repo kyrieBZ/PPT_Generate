@@ -230,6 +230,9 @@ export default createStore({
     },
     async createPptRequest({ commit, state, dispatch }, payload) {
       const body = { ...payload }
+      const onProgress = typeof payload.onProgress === 'function' ? payload.onProgress : null
+      delete body.onProgress
+
       if (!body.modelId) {
         body.modelId = state.selectedModel || 'qwen-turbo'
       }
@@ -246,6 +249,8 @@ export default createStore({
         return { request: normalized, preview: response.data?.preview || null }
       }
 
+      if (onProgress) onProgress({ progress: 5, stage: '初始化', step: '正在提交生成请求...' })
+
       const pollIntervalMs = 2000
       const timeoutMs = 300000
       const start = Date.now()
@@ -256,16 +261,30 @@ export default createStore({
           const req = res.data?.request
           if (!req) continue
           const status = req.status
+
+          // 上报进度
+          if (onProgress && (req.progress !== undefined || req.stage)) {
+            onProgress({
+              progress: req.progress ?? 50,
+              stage: req.stage || '生成中',
+              step: req.step || ''
+            })
+          }
+
           if (status === 'completed') {
+            if (onProgress) onProgress({ progress: 100, stage: '生成完成', step: 'PPT 已成功生成！' })
             await dispatch('fetchPptHistory')
             return { request: normalizeRequest(req), preview: null, warn: req.warn || null }
           }
           if (status === 'failed') {
             await dispatch('fetchPptHistory')
-            throw new Error('PPT 生成失败')
+            const reason = req.errorReason || 'PPT 生成失败，请稍后重试'
+            const err = new Error(reason)
+            err.isGenerationFailed = true
+            throw err
           }
         } catch (err) {
-          if (err?.message === 'PPT 生成失败') throw err
+          if (err?.isGenerationFailed) throw err
         }
       }
       await dispatch('fetchPptHistory')

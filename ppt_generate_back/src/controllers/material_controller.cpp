@@ -396,6 +396,223 @@ HttpResponse MaterialController::List(const HttpRequest& request) {
   return HttpResponse::Json(200, {{"materials", arr}});
 }
 
+HttpResponse MaterialController::BatchUpload(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  const auto content_type = request.Header("content-type");
+  if (content_type.find("multipart/form-data") == std::string::npos) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Expected multipart/form-data"));
+  }
+
+  const std::string boundary = ExtractBoundary(content_type);
+  if (boundary.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Missing multipart boundary"));
+  }
+
+  const auto parts = ParseMultipart(request.body, boundary);
+
+  // Collect all file parts
+  std::vector<const MultipartPart*> file_parts;
+  for (const auto& p : parts) {
+    if (!p.filename.empty()) {
+      file_parts.push_back(&p);
+    }
+  }
+
+  if (file_parts.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "No files found in upload"));
+  }
+
+  constexpr int kMaxBatchFiles = 10;
+  if (static_cast<int>(file_parts.size()) > kMaxBatchFiles) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BATCH_TOO_MANY",
+        "单次最多上传 " + std::to_string(kMaxBatchFiles) + " 个文件"));
+  }
+
+  const std::uint64_t max_bytes = material_service_->config().max_file_size_mb * 1024 * 1024;
+  const auto& allowed = material_service_->config().allowed_types;
+
+  const std::string upload_dir =
+      material_service_->config().upload_dir + "/" + std::to_string(user->id);
+  {
+    std::error_code ec;
+    std::filesystem::create_directories(upload_dir, ec);
+    if (ec) {
+      Logger::Error("MaterialController::BatchUpload: cannot create upload dir: " + upload_dir);
+      return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
+    }
+  }
+
+  nlohmann::json results = nlohmann::json::array();
+  int succeeded = 0, failed = 0;
+
+  for (int idx = 0; idx < static_cast<int>(file_parts.size()); ++idx) {
+    const auto* fp = file_parts[idx];
+    nlohmann::json item;
+    item["index"]    = idx;
+    item["filename"] = fp->filename;
+
+    // Type check
+    const std::string ext = GetExtension(fp->filename);
+    if (std::find(allowed.begin(), allowed.end(), ext) == allowed.end()) {
+      item["success"] = false;
+      item["error"]   = "ERR_MATERIAL_INVALID_TYPE";
+      item["message"] = "不支持的文件类型，仅支持: pdf, docx, txt";
+      ++failed;
+      results.push_back(item);
+      continue;
+    }
+
+    // Size check
+    if (fp->data.empty()) {
+      item["success"] = false;
+      item["error"]   = "ERR_MATERIAL_EMPTY";
+      item["message"] = "上传文件为空";
+      ++failed;
+      results.push_back(item);
+      continue;
+    }
+    if (fp->data.size() > max_bytes) {
+      item["success"] = false;
+      item["error"]   = "ERR_MATERIAL_TOO_LARGE";
+      item["message"] = "文件超过最大限制 " +
+                        std::to_string(material_service_->config().max_file_size_mb) + "MB";
+      ++failed;
+      results.push_back(item);
+      continue;
+    }
+
+    // Write to disk; use index suffix to avoid timestamp collision between files in same batch
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    const std::string safe_name = SanitizeFilename(fp->filename);
+    const std::string stored_filename =
+        std::to_string(now_ms) + "_" + std::to_string(idx) + "_" + safe_name;
+    const std::string file_path = upload_dir + "/" + stored_filename;
+
+    {
+      std::ofstream out(file_path, std::ios::binary);
+      if (!out.is_open()) {
+        Logger::Error("MaterialController::BatchUpload: cannot write file: " + file_path);
+        item["success"] = false;
+        item["error"]   = "ERR_INTERNAL";
+        item["message"] = "文件写入失败";
+        ++failed;
+        results.push_back(item);
+        continue;
+      }
+      out.write(fp->data.data(), static_cast<std::streamsize>(fp->data.size()));
+      if (!out.good()) {
+        Logger::Error("MaterialController::BatchUpload: write error: " + file_path);
+        std::error_code ec;
+        std::filesystem::remove(file_path, ec);
+        item["success"] = false;
+        item["error"]   = "ERR_INTERNAL";
+        item["message"] = "文件写入中断";
+        ++failed;
+        results.push_back(item);
+        continue;
+      }
+    }
+
+    // Create DB record
+    Material material;
+    std::string create_err;
+    if (!material_service_->CreateMaterial(user->id, fp->filename, ext,
+                                           file_path, fp->data.size(),
+                                           material, create_err)) {
+      std::error_code ec;
+      std::filesystem::remove(file_path, ec);
+      Logger::Error("MaterialController::BatchUpload: CreateMaterial failed: " + create_err);
+      item["success"] = false;
+      item["error"]   = "ERR_INTERNAL";
+      item["message"] = create_err.empty() ? "数据库写入失败" : create_err;
+      ++failed;
+      results.push_back(item);
+      continue;
+    }
+
+    // Dispatch async extraction task per file
+    const std::string material_id = material.id;
+    auto svc = material_service_;
+    thread_pool_->EnqueueDetached([svc, material_id]() {
+      svc->RunExtraction(material_id);
+    });
+
+    item["success"]  = true;
+    item["material"] = MaterialToJson(material);
+    ++succeeded;
+    results.push_back(item);
+  }
+
+  nlohmann::json payload = {
+      {"results",   results},
+      {"total",     static_cast<int>(file_parts.size())},
+      {"succeeded", succeeded},
+      {"failed",    failed}
+  };
+  // 207 Multi-Status: indicates mixed results
+  HttpResponse resp = HttpResponse::Json(207, payload);
+  resp.status_message = "Multi-Status";
+  return resp;
+}
+
+HttpResponse MaterialController::BatchStatus(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  // Parse comma-separated ids from query param: ?ids=id1,id2,id3
+  std::string ids_param;
+  if (auto it = request.query_params.find("ids"); it != request.query_params.end()) {
+    ids_param = it->second;
+  }
+  if (ids_param.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Missing ids parameter"));
+  }
+
+  // Split by comma
+  std::vector<std::string> ids;
+  {
+    std::istringstream ss(ids_param);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+      const auto trimmed = Trim(token);
+      if (!trimmed.empty()) ids.push_back(trimmed);
+    }
+  }
+
+  if (ids.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "No valid ids provided"));
+  }
+
+  constexpr int kMaxIds = 20;
+  if (static_cast<int>(ids.size()) > kMaxIds) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST",
+        "最多同时查询 " + std::to_string(kMaxIds) + " 条状态"));
+  }
+
+  auto arr = nlohmann::json::array();
+  for (const auto& id : ids) {
+    Material mat;
+    std::string mat_err;
+    if (material_service_->GetMaterial(id, user->id, mat, mat_err)) {
+      nlohmann::json item = MaterialToJson(mat);
+      arr.push_back(item);
+    }
+    // Silently skip ids that don't belong to this user or don't exist
+  }
+
+  return HttpResponse::Json(200, {{"materials", arr}});
+}
+
 HttpResponse MaterialController::Delete(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);

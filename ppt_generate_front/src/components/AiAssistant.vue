@@ -6,11 +6,11 @@
     :style="triggerStyle"
     @mousedown="onDragStart"
     @click.stop="onTriggerClick"
-    title="AI 助手 · 土土"
+    title="AI 助手 · 四夕"
   >
     <div class="trigger-ring" :class="{ 'has-unread': unreadCount > 0 }"></div>
     <div class="trigger-avatar">
-      <!-- 土土头像 SVG（直接内联，无需组件注册） -->
+      <!-- 四夕头像 SVG（直接内联，无需组件注册） -->
       <svg :width="44" :height="44" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
         <ellipse cx="32" cy="54" rx="14" ry="9" fill="#0EA5E9"/>
         <path d="M24 47 Q32 53 40 47" stroke="#38BDF8" stroke-width="2" fill="none" stroke-linecap="round"/>
@@ -69,14 +69,43 @@
             <span class="avatar-online-dot"></span>
           </div>
           <div class="panel-hd-info">
-            <div class="panel-hd-name">土土</div>
+            <div class="panel-hd-name">四夕</div>
             <div class="panel-hd-status">
               <span class="status-pulse"></span>
-              <span>PPT 智能助手</span>
+              <span>{{ currentSessionId ? '会话模式' : '四夕 · PPT 助手' }}</span>
             </div>
           </div>
         </div>
         <div class="panel-hd-actions">
+          <!-- 会话列表切换按钮（持久化启用时显示） -->
+          <button
+            v-if="persistenceEnabled"
+            class="hd-btn"
+            :class="{ 'hd-btn-active': showSessions }"
+            title="会话列表"
+            @click="toggleSessions"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14">
+              <line x1="8" y1="6" x2="21" y2="6"/>
+              <line x1="8" y1="12" x2="21" y2="12"/>
+              <line x1="8" y1="18" x2="21" y2="18"/>
+              <line x1="3" y1="6" x2="3.01" y2="6"/>
+              <line x1="3" y1="12" x2="3.01" y2="12"/>
+              <line x1="3" y1="18" x2="3.01" y2="18"/>
+            </svg>
+          </button>
+          <!-- 新建会话按钮 -->
+          <button
+            v-if="persistenceEnabled"
+            class="hd-btn"
+            title="新建会话"
+            @click="handleNewSession"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" width="14" height="14">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </button>
           <button class="hd-btn" title="清空对话" @click="clearMessages">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
               <polyline points="3 6 5 6 21 6"/>
@@ -93,6 +122,48 @@
           </button>
         </div>
       </div>
+
+      <!-- 会话列表侧边栏 -->
+      <Transition name="sessions-slide">
+        <div v-if="showSessions" class="sessions-sidebar">
+          <div class="sessions-hd">
+            <span class="sessions-hd-title">历史会话</span>
+            <span v-if="sessionsLoading" class="sessions-loading">加载中…</span>
+          </div>
+          <div class="sessions-list">
+            <div
+              v-for="s in sessions"
+              :key="s.session_id"
+              class="session-item"
+              :class="{ 'is-active': s.session_id === currentSessionId }"
+              @click="handleSwitchSession(s.session_id)"
+            >
+              <div class="session-item-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="13" height="13">
+                  <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+                </svg>
+              </div>
+              <div class="session-item-body">
+                <div class="session-item-title">{{ s.title || '新会话' }}</div>
+                <div class="session-item-time">{{ formatSessionTime(s.updated_at) }}</div>
+              </div>
+              <button
+                class="session-del-btn"
+                title="删除"
+                @click.stop="handleDeleteSession(s.session_id)"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="11" height="11">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <div v-if="!sessionsLoading && sessions.length === 0" class="sessions-empty">
+              暂无会话，点击 + 新建
+            </div>
+          </div>
+        </div>
+      </Transition>
 
       <!-- 消息区 -->
       <div ref="messagesContainer" class="panel-body">
@@ -119,8 +190,8 @@
                 <path d="M27 37 Q32 41 37 37" stroke="#E11D48" stroke-width="1.5" stroke-linecap="round" fill="none"/>
               </svg>
             </div>
-            <p class="welcome-title">你好，我是 <strong>土土</strong></p>
-            <p class="welcome-sub">你的 PPT 智能助手，随时为你服务</p>
+            <p class="welcome-title">你好，我是 <strong>四夕</strong></p>
+            <p class="welcome-sub">四夕为你服务，做你的 PPT 智能小助手</p>
             <div class="welcome-chips">
               <button class="chip" @click="sendExample('帮我生成一个关于人工智能的PPT，共10页')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="13" height="13">
@@ -300,6 +371,7 @@ const inputRef     = ref(null)
 const messagesContainer = ref(null)
 const confirmVisible    = ref(false)
 const actionLoading     = ref(false)
+const showSessions = ref(false)
 
 // 拖拽
 const isDragging = ref(false)
@@ -307,11 +379,15 @@ const hasDragged = ref(false)
 const pos = ref({ left: window.innerWidth - 88, top: window.innerHeight - 150 })
 
 // ── Store ─────────────────────────────────────────────
-const panelVisible  = computed(() => store.getters['assistant/isVisible'])
-const messages      = computed(() => store.getters['assistant/messages'])
-const isLoading     = computed(() => store.getters['assistant/isLoading'])
-const pendingAction = computed(() => store.getters['assistant/pendingAction'])
-const unreadCount   = computed(() => store.getters['assistant/unreadCount'])
+const panelVisible       = computed(() => store.getters['assistant/isVisible'])
+const messages           = computed(() => store.getters['assistant/messages'])
+const isLoading          = computed(() => store.getters['assistant/isLoading'])
+const pendingAction      = computed(() => store.getters['assistant/pendingAction'])
+const unreadCount        = computed(() => store.getters['assistant/unreadCount'])
+const sessions           = computed(() => store.getters['assistant/sessions'])
+const sessionsLoading    = computed(() => store.getters['assistant/sessionsLoading'])
+const currentSessionId   = computed(() => store.getters['assistant/currentSessionId'])
+const persistenceEnabled = computed(() => store.getters['assistant/persistenceEnabled'])
 
 // ── 确认弹窗标题 ──────────────────────────────────────
 const confirmDialogTitle = computed(() => {
@@ -420,11 +496,60 @@ function onDragStart(e) {
 function onTriggerClick() {
   if (hasDragged.value) { hasDragged.value = false; return }
   store.dispatch('assistant/toggle')
-  if (!panelVisible.value) nextTick(() => inputRef.value?.focus())
+  if (!panelVisible.value) {
+    nextTick(() => inputRef.value?.focus())
+    // 打开时拉取会话列表
+    store.dispatch('assistant/fetchSessions')
+  }
 }
 
 function closePanel()    { store.dispatch('assistant/close') }
 function clearMessages() { store.commit('assistant/clearMessages') }
+
+// ── 会话管理 ──────────────────────────────────────────
+function toggleSessions() {
+  showSessions.value = !showSessions.value
+  if (showSessions.value) {
+    store.dispatch('assistant/fetchSessions')
+  }
+}
+
+async function handleNewSession() {
+  showSessions.value = false
+  const sessionId = await store.dispatch('assistant/newSession')
+  if (!sessionId) {
+    ElMessage.warning('创建会话失败，已切换到无状态模式')
+  }
+}
+
+async function handleSwitchSession(sessionId) {
+  showSessions.value = false
+  await store.dispatch('assistant/switchSession', sessionId)
+}
+
+async function handleDeleteSession(sessionId) {
+  try {
+    await store.dispatch('assistant/removeSession', sessionId)
+    ElMessage.success('会话已删除')
+  } catch {
+    ElMessage.error('删除失败，请稍后重试')
+  }
+}
+
+function formatSessionTime(isoStr) {
+  if (!isoStr) return ''
+  try {
+    const d = new Date(isoStr)
+    const now = new Date()
+    const diff = now - d
+    if (diff < 60000)       return '刚刚'
+    if (diff < 3600000)     return `${Math.floor(diff / 60000)} 分钟前`
+    if (diff < 86400000)    return `${Math.floor(diff / 3600000)} 小时前`
+    return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+  } catch {
+    return ''
+  }
+}
 
 // ── 发送消息 ──────────────────────────────────────────
 async function sendMessage() {
@@ -652,6 +777,7 @@ async function executeAction({ intent, params }) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* 为会话侧边栏提供 absolute 定位上下文 */
   box-shadow:
     0 0 0 1px rgba(14, 165, 233, 0.10),
     0 4px 8px rgba(0, 0, 0, 0.04),
@@ -795,6 +921,149 @@ async function executeAction({ intent, params }) {
 .hd-btn:active { transform: scale(0.92); }
 
 .hd-btn-close:hover { background: rgba(239, 68, 68, 0.65); }
+
+/* ── 头部按钮激活态 ───────────────────────────────── */
+.hd-btn-active {
+  background: rgba(255, 255, 255, 0.30) !important;
+  color: white !important;
+}
+
+/* ── 会话列表侧边栏 ───────────────────────────────── */
+.sessions-sidebar {
+  position: absolute;
+  top: 58px; /* 头部高度 */
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: white;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #F1F5F9;
+}
+
+.sessions-slide-enter-active { transition: transform 0.22s cubic-bezier(0.34, 1.2, 0.64, 1), opacity 0.18s ease; }
+.sessions-slide-leave-active { transition: transform 0.16s ease-in, opacity 0.14s ease-in; }
+.sessions-slide-enter-from   { transform: translateX(-100%); opacity: 0; }
+.sessions-slide-leave-to     { transform: translateX(-100%); opacity: 0; }
+
+.sessions-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px 9px;
+  border-bottom: 1px solid #F1F5F9;
+  flex-shrink: 0;
+}
+
+.sessions-hd-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #475569;
+  letter-spacing: 0.3px;
+}
+
+.sessions-loading {
+  font-size: 11px;
+  color: #94A3B8;
+}
+
+.sessions-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sessions-list::-webkit-scrollbar { width: 3px; }
+.sessions-list::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.14s;
+  position: relative;
+}
+
+.session-item:hover { background: #F8FAFC; }
+
+.session-item.is-active {
+  background: #EFF6FF;
+  border: 1px solid #BAE6FD;
+}
+
+.session-item-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: #F1F5F9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #64748B;
+}
+
+.session-item.is-active .session-item-icon {
+  background: #DBEAFE;
+  color: #0284C7;
+}
+
+.session-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-item-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #1E293B;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+.session-item.is-active .session-item-title { color: #0369A1; }
+
+.session-item-time {
+  font-size: 10.5px;
+  color: #94A3B8;
+  margin-top: 1px;
+}
+
+.session-del-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  border-radius: 5px;
+  color: #CBD5E1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.session-item:hover .session-del-btn { opacity: 1; }
+.session-del-btn:hover { background: #FEE2E2; color: #EF4444; }
+
+.sessions-empty {
+  text-align: center;
+  padding: 32px 16px;
+  font-size: 12.5px;
+  color: #94A3B8;
+  line-height: 1.6;
+}
 
 /* ── 消息区 ───────────────────────────────────────── */
 .panel-body {

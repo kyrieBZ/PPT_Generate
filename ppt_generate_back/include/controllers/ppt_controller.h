@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include "app_config.h"
+#include "database/redis_client.h"
 #include "http/http_types.h"
 #include "services/auth_service.h"
 #include "services/material_service.h"
@@ -27,7 +28,10 @@ class PptController {
                 std::shared_ptr<S3Client> s3_client,
                 std::shared_ptr<WanxiangImageClient> wanx_client,
                 std::shared_ptr<ThreadPool> thread_pool,
-                std::shared_ptr<MaterialService> material_service = nullptr);
+                std::shared_ptr<MaterialService> material_service = nullptr,
+                std::shared_ptr<RedisClient> redis = nullptr,
+                int redis_ttl_ppt_status = 7200,
+                int redis_ttl_ppt_history = 300);
 
   HttpResponse Generate(const HttpRequest& request);
   /** 轮询单条请求状态，用于异步生成后查询 completed/failed */
@@ -37,6 +41,10 @@ class PptController {
   HttpResponse AdminMetrics(const HttpRequest& request);
   HttpResponse Delete(const HttpRequest& request);
   HttpResponse Download(const HttpRequest& request);
+  /** POST /api/ppt/batch_download  — body: {"ids":[...]}，生成 ZIP 并返回 download_url */
+  HttpResponse BatchDownload(const HttpRequest& request);
+  /** GET /api/ppt/batch_zip?token=xxx  — 流式返回已生成的批量 ZIP 文件 */
+  HttpResponse BatchDownloadFile(const HttpRequest& request);
   HttpResponse Preview(const HttpRequest& request);
   HttpResponse Outline(const HttpRequest& request);
 
@@ -59,4 +67,7 @@ class PptController {
   std::shared_ptr<WanxiangImageClient> wanx_client_;
   std::shared_ptr<ThreadPool> thread_pool_;
   std::shared_ptr<MaterialService> material_service_;
+  std::shared_ptr<RedisClient> redis_;
+  int redis_ttl_ppt_status_  = 7200;
+  int redis_ttl_ppt_history_ = 300;
 };

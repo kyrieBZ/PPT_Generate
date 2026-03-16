@@ -103,13 +103,14 @@ def build_extract_prompt(raw_text: str) -> str:
     return (
         "你是一个专业的学术文档分析助手。请从以下文档内容中提取关键信息，"
         "输出严格的 JSON 格式，不要输出任何其他内容。\n"
-        "提取字段说明：\n"
+        "提取字段说明（请尽量多提取，以丰富后续 PPT 内容）：\n"
         "  title: 文档标题（若无则根据内容推断，字符串）\n"
-        "  summary: 核心内容摘要（200字以内，字符串）\n"
-        "  outline: 主要章节或段落标题列表（字符串数组，最多10条）\n"
-        "  key_points: 核心论点或知识点（字符串数组，最多10条，每条<=50字）\n"
-        "  data_mentions: 文中提到的数据、实验结果、统计数字（字符串数组，最多8条）\n"
-        "  keywords: 关键词（字符串数组，最多8个）\n\n"
+        "  summary: 核心内容摘要（300字以内，字符串，尽量保留关键结论与数据）\n"
+        "  outline: 主要章节或段落标题列表（字符串数组，最多15条）\n"
+        "  key_points: 核心论点或知识点（字符串数组，最多15条，每条<=60字，含数字或结论的优先）\n"
+        "  data_mentions: 文中提到的数据、实验结果、统计数字（字符串数组，最多15条）；"
+        "每条尽量包含「数值+单位+含义」，例如「45.2%」「n=30」「实验组有效率 78%」，便于后续做图表。\n"
+        "  keywords: 关键词（字符串数组，最多12个）\n\n"
         "文档内容如下：\n"
         "---\n"
         f"{truncated}\n"
@@ -178,11 +179,11 @@ def parse_json_from_text(text: str) -> dict:
 
 
 def normalize_result(result: dict) -> dict:
-    """确保所有字段存在且类型正确。"""
+    """确保所有字段存在且类型正确；放宽条数上限以丰富 PPT 生成时的数据来源。"""
     def to_str(v, default=""):
         return str(v) if v is not None else default
 
-    def to_str_list(v, max_items=10):
+    def to_str_list(v, max_items=15):
         if isinstance(v, list):
             return [str(x) for x in v if x][:max_items]
         return []
@@ -190,10 +191,10 @@ def normalize_result(result: dict) -> dict:
     return {
         "title": to_str(result.get("title")),
         "summary": to_str(result.get("summary")),
-        "outline": to_str_list(result.get("outline"), 10),
-        "key_points": to_str_list(result.get("key_points"), 10),
-        "data_mentions": to_str_list(result.get("data_mentions"), 8),
-        "keywords": to_str_list(result.get("keywords"), 8),
+        "outline": to_str_list(result.get("outline"), 15),
+        "key_points": to_str_list(result.get("key_points"), 15),
+        "data_mentions": to_str_list(result.get("data_mentions"), 15),
+        "keywords": to_str_list(result.get("keywords"), 12),
     }
 
 

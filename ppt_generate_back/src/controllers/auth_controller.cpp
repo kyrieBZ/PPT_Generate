@@ -97,6 +97,33 @@ HttpResponse AuthController::CurrentUser(const HttpRequest& request) {
   return HttpResponse::Json(200, {{"user", UserJson(*user)}});
 }
 
+HttpResponse AuthController::ChangePassword(const HttpRequest& request) {
+  const auto token = ExtractToken(request);
+  if (token.empty()) {
+    return HttpResponse::Json(401, ErrorJson("ERR_AUTH_TOKEN_MISSING", "Token not provided"));
+  }
+  std::string error;
+  auto user = service_->GetUserFromToken(token, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_AUTH_TOKEN_INVALID", error.empty() ? "Invalid token" : error));
+  }
+  try {
+    auto body = nlohmann::json::parse(request.body);
+    const std::string current_password = body.value("currentPassword", body.value("current_password", ""));
+    const std::string new_password = body.value("newPassword", body.value("new_password", ""));
+    if (current_password.empty() || new_password.empty()) {
+      return HttpResponse::Json(400, ErrorJson("ERR_PASSWORD_MISSING", "当前密码和新密码不能为空"));
+    }
+    if (!service_->ChangePassword(user->id, current_password, new_password, error)) {
+      return HttpResponse::Json(400, ErrorJson("ERR_PASSWORD_CHANGE_FAILED", error.empty() ? "修改失败" : error));
+    }
+    return HttpResponse::Json(200, {{"message", "密码已更新"}});
+  } catch (const std::exception& ex) {
+    Logger::Error(std::string("ChangePassword parse error: ") + ex.what());
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
+  }
+}
+
 HttpResponse AuthController::RequestPasswordReset(const HttpRequest& request) {
   try {
     auto body = nlohmann::json::parse(request.body);

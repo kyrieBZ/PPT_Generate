@@ -4,6 +4,12 @@ export default {
   generate(payload) {
     return apiClient.post('/ppt/generate', payload)
   },
+
+  // Kept for potential future use (server-side ZIP for non-S3 deployments)
+  batchDownloadZip(ids) {
+    return apiClient.post('/ppt/batch_download', { ids })
+  },
+
   /** 轮询单条请求状态（用于异步生成），返回 { request } */
   getRequest(id) {
     return apiClient.get('/ppt/request', { params: { id } })

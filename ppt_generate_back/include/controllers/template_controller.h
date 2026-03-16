@@ -13,6 +13,7 @@ class TemplateController {
 
   HttpResponse List(const HttpRequest& request);
   HttpResponse Download(const HttpRequest& request);
+  HttpResponse Preview(const HttpRequest& request);
 
  private:
   static nlohmann::json ToJson(const RemoteTemplate& item);

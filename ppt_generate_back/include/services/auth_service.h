@@ -8,6 +8,7 @@
 
 #include "app_config.h"
 #include "database/mysql_connection_pool.h"
+#include "database/redis_client.h"
 #include "models/user.h"
 #include "services/email_service.h"
 
@@ -16,7 +17,8 @@ class AuthService {
   AuthService(std::shared_ptr<MySQLConnectionPool> pool,
               AuthConfig auth_config,
               AdminConfig admin_config,
-              std::shared_ptr<EmailService> email_service);
+              std::shared_ptr<EmailService> email_service,
+              std::shared_ptr<RedisClient> redis = nullptr);
 
   bool RegisterUser(const std::string& username,
                     const std::string& email,
@@ -41,6 +43,12 @@ class AuthService {
                      const std::string& new_password,
                      std::string& error_message);
 
+  /** 登录用户修改密码：需验证当前密码后更新为新密码 */
+  bool ChangePassword(std::uint64_t user_id,
+                      const std::string& current_password,
+                      const std::string& new_password,
+                      std::string& error_message);
+
   bool IsAdmin(const User& user) const;
 
   std::vector<User> ListUsers(const std::string& query, std::string& error_message) const;
@@ -61,6 +69,7 @@ class AuthService {
   bool StoreToken(MYSQL* connection, std::uint64_t user_id, const std::string& token, std::string& error_message) const;
   bool RemoveToken(MYSQL* connection, const std::string& token, std::string& error_message) const;
   std::optional<User> FindUserByToken(MYSQL* connection, const std::string& token) const;
+  std::optional<User> FindUserById(MYSQL* connection, std::uint64_t user_id) const;
   std::optional<User> FindUserByEmail(MYSQL* connection, const std::string& email) const;
   bool StoreResetCode(MYSQL* connection,
                       std::uint64_t user_id,
@@ -76,4 +85,5 @@ class AuthService {
   std::unordered_set<std::string> admin_usernames_;
   std::unordered_set<std::string> admin_emails_;
   std::shared_ptr<EmailService> email_service_;
+  std::shared_ptr<RedisClient> redis_;
 };

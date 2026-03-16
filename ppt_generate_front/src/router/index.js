@@ -31,6 +31,18 @@ const routes = [
     meta: { requiresAuth: false }
   },
   {
+    path: '/profile',
+    redirect: '/main/profile'
+  },
+  {
+    path: '/profile',
+    redirect: '/main/profile'
+  },
+  {
+    path: '/profile',
+    redirect: () => ({ path: '/main/profile' })
+  },
+  {
     path: '/main/:section?',
     name: 'Main',
     component: Main,
@@ -47,7 +59,7 @@ const routes = [
     name: 'Admin',
     component: Admin,
     meta: { requiresAuth: true, requiresAdmin: true }
-  }
+  },
 ]
 
 const router = createRouter({

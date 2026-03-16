@@ -16,6 +16,8 @@ class TemplateService {
   std::vector<RemoteTemplate> Search(const std::string& query) const;
   std::optional<RemoteTemplate> FindById(const std::string& id) const;
   std::optional<std::string> GetLocalFile(const std::string& id) const;
+  /** Path to preview image (e.g. PNG) for template id, if file exists. */
+  std::optional<std::string> GetPreviewPath(const std::string& id) const;
 
  private:
   void LoadCatalog(const std::string& path);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,9 @@ struct AiNativeGenerationConfig {
   std::string image_dir;
 };
 
+// 进度回调：(progress 0-100, stage 阶段名, step 步骤描述)
+using ProgressCallback = std::function<void(int, const std::string&, const std::string&)>;
+
 class AiNativePptService {
  public:
   explicit AiNativePptService(std::string qwen_api_key,
@@ -26,14 +30,13 @@ class AiNativePptService {
   /**
    * 完整的 AI 原生生成流程（四阶段）：
    *   Phase 1: GenerateCreativeBrief  — 主题分析 + 设计决策
-   *   Phase 2: GenerateDesignSpec     — 每张幻灯片的完整元素规格
-   *   Phase 3: FillSlideContents      — 填充具体文字内容
-   *   Phase 4: FetchImages            — 调用 Wanxiang 为 image 元素生成真实图片
+   *   Phase 2: GenerateDesignSpec     — 每张幻灯片的完整元素规格（分 batch）
+   *   Phase 3: FillSlideContents      — 逐张填充具体文字内容
+   *   Phase 4: FetchImages            — 逐张调用 Wanxiang 生成图片
    *
-   * @param include_images  是否包含图片（控制 Phase 2 是否生成 image 元素 + Phase 4 是否执行）
-   * @param include_charts  是否包含图表（控制 Phase 2 是否生成 chart 元素）
-   * @param wanx_client     万象图片客户端指针（可为 nullptr，为 nullptr 时跳过图片生成）
+   * @param on_progress  进度回调（可为 nullptr），每个子步骤完成时调用
    */
+  /** material_context: 当从文献生成时传入（参考材料关键信息+约束），非空时正文与图表数据必须严格来自该内容 */
   bool Generate(const std::string& topic,
                 const std::string& style,
                 int pages,
@@ -44,7 +47,9 @@ class AiNativePptService {
                 std::string& error_message,
                 bool include_images = false,
                 bool include_charts = false,
-                WanxiangImageClient* wanx_client = nullptr) const;
+                WanxiangImageClient* wanx_client = nullptr,
+                ProgressCallback on_progress = nullptr,
+                const std::string& material_context = "") const;
 
  private:
   bool GenerateCreativeBrief(const std::string& topic,
@@ -60,22 +65,24 @@ class AiNativePptService {
                            bool include_images,
                            bool include_charts,
                            std::string& out_spec_json,
-                           std::string& error) const;
+                           std::string& error,
+                           int total_slides,
+                           const ProgressCallback& on_progress) const;
 
   bool FillSlideContents(const std::string& topic,
                           const std::string& brief_json,
                           std::string& inout_spec_json,
-                          std::string& error) const;
+                          std::string& error,
+                          int total_slides,
+                          const ProgressCallback& on_progress) const;
 
-  /**
-   * Phase 4：遍历 spec 中所有 image 类型元素，
-   * 用 image_prompt 调用 Wanxiang 生成真实图片并将本地路径写回 elements[].path。
-   */
   bool FetchImages(std::string& inout_spec_json,
                    const AiNativeGenerationConfig& config,
                    std::uint64_t request_id,
                    WanxiangImageClient* wanx_client,
-                   std::string& error) const;
+                   std::string& error,
+                   int total_images,
+                   const ProgressCallback& on_progress) const;
 
   bool RunAiNativeBuilder(const std::string& spec_json,
                            const std::string& output_path,

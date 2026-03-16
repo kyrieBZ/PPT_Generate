@@ -31,6 +31,12 @@ class MaterialController {
   /** DELETE /api/material?id= */
   HttpResponse Delete(const HttpRequest& request);
 
+  /** POST /api/material/batch_upload — multipart/form-data，多文件 */
+  HttpResponse BatchUpload(const HttpRequest& request);
+
+  /** GET /api/material/batch_status?ids=id1,id2,... */
+  HttpResponse BatchStatus(const HttpRequest& request);
+
  private:
   std::shared_ptr<User> Authenticate(const HttpRequest& request, std::string& error) const;
 

@@ -94,6 +94,28 @@ struct MaterialConfig {
   std::string extract_script = "scripts/extract_material.py";
 };
 
+struct MongoConfig {
+  std::string uri      = "mongodb://localhost:27017";
+  std::string database = "ppt_generate_chat";
+  bool enabled         = false;
+};
+
+struct RedisConfig {
+  std::string host             = "127.0.0.1";
+  std::uint16_t port           = 6379;
+  std::string password;
+  int db                       = 0;
+  int pool_size                = 8;
+  int connect_timeout_ms       = 200;
+  int socket_timeout_ms        = 500;
+  bool enabled                 = false;  // 默认关闭；config.json 中置 true 才启用
+
+  // TTL（秒）
+  int ttl_auth_token           = 86400;   // 与 auth.token_ttl_minutes 同步
+  int ttl_ppt_status           = 7200;    // PPT 生成状态
+  int ttl_ppt_history          = 300;     // 用户历史列表快照
+};
+
 struct S3Config {
   std::string endpoint;
   std::string public_endpoint;
@@ -127,6 +149,8 @@ class AppConfig {
   const GenerationConfig& generation() const { return generation_; }
   const S3Config& s3() const { return s3_; }
   const MaterialConfig& material() const { return material_; }
+  const MongoConfig& mongodb() const { return mongodb_; }
+  const RedisConfig& redis() const { return redis_; }
 
  private:
   ServerConfig server_{};
@@ -140,4 +164,6 @@ class AppConfig {
   GenerationConfig generation_{};
   S3Config s3_{};
   MaterialConfig material_{};
+  MongoConfig mongodb_{};
+  RedisConfig redis_{};
 };

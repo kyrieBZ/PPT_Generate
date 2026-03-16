@@ -1,6 +1,7 @@
 #include "controllers/template_controller.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -53,7 +54,36 @@ nlohmann::json TemplateController::ToJson(const RemoteTemplate& item) {
   if (item.has_local_file) {
     json_item["localDownloadUrl"] = "/api/templates/file?id=" + item.id;
   }
+  if (item.preview_image.empty()) {
+    json_item["previewImage"] = "/api/templates/preview?id=" + item.id;
+  }
   return json_item;
+}
+
+HttpResponse TemplateController::Preview(const HttpRequest& request) {
+  const auto it = request.query_params.find("id");
+  if (it == request.query_params.end() || it->second.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_TEMPLATE_ID_MISSING", "Template ID missing"));
+  }
+  auto path = service_->GetPreviewPath(it->second);
+  if (!path) {
+    return HttpResponse::Json(404, ErrorJson("ERR_PREVIEW_NOT_FOUND", "Preview image not found"));
+  }
+  std::ifstream input(*path, std::ios::binary);
+  if (!input.is_open()) {
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
+  }
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  std::string ext = std::filesystem::path(*path).extension().string();
+  std::string content_type = (ext == ".png") ? "image/png" : (ext == ".jpg" || ext == ".jpeg") ? "image/jpeg" : "application/octet-stream";
+  HttpResponse response;
+  response.status_code = 200;
+  response.status_message = "OK";
+  response.headers["content-type"] = content_type;
+  response.headers["cache-control"] = "public, max-age=86400";
+  response.body = buffer.str();
+  return response;
 }
 
 HttpResponse TemplateController::Download(const HttpRequest& request) {

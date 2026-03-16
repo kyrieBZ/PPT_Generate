@@ -61,6 +61,11 @@ class PptService {
   // Get a single PPT generation request
   bool GetRequest(std::uint64_t user_id, std::uint64_t request_id, PptRequest& out_request, std::string& error);
 
+  // Get multiple PPT requests by id list (only returns rows belonging to user_id, silently skips others)
+  std::vector<PptRequest> GetRequestsByIds(std::uint64_t user_id,
+                                           const std::vector<std::uint64_t>& ids,
+                                           std::string& error);
+
   // Update output path and status for a request
   bool UpdateRequestOutput(std::uint64_t request_id,
                           std::uint64_t user_id,

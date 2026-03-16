@@ -11,6 +11,10 @@
 #include "utils/crypto.h"
 #include "utils/string_utils.h"
 
+// Redis key 前缀
+static constexpr const char* kRedisKeyTokenPrefix     = "auth:token:";
+static constexpr const char* kRedisKeyBlacklistPrefix  = "auth:blacklist:";
+
 namespace {
 std::string EscapeString(MYSQL* connection, const std::string& value) {
   std::string escaped;
@@ -64,10 +68,12 @@ std::string GenerateResetCode() {
 AuthService::AuthService(std::shared_ptr<MySQLConnectionPool> pool,
                          AuthConfig auth_config,
                          AdminConfig admin_config,
-                         std::shared_ptr<EmailService> email_service)
+                         std::shared_ptr<EmailService> email_service,
+                         std::shared_ptr<RedisClient> redis)
     : pool_(std::move(pool)),
       auth_config_(auth_config),
-      email_service_(std::move(email_service)) {
+      email_service_(std::move(email_service)),
+      redis_(std::move(redis)) {
   for (const auto& username : admin_config.usernames) {
     const auto normalized = string_utils::ToLower(string_utils::Trim(username));
     if (!normalized.empty()) {
@@ -170,12 +176,114 @@ bool AuthService::Login(const std::string& identifier,
 }
 
 bool AuthService::Logout(const std::string& token, std::string& error_message) {
+  // 1. Redis 黑名单 + 删缓存（Redis 可选）
+  if (redis_) {
+    const std::string hash = crypto_utils::Sha256(token);
+    const std::string blk_key = std::string(kRedisKeyBlacklistPrefix) + hash;
+    const std::string tok_key = std::string(kRedisKeyTokenPrefix) + hash;
+
+    // 从 MySQL 查剩余有效时间，用于设置黑名单 TTL
+    auto connection_ttl = pool_->GetConnection();
+    MYSQL* conn_ttl = connection_ttl.Get();
+    if (conn_ttl) {
+      const auto escaped = EscapeString(conn_ttl, token);
+      const std::string ttl_q =
+          "SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, NOW(), expires_at)) "
+          "FROM auth_tokens WHERE token='" + escaped + "' LIMIT 1";
+      if (mysql_query(conn_ttl, ttl_q.c_str()) == 0) {
+        MYSQL_RES* res = mysql_store_result(conn_ttl);
+        if (res) {
+          MYSQL_ROW row = mysql_fetch_row(res);
+          if (row && row[0]) {
+            int remaining = std::atoi(row[0]);
+            if (remaining > 0) {
+              redis_->SetEx(blk_key, "1", remaining);
+            }
+          }
+          mysql_free_result(res);
+        }
+      }
+    }
+    redis_->Del(tok_key);
+  }
+
+  // 2. 删 MySQL
   auto connection = pool_->GetConnection();
   MYSQL* conn = connection.Get();
   return RemoveToken(conn, token, error_message);
 }
 
 std::optional<User> AuthService::GetUserFromToken(const std::string& token, std::string& error_message) const {
+  if (redis_) {
+    const std::string hash    = crypto_utils::Sha256(token);
+    const std::string blk_key = std::string(kRedisKeyBlacklistPrefix) + hash;
+    const std::string tok_key = std::string(kRedisKeyTokenPrefix) + hash;
+
+    // 1. 黑名单检查（已登出）
+    if (redis_->Exists(blk_key)) {
+      error_message = "Token已失效";
+      return std::nullopt;
+    }
+
+    // 2. 缓存命中：tok_key 存储序列化的 user_id（纯数字字符串）
+    auto cached_uid = redis_->Get(tok_key);
+    if (cached_uid) {
+      if (*cached_uid == RedisClient::kNullSentinel) {
+        error_message = "Token无效或已过期";
+        return std::nullopt;
+      }
+      // 缓存命中，回源只查用户信息（不再 JOIN auth_tokens，走用户 id 查询）
+      std::uint64_t uid = 0;
+      try { uid = std::stoull(*cached_uid); } catch (...) {}
+      if (uid > 0) {
+        auto connection = pool_->GetConnection();
+        MYSQL* conn = connection.Get();
+        const std::string q =
+            "SELECT id, username, email, password_hash, salt, "
+            "created_at, updated_at, last_login, is_disabled "
+            "FROM users WHERE id=" + std::to_string(uid) + " LIMIT 1";
+        if (mysql_query(conn, q.c_str()) == 0) {
+          MYSQL_RES* res = mysql_store_result(conn);
+          if (res) {
+            auto user = ExtractUser(res);
+            mysql_free_result(res);
+            if (user) {
+              if (user->is_disabled) {
+                error_message = "账号已被禁用";
+                return std::nullopt;
+              }
+              ApplyAdmin(*user);
+              return user;
+            }
+          }
+        }
+      }
+      // 缓存值异常，降级到全量 MySQL 查询
+    }
+
+    // 3. 缓存未命中，查 MySQL
+    auto connection = pool_->GetConnection();
+    MYSQL* conn = connection.Get();
+    auto user = FindUserByToken(conn, token);
+    if (!user) {
+      error_message = "Token无效或已过期";
+      // 缓存空值，防止无效 token 频繁打库（60s 短 TTL）
+      redis_->SetEx(tok_key, RedisClient::kNullSentinel, 60);
+      return std::nullopt;
+    }
+    if (user->is_disabled) {
+      error_message = "账号已被禁用";
+      return std::nullopt;
+    }
+    ApplyAdmin(*user);
+
+    // 4. 回填缓存（TTL 与 auth_config_.token_ttl_minutes 一致）
+    const int ttl = static_cast<int>(auth_config_.token_ttl_minutes) * 60;
+    redis_->SetEx(tok_key, std::to_string(user->id), ttl);
+    return user;
+  }
+
+  // Redis 不可用，降级到纯 MySQL
   auto connection = pool_->GetConnection();
   MYSQL* conn = connection.Get();
   auto user = FindUserByToken(conn, token);
@@ -507,6 +615,67 @@ std::optional<User> AuthService::FindUserByToken(MYSQL* connection, const std::s
   auto user = ExtractUser(result);
   mysql_free_result(result);
   return user;
+}
+
+std::optional<User> AuthService::FindUserById(MYSQL* connection, std::uint64_t user_id) const {
+  const std::string query =
+      "SELECT id, username, email, password_hash, salt, created_at, updated_at, last_login, is_disabled "
+      "FROM users WHERE id=" +
+      std::to_string(user_id) + " LIMIT 1";
+  if (mysql_query(connection, query.c_str()) != 0) {
+    Logger::Error("根据ID查询用户失败: " + std::string(mysql_error(connection)));
+    return std::nullopt;
+  }
+  MYSQL_RES* result = mysql_store_result(connection);
+  if (!result) {
+    return std::nullopt;
+  }
+  auto user = ExtractUser(result);
+  mysql_free_result(result);
+  return user;
+}
+
+bool AuthService::ChangePassword(std::uint64_t user_id,
+                                 const std::string& current_password,
+                                 const std::string& new_password,
+                                 std::string& error_message) {
+  if (new_password.empty() || new_password.size() < 6) {
+    error_message = "新密码至少 6 位";
+    return false;
+  }
+  auto connection = pool_->GetConnection();
+  MYSQL* conn = connection.Get();
+  if (!conn) {
+    error_message = "无法获取数据库连接";
+    return false;
+  }
+  auto user = FindUserById(conn, user_id);
+  if (!user) {
+    error_message = "用户不存在";
+    return false;
+  }
+  if (user->is_disabled) {
+    error_message = "账号已被禁用";
+    return false;
+  }
+  const auto current_hashed = crypto_utils::HashPassword(current_password, user->salt);
+  if (current_hashed != user->password_hash) {
+    error_message = "当前密码错误";
+    return false;
+  }
+  const auto salt = crypto_utils::GenerateSalt();
+  const auto password_hash = crypto_utils::HashPassword(new_password, salt);
+  const auto password_hash_escaped = EscapeString(conn, password_hash);
+  const auto salt_escaped = EscapeString(conn, salt);
+  std::ostringstream update_query;
+  update_query << "UPDATE users SET password_hash='" << password_hash_escaped
+               << "', salt='" << salt_escaped << "', updated_at=NOW() WHERE id="
+               << user_id << " LIMIT 1";
+  if (mysql_query(conn, update_query.str().c_str()) != 0) {
+    error_message = mysql_error(conn);
+    return false;
+  }
+  return true;
 }
 
 std::vector<User> AuthService::ListUsers(const std::string& query, std::string& error_message) const {

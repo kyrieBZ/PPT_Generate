@@ -269,3 +269,24 @@ std::optional<std::string> TemplateService::GetLocalFile(const std::string& id) 
   }
   return std::nullopt;
 }
+
+std::optional<std::string> TemplateService::GetPreviewPath(const std::string& id) const {
+  if (id.empty()) {
+    return std::nullopt;
+  }
+  const auto needle = ToLower(id);
+  for (const auto& tpl : templates_) {
+    if (ToLower(tpl.id) != needle) {
+      continue;
+    }
+    const auto thumb_dir = (catalog_dir_ / "../../assets/template_thumbnails").lexically_normal();
+    for (const char* ext : {".png", ".jpg", ".jpeg"}) {
+      const auto path = thumb_dir / (id + ext);
+      if (std::filesystem::is_regular_file(path)) {
+        return path.string();
+      }
+    }
+    return std::nullopt;
+  }
+  return std::nullopt;
+}

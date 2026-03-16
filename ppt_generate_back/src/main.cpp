@@ -14,8 +14,11 @@
 #include "controllers/template_controller.h"
 #include "controllers/material_controller.h"
 #include "controllers/model_controller.h"
+#include "database/mongo_client.h"
 #include "database/mysql_connection_pool.h"
+#include "database/redis_client.h"
 #include "http/http_server.h"
+#include "http/http_types.h"
 #include "logger.h"
 #include "services/assistant_service.h"
 #include "services/auth_service.h"
@@ -58,8 +61,35 @@ int main(int argc, char* argv[]) {
     const auto config = AppConfig::Load(config_path);
 
     auto pool = std::make_shared<MySQLConnectionPool>(config.database());
+
+    // ── Redis（可选）────────────────────────────────────────────────────────
+    std::shared_ptr<RedisClient> redis_client;
+    if (config.redis().enabled) {
+      try {
+        redis_client = std::make_shared<RedisClient>(
+            config.redis().host,
+            config.redis().port,
+            config.redis().password,
+            config.redis().db,
+            config.redis().pool_size,
+            config.redis().connect_timeout_ms,
+            config.redis().socket_timeout_ms);
+        if (redis_client->Ping()) {
+          Logger::Info("Redis connected: " + config.redis().host + ":" +
+                       std::to_string(config.redis().port));
+        } else {
+          Logger::Warn("Redis Ping failed — running without cache.");
+          redis_client.reset();
+        }
+      } catch (const std::exception& e) {
+        Logger::Warn(std::string("Redis init failed, running without cache: ") + e.what());
+        redis_client.reset();
+      }
+    }
+
     auto email_service = std::make_shared<EmailService>(config.email());
-    auto auth_service = std::make_shared<AuthService>(pool, config.auth(), config.admin(), email_service);
+    auto auth_service = std::make_shared<AuthService>(
+        pool, config.auth(), config.admin(), email_service, redis_client);
     auto ppt_service = std::make_shared<PptService>(pool);
 
     std::shared_ptr<IPowerPointServiceFactory> factory;
@@ -98,7 +128,26 @@ int main(int argc, char* argv[]) {
     auto material_service = std::make_shared<MaterialService>(
         pool, config.material(), qwen_key, config.generation().python_binary);
 
-    auto assistant_service = std::make_shared<AssistantService>(qwen_key, 30);
+    // ── MongoDB（可选）──────────────────────────────────────────────────────
+    std::shared_ptr<MongoClient> mongo_client;
+    if (config.mongodb().enabled) {
+      try {
+        mongo_client = std::make_shared<MongoClient>(
+            config.mongodb().uri, config.mongodb().database);
+        if (mongo_client->IsConnected()) {
+          Logger::Info("MongoDB connected: " + config.mongodb().uri +
+                       " / " + config.mongodb().database);
+        } else {
+          Logger::Warn("MongoDB connection failed — chat persistence disabled.");
+          mongo_client.reset();
+        }
+      } catch (const std::exception& e) {
+        Logger::Warn(std::string("MongoDB init failed: ") + e.what());
+        mongo_client.reset();
+      }
+    }
+
+    auto assistant_service = std::make_shared<AssistantService>(qwen_key, 30, mongo_client);
 
     // 将 Qwen 配置注入 GenerationConfig，供 AI 原生链路使用
     GenerationConfig gen_config = config.generation();
@@ -119,7 +168,10 @@ int main(int argc, char* argv[]) {
                                  s3_client,
                                  wanx_client,
                                  thread_pool,
-                                 material_service);
+                                 material_service,
+                                 redis_client,
+                                 config.redis().ttl_ppt_status,
+                                 config.redis().ttl_ppt_history);
     TemplateController template_controller(template_service);
     ModelController model_controller(model_service);
 
@@ -159,6 +211,9 @@ int main(int argc, char* argv[]) {
 
     router.AddRoute("GET", "/api/auth/user", [&auth_controller](const HttpRequest& request) {
       return auth_controller.CurrentUser(request);
+    });
+    router.AddRoute("POST", "/api/auth/password/change", [&auth_controller](const HttpRequest& request) {
+      return auth_controller.ChangePassword(request);
     });
 
     router.AddRoute("POST", "/api/ppt/generate", [&ppt_controller](const HttpRequest& request) {
@@ -213,12 +268,21 @@ int main(int argc, char* argv[]) {
     router.AddRoute("GET", "/api/templates/file", [&template_controller](const HttpRequest& request) {
       return template_controller.Download(request);
     });
+    router.AddRoute("GET", "/api/templates/preview", [&template_controller](const HttpRequest& request) {
+      return template_controller.Preview(request);
+    });
 
     router.AddRoute("GET", "/api/models", [&model_controller](const HttpRequest& request) {
       return model_controller.List(request);
     });
     router.AddRoute("POST", "/api/ppt/outline", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Outline(request);
+    });
+    router.AddRoute("POST", "/api/ppt/batch_download", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.BatchDownload(request);
+    });
+    router.AddRoute("GET", "/api/ppt/batch_zip", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.BatchDownloadFile(request);
     });
 
     router.AddRoute("POST", "/api/material/upload", [&material_controller](const HttpRequest& request) {
@@ -239,10 +303,56 @@ int main(int argc, char* argv[]) {
     router.AddRoute("DELETE", "/api/material", [&material_controller](const HttpRequest& request) {
       return material_controller.Delete(request);
     });
+    router.AddRoute("POST", "/api/material/batch_upload", [&material_controller](const HttpRequest& request) {
+      return material_controller.BatchUpload(request);
+    });
+    router.AddRoute("GET", "/api/material/batch_status", [&material_controller](const HttpRequest& request) {
+      return material_controller.BatchStatus(request);
+    });
 
     router.AddRoute("POST", "/api/assistant/chat", [&assistant_controller](const HttpRequest& request) {
       return assistant_controller.Chat(request);
     });
+
+    // ── 会话持久化端点 ──────────────────────────────────────────────────────
+    // 精确路径：不含 session_id 的操作
+    router.AddRoute("POST", "/api/assistant/sessions",
+        [&assistant_controller](const HttpRequest& request) {
+          return assistant_controller.CreateSession(request);
+        });
+    router.AddRoute("GET", "/api/assistant/sessions",
+        [&assistant_controller](const HttpRequest& request) {
+          return assistant_controller.ListSessions(request);
+        });
+
+    // 前缀路径：含 session_id 的子路径（路由器按最长前缀匹配）
+    // GET  /api/assistant/sessions/{id}/messages
+    router.AddPrefixRoute("GET", "/api/assistant/sessions/",
+        [&assistant_controller](const HttpRequest& request) {
+          // path 以 /messages 结尾
+          if (request.path.size() > 9 &&
+              request.path.substr(request.path.size() - 9) == "/messages") {
+            return assistant_controller.GetMessages(request);
+          }
+          return HttpResponse::Json(404, ErrorJson("NOT_FOUND", "Route not found"));
+        });
+
+    // POST /api/assistant/sessions/{id}/chat
+    router.AddPrefixRoute("POST", "/api/assistant/sessions/",
+        [&assistant_controller](const HttpRequest& request) {
+          // path 以 /chat 结尾
+          if (request.path.size() > 5 &&
+              request.path.substr(request.path.size() - 5) == "/chat") {
+            return assistant_controller.ChatInSession(request);
+          }
+          return HttpResponse::Json(404, ErrorJson("NOT_FOUND", "Route not found"));
+        });
+
+    // DELETE /api/assistant/sessions/{id}
+    router.AddPrefixRoute("DELETE", "/api/assistant/sessions/",
+        [&assistant_controller](const HttpRequest& request) {
+          return assistant_controller.DeleteSession(request);
+        });
 
     HttpServer server(config.server(), router);
     server.Start();

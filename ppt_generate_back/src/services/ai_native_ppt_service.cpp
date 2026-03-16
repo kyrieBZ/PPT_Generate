@@ -319,7 +319,9 @@ bool AiNativePptService::GenerateDesignSpec(const std::string& brief_json,
                                              bool include_images,
                                              bool include_charts,
                                              std::string& out_spec_json,
-                                             std::string& error) const {
+                                             std::string& error,
+                                             int total_slides,
+                                             const ProgressCallback& on_progress) const {
   // 解析 brief，提取 design_spec 全局信息
   nlohmann::json brief;
   try {
@@ -486,6 +488,15 @@ bool AiNativePptService::GenerateDesignSpec(const std::string& brief_json,
               + " raw=" + arr_str.substr(0, 200);
       return false;
     }
+
+    // 每个 batch 完成后上报进度（Phase 2 占进度区间 25%~52%）
+    if (on_progress && total_slides > 0) {
+      const int batches_total = (total_slides + kDesignSpecBatchSize - 1) / kDesignSpecBatchSize;
+      const int batch_idx = batch_start / kDesignSpecBatchSize;
+      const int prog = 25 + static_cast<int>((batch_idx + 1) * 27.0 / batches_total);
+      on_progress(prog, "设计版式",
+                  "正在设计第 " + std::to_string(batch_end) + "/" + std::to_string(total_slides) + " 张幻灯片布局...");
+    }
   }
 
   // 组合最终 DesignSpec
@@ -502,7 +513,9 @@ bool AiNativePptService::GenerateDesignSpec(const std::string& brief_json,
 bool AiNativePptService::FillSlideContents(const std::string& topic,
                                             const std::string& brief_json,
                                             std::string& inout_spec_json,
-                                            std::string& error) const {
+                                            std::string& error,
+                                            int total_slides,
+                                            const ProgressCallback& on_progress) const {
   nlohmann::json spec;
   try {
     spec = nlohmann::json::parse(inout_spec_json);
@@ -570,63 +583,66 @@ bool AiNativePptService::FillSlideContents(const std::string& topic,
     if (text.empty()) {
       Logger::Warn("AiNativePptService: Phase 3 slide " + std::to_string(idx)
                    + " 内容生成失败: " + call_error + "，使用占位内容");
-      // 降级：使用简单占位内容
       slide["title"] = topic + " - 第" + std::to_string(idx + 1) + "页";
       slide["subtitle"] = "";
       slide["notes"] = "";
-      continue;
-    }
+    } else {
+      const std::string content_json_str = ExtractJson(text);
+      try {
+        auto content = nlohmann::json::parse(content_json_str);
+        const std::string title    = content.value("title", "");
+        const std::string subtitle = content.value("subtitle", "");
+        const std::string notes    = content.value("notes", "");
+        const std::string img_prompt = content.value("image_prompt", "");
 
-    const std::string content_json_str = ExtractJson(text);
-    try {
-      auto content = nlohmann::json::parse(content_json_str);
-      const std::string title    = content.value("title", "");
-      const std::string subtitle = content.value("subtitle", "");
-      const std::string notes    = content.value("notes", "");
-      const std::string img_prompt = content.value("image_prompt", "");
-
-      if (!title.empty()) slide["title"] = title;
-      if (!subtitle.empty()) slide["subtitle"] = subtitle;
-      if (!notes.empty()) slide["notes"] = notes;
-      if (!img_prompt.empty() && slide.value("image_prompt", "").empty()) {
-        slide["image_prompt"] = img_prompt;
-      }
-
-      // 替换 elements 中的占位符
-      std::vector<std::string> bullets;
-      if (content.contains("bullets") && content["bullets"].is_array()) {
-        for (const auto& b : content["bullets"]) {
-          if (b.is_string()) bullets.push_back(b.get<std::string>());
+        if (!title.empty()) slide["title"] = title;
+        if (!subtitle.empty()) slide["subtitle"] = subtitle;
+        if (!notes.empty()) slide["notes"] = notes;
+        if (!img_prompt.empty() && slide.value("image_prompt", "").empty()) {
+          slide["image_prompt"] = img_prompt;
         }
-      }
 
-      if (slide.contains("elements") && slide["elements"].is_array()) {
-        for (auto& el : slide["elements"]) {
-          if (el["type"] == "text") {
-            std::string c = el.value("content", "");
-            if (c == "__TITLE__") el["content"] = title;
-            else if (c == "__SUBTITLE__") el["content"] = subtitle;
-            else if (c == "__BODY__") el["content"] = (!bullets.empty() ? bullets[0] : "");
-          } else if (el["type"] == "bullets") {
-            if (el.contains("items") && el["items"].is_array() && !bullets.empty()) {
-              nlohmann::json new_items = nlohmann::json::array();
-              for (size_t bi = 0; bi < el["items"].size() && bi < bullets.size(); ++bi) {
-                new_items.push_back(bullets[bi]);
+        std::vector<std::string> bullets;
+        if (content.contains("bullets") && content["bullets"].is_array()) {
+          for (const auto& b : content["bullets"]) {
+            if (b.is_string()) bullets.push_back(b.get<std::string>());
+          }
+        }
+
+        if (slide.contains("elements") && slide["elements"].is_array()) {
+          for (auto& el : slide["elements"]) {
+            if (el["type"] == "text") {
+              std::string c = el.value("content", "");
+              if (c == "__TITLE__") el["content"] = title;
+              else if (c == "__SUBTITLE__") el["content"] = subtitle;
+              else if (c == "__BODY__") el["content"] = (!bullets.empty() ? bullets[0] : "");
+            } else if (el["type"] == "bullets") {
+              if (el.contains("items") && el["items"].is_array() && !bullets.empty()) {
+                nlohmann::json new_items = nlohmann::json::array();
+                for (size_t bi = 0; bi < el["items"].size() && bi < bullets.size(); ++bi) {
+                  new_items.push_back(bullets[bi]);
+                }
+                for (size_t bi = el["items"].size(); bi < bullets.size(); ++bi) {
+                  new_items.push_back(bullets[bi]);
+                }
+                el["items"] = new_items;
               }
-              // 如果 bullets 比 items 多，补充剩余
-              for (size_t bi = el["items"].size(); bi < bullets.size(); ++bi) {
-                new_items.push_back(bullets[bi]);
-              }
-              el["items"] = new_items;
             }
           }
         }
+      } catch (const std::exception& e) {
+        Logger::Warn("AiNativePptService: Phase 3 slide " + std::to_string(idx)
+                     + " JSON 解析失败: " + e.what());
+        slide["title"] = topic + " - 第" + std::to_string(idx + 1) + "页";
       }
+    }
 
-    } catch (const std::exception& e) {
-      Logger::Warn("AiNativePptService: Phase 3 slide " + std::to_string(idx)
-                   + " JSON 解析失败: " + e.what());
-      slide["title"] = topic + " - 第" + std::to_string(idx + 1) + "页";
+    // 每张幻灯片完成后上报进度（Phase 3 占进度区间 52%~72%）
+    if (on_progress && total_slides > 0) {
+      const int slide_done = idx + 1;
+      const int prog = 52 + static_cast<int>(slide_done * 20.0 / total_slides);
+      on_progress(prog, "填充内容",
+                  "正在填充第 " + std::to_string(slide_done) + "/" + std::to_string(total_slides) + " 张幻灯片内容...");
     }
   }
 
@@ -641,7 +657,9 @@ bool AiNativePptService::FetchImages(std::string& inout_spec_json,
                                       const AiNativeGenerationConfig& config,
                                       std::uint64_t request_id,
                                       WanxiangImageClient* wanx_client,
-                                      std::string& error) const {
+                                      std::string& error,
+                                      int total_images,
+                                      const ProgressCallback& on_progress) const {
   if (!wanx_client || !wanx_client->IsEnabled()) {
     Logger::Warn("AiNativePptService: Phase 4 跳过（Wanxiang 未启用）");
     return true;
@@ -731,7 +749,14 @@ bool AiNativePptService::FetchImages(std::string& inout_spec_json,
       } else {
         Logger::Warn("AiNativePptService: Phase 4 图片下载失败: " + dl_error + " url=" + urls[0]);
       }
+
+      // 每张图片完成后上报进度（Phase 4 占进度区间 72%~88%）
       ++img_global_idx;
+      if (on_progress && total_images > 0) {
+        const int prog = 72 + static_cast<int>(img_global_idx * 16.0 / total_images);
+        on_progress(prog, "配图生成",
+                    "正在生成第 " + std::to_string(img_global_idx) + "/" + std::to_string(total_images) + " 张配图...");
+      }
     }
   }
 
@@ -809,32 +834,40 @@ bool AiNativePptService::Generate(const std::string& topic,
                                    std::string& error_message,
                                    bool include_images,
                                    bool include_charts,
-                                   WanxiangImageClient* wanx_client) const {
+                                   WanxiangImageClient* wanx_client,
+                                   ProgressCallback on_progress,
+                                   const std::string& material_context) const {
   if (!IsEnabled()) {
     error_message = "AiNativePptService: Qwen API key 未配置";
     return false;
   }
 
+  const std::string effective_topic = material_context.empty()
+                                          ? topic
+                                          : material_context + "\n主题：「" + topic + "」";
+
   Logger::Info("AiNativePptService: 开始生成，主题=" + topic
                + "，页数=" + std::to_string(pages)
                + "，include_images=" + (include_images ? "true" : "false")
-               + "，include_charts=" + (include_charts ? "true" : "false"));
+               + "，include_charts=" + (include_charts ? "true" : "false")
+               + (material_context.empty() ? "" : "，使用文献约束"));
 
-  // Phase 1: 创意策划
+  // Phase 1: 创意策划（进度 10%~25%）
+  if (on_progress) on_progress(10, "AI 创意分析", "正在分析主题，生成设计创意方案...");
   std::string brief_json;
   std::string phase1_error;
-  if (!GenerateCreativeBrief(topic, style, pages, ai_style_prompt, brief_json, phase1_error)) {
+  if (!GenerateCreativeBrief(effective_topic, style, pages, ai_style_prompt, brief_json, phase1_error)) {
     error_message = "Phase 1 失败: " + phase1_error;
     return false;
   }
   Logger::Info("AiNativePptService: Phase 1 完成，brief 长度=" + std::to_string(brief_json.size()));
+  if (on_progress) on_progress(25, "设计版式", "创意方案已生成，开始设计每张幻灯片版式...");
 
-  // 构建大纲 JSON（若无外部大纲，从 brief 的 slide_structure 构造）
+  // 构建大纲 JSON
   std::string outline_json;
   if (!outline.empty()) {
     outline_json = OutlineToJson(outline);
   } else {
-    // 从 brief 的 slide_structure 构建
     try {
       auto brief = nlohmann::json::parse(brief_json);
       if (brief.contains("slide_structure") && brief["slide_structure"].is_array()) {
@@ -842,7 +875,6 @@ bool AiNativePptService::Generate(const std::string& topic,
       }
     } catch (...) {}
     if (outline_json.empty()) {
-      // 生成默认大纲
       nlohmann::json default_outline = nlohmann::json::array();
       default_outline.push_back({{"index", 0}, {"role", "封面"}, {"layout_type", "hero_title"}});
       for (int i = 1; i < pages - 1; ++i) {
@@ -853,36 +885,59 @@ bool AiNativePptService::Generate(const std::string& topic,
     }
   }
 
-  // Phase 2: 设计规格生成（传入 include_images/include_charts 控制元素类型）
+  // 计算实际幻灯片总数（用于进度计算）
+  int total_slides = pages;
+  try {
+    auto oa = nlohmann::json::parse(outline_json);
+    if (oa.is_array()) total_slides = static_cast<int>(oa.size());
+  } catch (...) {}
+
+  // Phase 2: 设计规格生成，每个 batch 完成时通过回调上报（25%~52%）
   std::string spec_json;
   std::string phase2_error;
-  if (!GenerateDesignSpec(brief_json, outline_json, topic, include_images, include_charts, spec_json, phase2_error)) {
+  if (!GenerateDesignSpec(brief_json, outline_json, effective_topic, include_images, include_charts,
+                          spec_json, phase2_error, total_slides, on_progress)) {
     error_message = "Phase 2 失败: " + phase2_error;
     return false;
   }
   Logger::Info("AiNativePptService: Phase 2 完成，spec 长度=" + std::to_string(spec_json.size()));
+  if (on_progress) on_progress(52, "填充内容", "版式设计完成，开始为每张幻灯片填充内容...");
 
-  // Phase 3: 填充幻灯片内容
+  // Phase 3: 填充幻灯片内容，每张完成时上报（52%~72%）
   std::string phase3_error;
-  if (!FillSlideContents(topic, brief_json, spec_json, phase3_error)) {
-    // Phase 3 失败不致命，继续用占位内容渲染
+  if (!FillSlideContents(effective_topic, brief_json, spec_json, phase3_error, total_slides, on_progress)) {
     Logger::Warn("AiNativePptService: Phase 3 部分失败: " + phase3_error);
   }
   Logger::Info("AiNativePptService: Phase 3 完成");
 
-  // Phase 4: 图片生成（仅当 include_images=true 且 wanx_client 可用时执行）
+  // Phase 4: 图片生成，每张完成时上报（72%~88%）
   if (include_images && wanx_client && wanx_client->IsEnabled()) {
-    // 用 request_id 作为图片文件名的一部分（取 output_path hash 代替）
+    // 预先统计需要生成图片的数量
+    int image_count = 0;
+    try {
+      auto spec = nlohmann::json::parse(spec_json);
+      if (spec.contains("slides") && spec["slides"].is_array()) {
+        for (const auto& s : spec["slides"]) {
+          if (!s.contains("elements")) continue;
+          for (const auto& el : s["elements"]) {
+            if (el.value("type", "") == "image") ++image_count;
+          }
+        }
+      }
+    } catch (...) {}
+    if (image_count == 0) image_count = 1;  // 防止除零
+
+    if (on_progress) on_progress(72, "配图生成", "正在为幻灯片生成 AI 配图...");
     const std::uint64_t req_id = std::hash<std::string>{}(output_path) & 0xFFFFFFFF;
     std::string phase4_error;
-    if (!FetchImages(spec_json, config, req_id, wanx_client, phase4_error)) {
+    if (!FetchImages(spec_json, config, req_id, wanx_client, phase4_error, image_count, on_progress)) {
       Logger::Warn("AiNativePptService: Phase 4 图片获取部分失败: " + phase4_error);
-      // Phase 4 失败不致命，继续渲染（图片位置显示灰色占位）
     }
     Logger::Info("AiNativePptService: Phase 4 完成");
   }
 
   // Phase 5: 渲染
+  if (on_progress) on_progress(88, "渲染文件", "正在将内容渲染为 PPT 文件...");
   std::string render_error;
   if (!RunAiNativeBuilder(spec_json, output_path, config, render_error)) {
     error_message = "Phase 5 渲染失败: " + render_error;

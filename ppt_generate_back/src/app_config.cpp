@@ -281,6 +281,70 @@ MaterialConfig ParseMaterial(const nlohmann::json& json, const std::filesystem::
   return cfg;
 }
 
+MongoConfig ParseMongo(const nlohmann::json& json) {
+  MongoConfig cfg;
+  if (auto it = json.find("uri"); it != json.end() && it->is_string()) {
+    cfg.uri = *it;
+  }
+  if (auto it = json.find("database"); it != json.end() && it->is_string()) {
+    cfg.database = *it;
+  }
+  if (auto it = json.find("enabled"); it != json.end() && it->is_boolean()) {
+    cfg.enabled = it->get<bool>();
+  }
+  if (cfg.uri.empty()) {
+    cfg.uri = "mongodb://localhost:27017";
+  }
+  if (cfg.database.empty()) {
+    cfg.database = "ppt_generate_chat";
+  }
+  return cfg;
+}
+
+RedisConfig ParseRedis(const nlohmann::json& json) {
+  RedisConfig cfg;
+  if (auto it = json.find("host"); it != json.end() && it->is_string()) {
+    cfg.host = *it;
+  }
+  if (auto it = json.find("port"); it != json.end() && it->is_number_unsigned()) {
+    cfg.port = static_cast<std::uint16_t>(it->get<std::uint32_t>());
+  }
+  if (auto it = json.find("password"); it != json.end() && it->is_string()) {
+    cfg.password = *it;
+  }
+  if (auto it = json.find("db"); it != json.end() && it->is_number_integer()) {
+    cfg.db = it->get<int>();
+  }
+  if (auto it = json.find("pool_size"); it != json.end() && it->is_number_unsigned()) {
+    cfg.pool_size = it->get<int>();
+  }
+  if (auto it = json.find("connect_timeout_ms"); it != json.end() && it->is_number_unsigned()) {
+    cfg.connect_timeout_ms = it->get<int>();
+  }
+  if (auto it = json.find("socket_timeout_ms"); it != json.end() && it->is_number_unsigned()) {
+    cfg.socket_timeout_ms = it->get<int>();
+  }
+  if (auto it = json.find("enabled"); it != json.end() && it->is_boolean()) {
+    cfg.enabled = it->get<bool>();
+  }
+  if (auto it = json.find("ttl"); it != json.end() && it->is_object()) {
+    const auto& ttl = *it;
+    if (auto jt = ttl.find("auth_token"); jt != ttl.end() && jt->is_number_unsigned()) {
+      cfg.ttl_auth_token = jt->get<int>();
+    }
+    if (auto jt = ttl.find("ppt_status"); jt != ttl.end() && jt->is_number_unsigned()) {
+      cfg.ttl_ppt_status = jt->get<int>();
+    }
+    if (auto jt = ttl.find("ppt_history"); jt != ttl.end() && jt->is_number_unsigned()) {
+      cfg.ttl_ppt_history = jt->get<int>();
+    }
+  }
+  if (cfg.pool_size <= 0) cfg.pool_size = 4;
+  if (cfg.connect_timeout_ms <= 0) cfg.connect_timeout_ms = 200;
+  if (cfg.socket_timeout_ms <= 0) cfg.socket_timeout_ms = 500;
+  return cfg;
+}
+
 S3Config ParseS3(const nlohmann::json& json) {
   S3Config cfg;
   if (auto it = json.find("endpoint"); it != json.end() && it->is_string()) {
@@ -368,6 +432,19 @@ AppConfig AppConfig::Load(const std::string& path) {
     config.material_ = ParseMaterial(*it, project_root);
   } else {
     config.material_ = ParseMaterial(nlohmann::json::object(), project_root);
+  }
+
+  if (auto it = data.find("mongodb"); it != data.end()) {
+    config.mongodb_ = ParseMongo(*it);
+  }
+
+  if (auto it = data.find("redis"); it != data.end()) {
+    config.redis_ = ParseRedis(*it);
+  }
+  // auth.token_ttl_minutes 优先于 redis.ttl.auth_token（保持一致）
+  if (config.redis_.ttl_auth_token <= 0) {
+    config.redis_.ttl_auth_token =
+        static_cast<int>(config.auth_.token_ttl_minutes) * 60;
   }
 
   if (config.database_.user.empty() || config.database_.name.empty()) {

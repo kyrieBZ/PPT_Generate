@@ -239,8 +239,13 @@ std::string BuildSlidesPromptFromOutline(const std::string& topic,
   prompt << "你是一名资深中文PPT设计专家，请根据以下大纲为主题【" << topic << "】"
          << "生成每页PPT内容：\n"
          << outline_text.str();
+  const bool strict_material = (topic.find("关键数据") != std::string::npos || topic.find("参考材料关键信息") != std::string::npos);
+  if (strict_material) {
+    prompt << "【重要】上文若包含「参考材料关键信息」：正文与图表中的所有数字、比例、结论必须严格来自该材料，禁止编造或篡改。";
+  }
   prompt << "注意：大纲中的 title、key_points、summary 只是提纲，请你基于它们进行归纳、重写和适度扩展，"
-         << "严禁逐字照抄原文。每页的 bullets 需要："
+         << (strict_material ? "表述可精简但数据与事实必须与文献一致；" : "严禁逐字照抄原文。")
+         << "每页的 bullets 需要："
          << "1）用完整通顺的短句表达关键信息；"
          << "2）可以适当补充背景说明、简单示例或过渡语；"
          << "3）在保持主题不改变的前提下，允许新增1-2条补充要点；"
@@ -255,8 +260,12 @@ std::string BuildSlidesPromptFromOutline(const std::string& topic,
            << "\"items\":[{\"label\":\"名称\",\"value\":数值},...]}，"
            << "数据项3-6条，value为数字（占比类型value为百分比数字如45.0）。"
            << "图表类型选择规则：各项之和为100%或占比分布用pie，"
-           << "各项独立数量对比用bar，时间序列或趋势用line，少量分类占比(<=5项)用doughnut。"
-           << "若该页无适合的量化数据则省略chart_data字段。";
+           << "各项独立数量对比用bar，时间序列或趋势用line，少量分类占比(<=5项)用doughnut。";
+    if (strict_material) {
+      prompt << "若上文有「参考材料关键信息」，chart_data 的 items 必须全部来自其中「关键数据」，禁止编造数字；无匹配数据则省略chart_data。";
+    } else {
+      prompt << "若该页无适合的量化数据则省略chart_data字段。";
+    }
   }
   prompt << "输出严格的JSON数组，数组中每个元素包含字段："
          << "title（字符串，需与大纲对应），"
@@ -298,8 +307,13 @@ std::string BuildSlidesPromptFromOutlineWithLayout(const std::string& topic,
          << outline_text.str();
   prompt << "版式约束 layout_guide(JSON数组，索引对应页码，从0开始)如下：\n"
          << layout_guide_json << "\n";
+  const bool strict_material_layout = (topic.find("关键数据") != std::string::npos || topic.find("参考材料关键信息") != std::string::npos);
+  if (strict_material_layout) {
+    prompt << "【重要】上文若包含「参考材料关键信息」：正文与图表中的所有数字、比例、结论必须严格来自该材料，禁止编造或篡改。";
+  }
   prompt << "注意：大纲中的 title、summary、key_points 只是提纲，请你在满足版式约束的前提下进行归纳、重写和适度扩展，"
-         << "严禁逐字照抄原文。每页的 bullet_groups / bullets 需要："
+         << (strict_material_layout ? "表述可精简但数据与事实必须与文献一致；" : "严禁逐字照抄原文。")
+         << "每页的 bullet_groups / bullets 需要："
          << "1）使用简洁有力的短句；"
          << "2）可以补充背景说明或简单示例；"
          << "3）在不超出对应 max_bullets/max_chars 的范围内，适度新增1-2条补充要点；"
@@ -314,8 +328,12 @@ std::string BuildSlidesPromptFromOutlineWithLayout(const std::string& topic,
            << "\"items\":[{\"label\":\"名称\",\"value\":数值},...]}，"
            << "数据项3-6条，value为数字（占比类型value为百分比数字如45.0）。"
            << "图表类型选择规则：各项之和为100%或占比分布用pie，"
-           << "各项独立数量对比用bar，时间序列或趋势用line，少量分类占比(<=5项)用doughnut。"
-           << "若该页无适合的量化数据则省略chart_data字段。";
+           << "各项独立数量对比用bar，时间序列或趋势用line，少量分类占比(<=5项)用doughnut。";
+    if (strict_material_layout) {
+      prompt << "若上文有「参考材料关键信息」，chart_data 的 items 必须全部来自其中「关键数据」，禁止编造数字；无匹配数据则省略chart_data。";
+    } else {
+      prompt << "若该页无适合的量化数据则省略chart_data字段。";
+    }
   }
   prompt << "输出严格的JSON数组，数组中每个元素包含字段："
          << "title（字符串，需与大纲对应），"
@@ -344,6 +362,10 @@ std::string BuildSlidesPromptWithLayout(const std::string& topic,
   }
   prompt << "版式约束 layout_guide(JSON数组，索引对应页码，从0开始)如下：\n"
          << layout_guide_json << "\n";
+  const bool strict_material_full = (topic.find("关键数据") != std::string::npos || topic.find("参考材料关键信息") != std::string::npos);
+  if (strict_material_full) {
+    prompt << "【重要】上文若包含「参考材料关键信息」：所有数字、比例、结论及图表数据必须严格来自该材料，禁止编造或篡改。";
+  }
   if (include_images) {
     prompt << "每页需要1-2个图片创意描述，突出场景、风格或配色，供后续图片检索使用。";
   }
@@ -354,8 +376,12 @@ std::string BuildSlidesPromptWithLayout(const std::string& topic,
            << "\"items\":[{\"label\":\"名称\",\"value\":数值},...]}，"
            << "数据项3-6条，value为数字（占比类型value为百分比数字如45.0）。"
            << "图表类型选择规则：各项之和为100%或占比分布用pie，"
-           << "各项独立数量对比用bar，时间序列或趋势用line，少量分类占比(<=5项)用doughnut。"
-           << "若该页无适合的量化数据则省略chart_data字段。";
+           << "各项独立数量对比用bar，时间序列或趋势用line，少量分类占比(<=5项)用doughnut。";
+    if (strict_material_full) {
+      prompt << "若上文有「参考材料关键信息」，chart_data 的 items 必须全部来自其中「关键数据」，禁止编造数字；无匹配数据则省略chart_data。";
+    } else {
+      prompt << "若该页无适合的量化数据则省略chart_data字段。";
+    }
   }
   prompt << "输出严格的JSON数组，数组中每个元素包含字段："
          << "title（字符串，<=18个汉字），"

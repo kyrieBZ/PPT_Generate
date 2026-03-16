@@ -3,6 +3,10 @@
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <chrono>
+#include <iomanip>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 
@@ -15,13 +19,14 @@ constexpr const char* kQwenEndpoint =
 
 constexpr const char* kDefaultModel = "qwen-turbo";
 
+constexpr int kContextMessages = 10;  // 每次调 LLM 带入的最大历史条数
+
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
   size_t total = size * nmemb;
   static_cast<std::string*>(userp)->append(static_cast<char*>(contents), total);
   return total;
 }
 
-// 从 LLM 响应 JSON 中提取文本内容
 std::string ExtractText(const nlohmann::json& resp) {
   try {
     if (resp.contains("output")) {
@@ -41,25 +46,68 @@ std::string ExtractText(const nlohmann::json& resp) {
   return {};
 }
 
-// 从原始文本中提取 JSON（处理 LLM 可能输出 markdown 代码块的情况）
 std::string ExtractJsonFromText(const std::string& text) {
-  // 尝试找到 { 开头的 JSON
   auto start = text.find('{');
-  auto end = text.rfind('}');
+  auto end   = text.rfind('}');
   if (start != std::string::npos && end != std::string::npos && end > start) {
     return text.substr(start, end - start + 1);
   }
   return text;
 }
 
+// 生成 UUID v4（简单实现，无需外部库）
+std::string GenerateUUID() {
+  static std::mt19937 rng(
+      static_cast<std::uint32_t>(
+          std::chrono::steady_clock::now().time_since_epoch().count()));
+  static std::uniform_int_distribution<int> dist(0, 15);
+  static const char* hex = "0123456789abcdef";
+
+  std::string uuid = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
+  for (char& c : uuid) {
+    if (c == 'x') {
+      c = hex[dist(rng)];
+    } else if (c == 'y') {
+      c = hex[(dist(rng) & 0x3) | 0x8];
+    }
+  }
+  return uuid;
+}
+
+// 当前时间的 ISO 8601 字符串（UTC）
+std::string NowISO() {
+  auto now  = std::chrono::system_clock::now();
+  auto time = std::chrono::system_clock::to_time_t(now);
+  std::ostringstream oss;
+  oss << std::put_time(std::gmtime(&time), "%Y-%m-%dT%H:%M:%SZ");
+  return oss.str();
+}
+
+// 截取首条消息的前 30 个字符作为会话标题
+std::string MakeTitle(const std::string& message) {
+  if (message.size() <= 30) return message;
+  // 按 UTF-8 边界截取（简单处理：取前 30 字节后截到最近 ASCII 空格）
+  std::string title = message.substr(0, 30);
+  title += "...";
+  return title;
+}
+
 }  // namespace
 
-AssistantService::AssistantService(std::string api_key,
-                                   std::uint32_t timeout_seconds)
-    : api_key_(std::move(api_key)), timeout_seconds_(timeout_seconds) {}
+// ── 静态哑变量 ────────────────────────────────────────────────────────────────
+std::string AssistantService::dummy_error_;
 
+// ── 构造函数 ──────────────────────────────────────────────────────────────────
+AssistantService::AssistantService(std::string api_key,
+                                   std::uint32_t timeout_seconds,
+                                   std::shared_ptr<MongoClient> mongo)
+    : api_key_(std::move(api_key)),
+      timeout_seconds_(timeout_seconds),
+      mongo_(std::move(mongo)) {}
+
+// ── System Prompt ─────────────────────────────────────────────────────────────
 std::string AssistantService::BuildSystemPrompt() const {
-  return R"(你是PPT生成系统的AI助手，名字叫"四夕丽人土土"（简称土土）。
+  return R"(你是PPT生成系统的AI助手，名字叫"四夕丽人土土"，简称"四夕"。请以"四夕"自称，不要使用"土土"。
 你的职责是帮助用户操作PPT生成系统，以友好、简洁的中文回复。
 
 用户会用自然语言描述操作意图，你需要：
@@ -81,7 +129,7 @@ std::string AssistantService::BuildSystemPrompt() const {
 无操作时：{"reply":"回复文本","action":null}
 
 注意：
-- reply 字段必须是友好的中文回复，简洁明了
+- reply 字段必须是友好的中文回复，简洁明了；回复中可用第一人称「四夕」使对话更亲切
 - confirm_text 要清晰描述将要执行的操作，让用户明白后果
 - 如果用户描述的PPT名称在recent_ppts中找不到匹配，在reply中告知用户，action设为null
 - 删除操作的confirm_text要包含"此操作不可恢复"的提示
@@ -98,23 +146,19 @@ std::string AssistantService::BuildUserPrompt(const std::string& message,
   return oss.str();
 }
 
+// ── Qwen API 调用 ─────────────────────────────────────────────────────────────
 std::string AssistantService::CallQwenAPI(const std::string& system_prompt,
                                            const std::string& user_prompt,
                                            const std::vector<ChatMessage>& history,
                                            std::string& error_message) const {
   nlohmann::json messages = nlohmann::json::array();
-
-  // 系统消息
   messages.push_back({{"role", "system"}, {"content", system_prompt}});
 
-  // 历史消息（最多 10 条）
-  const size_t max_history = 10;
+  const size_t max_history = kContextMessages;
   size_t start = history.size() > max_history ? history.size() - max_history : 0;
   for (size_t i = start; i < history.size(); ++i) {
     messages.push_back({{"role", history[i].role}, {"content", history[i].content}});
   }
-
-  // 当前用户消息
   messages.push_back({{"role", "user"}, {"content", user_prompt}});
 
   nlohmann::json payload = {
@@ -163,6 +207,7 @@ std::string AssistantService::CallQwenAPI(const std::string& system_prompt,
   }
 }
 
+// ── LLM 响应解析 ──────────────────────────────────────────────────────────────
 bool AssistantService::ParseLLMResponse(const std::string& llm_text,
                                          AssistantResponse& out_response) const {
   if (llm_text.empty()) {
@@ -190,7 +235,6 @@ bool AssistantService::ParseLLMResponse(const std::string& llm_text,
       if (action_j.contains("intent") && action_j["intent"].is_string()) {
         action.intent = action_j["intent"].get<std::string>();
       }
-
       if (action_j.contains("confirm_text") && action_j["confirm_text"].is_string()) {
         action.confirm_text = action_j["confirm_text"].get<std::string>();
       }
@@ -235,13 +279,13 @@ bool AssistantService::ParseLLMResponse(const std::string& llm_text,
     return true;
   } catch (const std::exception& e) {
     Logger::Warn(std::string("AssistantService: JSON 解析失败，降级为纯文本: ") + e.what());
-    // 降级：把 LLM 原始文本作为回复
     out_response.reply = llm_text;
     out_response.has_action = false;
     return true;
   }
 }
 
+// ── 原有无状态对话（向后兼容）────────────────────────────────────────────────
 bool AssistantService::Chat(const std::string& message,
                              const std::string& context_json,
                              const std::vector<ChatMessage>& history,
@@ -255,8 +299,8 @@ bool AssistantService::Chat(const std::string& message,
 
   const std::string system_prompt = BuildSystemPrompt();
   const std::string user_prompt   = BuildUserPrompt(message, context_json);
-
   const std::string llm_text = CallQwenAPI(system_prompt, user_prompt, history, error_message);
+
   if (llm_text.empty() && !error_message.empty()) {
     out_response.reply = "抱歉，AI 服务暂时不可用，请稍后再试。";
     out_response.has_action = false;
@@ -264,4 +308,246 @@ bool AssistantService::Chat(const std::string& message,
   }
 
   return ParseLLMResponse(llm_text, out_response);
+}
+
+// ── 私有工具方法 ──────────────────────────────────────────────────────────────
+bool AssistantService::ValidateSession(const std::string& session_id,
+                                        std::uint64_t user_id,
+                                        std::string& error_message) {
+  if (!IsPersistenceEnabled()) {
+    error_message = "会话持久化未启用（MongoDB 未连接）";
+    return false;
+  }
+  auto sessions = mongo_->Find(
+      "chat_sessions",
+      {{"session_id", session_id}, {"user_id", static_cast<std::int64_t>(user_id)}});
+  if (sessions.empty()) {
+    error_message = "会话不存在或无权访问";
+    return false;
+  }
+  return true;
+}
+
+bool AssistantService::SaveMessage(const std::string& session_id,
+                                    std::uint64_t user_id,
+                                    const std::string& role,
+                                    const std::string& content) {
+  if (!IsPersistenceEnabled()) return false;
+  nlohmann::json doc = {
+      {"message_id", GenerateUUID()},
+      {"session_id", session_id},
+      {"user_id",    static_cast<std::int64_t>(user_id)},
+      {"role",       role},
+      {"content",    content},
+      {"timestamp",  NowISO()}
+  };
+  return mongo_->InsertOne("chat_messages", doc);
+}
+
+std::vector<ChatMessage> AssistantService::LoadRecentMessages(
+    const std::string& session_id, int n) {
+  std::vector<ChatMessage> result;
+  if (!IsPersistenceEnabled()) return result;
+
+  // 倒序取最近 N 条，再反转为时间升序
+  auto docs = mongo_->Find(
+      "chat_messages",
+      {{"session_id", session_id}},
+      {{"timestamp", -1}},
+      n);
+  std::reverse(docs.begin(), docs.end());
+
+  for (const auto& doc : docs) {
+    ChatMessage msg;
+    if (doc.contains("role") && doc["role"].is_string()) {
+      msg.role = doc["role"].get<std::string>();
+    }
+    if (doc.contains("content") && doc["content"].is_string()) {
+      msg.content = doc["content"].get<std::string>();
+    }
+    if (doc.contains("timestamp") && doc["timestamp"].is_string()) {
+      msg.timestamp = doc["timestamp"].get<std::string>();
+    }
+    if (!msg.role.empty() && !msg.content.empty()) {
+      result.push_back(std::move(msg));
+    }
+  }
+  return result;
+}
+
+void AssistantService::TouchSession(const std::string& session_id,
+                                     const std::string& first_message) {
+  if (!IsPersistenceEnabled()) return;
+  nlohmann::json update = {{"updated_at", NowISO()}};
+  if (!first_message.empty()) {
+    update["title"] = MakeTitle(first_message);
+  }
+  mongo_->UpdateOne(
+      "chat_sessions",
+      {{"session_id", session_id}},
+      update);
+}
+
+// ── 会话管理公开方法 ──────────────────────────────────────────────────────────
+bool AssistantService::CreateSession(std::uint64_t user_id,
+                                      ChatSession& out_session,
+                                      std::string& error_message) {
+  if (!IsPersistenceEnabled()) {
+    error_message = "会话持久化未启用（MongoDB 未连接）";
+    return false;
+  }
+
+  const std::string now = NowISO();
+  out_session.session_id = GenerateUUID();
+  out_session.user_id    = user_id;
+  out_session.title      = "新会话";
+  out_session.created_at = now;
+  out_session.updated_at = now;
+
+  nlohmann::json doc = {
+      {"session_id", out_session.session_id},
+      {"user_id",    static_cast<std::int64_t>(user_id)},
+      {"title",      out_session.title},
+      {"created_at", out_session.created_at},
+      {"updated_at", out_session.updated_at}
+  };
+
+  if (!mongo_->InsertOne("chat_sessions", doc)) {
+    error_message = "创建会话失败，请稍后再试";
+    return false;
+  }
+  return true;
+}
+
+std::vector<ChatSession> AssistantService::ListSessions(std::uint64_t user_id,
+                                                         int limit,
+                                                         std::string& error_message) {
+  std::vector<ChatSession> result;
+  if (!IsPersistenceEnabled()) {
+    error_message = "会话持久化未启用";
+    return result;
+  }
+
+  auto docs = mongo_->Find(
+      "chat_sessions",
+      {{"user_id", static_cast<std::int64_t>(user_id)}},
+      {{"updated_at", -1}},
+      limit);
+
+  for (const auto& doc : docs) {
+    ChatSession s;
+    auto get_str = [&](const char* key) -> std::string {
+      if (doc.contains(key) && doc[key].is_string()) return doc[key].get<std::string>();
+      return {};
+    };
+    s.session_id = get_str("session_id");
+    s.user_id    = user_id;
+    s.title      = get_str("title");
+    s.created_at = get_str("created_at");
+    s.updated_at = get_str("updated_at");
+    if (!s.session_id.empty()) {
+      result.push_back(std::move(s));
+    }
+  }
+  return result;
+}
+
+bool AssistantService::DeleteSession(const std::string& session_id,
+                                      std::uint64_t user_id,
+                                      std::string& error_message) {
+  if (!ValidateSession(session_id, user_id, error_message)) return false;
+
+  // 先删消息，再删会话
+  mongo_->DeleteMany("chat_messages", {{"session_id", session_id}});
+  mongo_->DeleteMany("chat_sessions",
+                     {{"session_id", session_id},
+                      {"user_id", static_cast<std::int64_t>(user_id)}});
+  return true;
+}
+
+std::vector<ChatMessage> AssistantService::GetMessages(const std::string& session_id,
+                                                        std::uint64_t user_id,
+                                                        int limit,
+                                                        std::string& error_message) {
+  std::vector<ChatMessage> empty;
+  if (!ValidateSession(session_id, user_id, error_message)) return empty;
+
+  auto docs = mongo_->Find(
+      "chat_messages",
+      {{"session_id", session_id}},
+      {{"timestamp", 1}},  // 时间升序
+      limit);
+
+  std::vector<ChatMessage> result;
+  for (const auto& doc : docs) {
+    ChatMessage msg;
+    if (doc.contains("role") && doc["role"].is_string()) {
+      msg.role = doc["role"].get<std::string>();
+    }
+    if (doc.contains("content") && doc["content"].is_string()) {
+      msg.content = doc["content"].get<std::string>();
+    }
+    if (doc.contains("timestamp") && doc["timestamp"].is_string()) {
+      msg.timestamp = doc["timestamp"].get<std::string>();
+    }
+    if (!msg.role.empty()) result.push_back(std::move(msg));
+  }
+  return result;
+}
+
+bool AssistantService::ChatInSession(const std::string& session_id,
+                                      std::uint64_t user_id,
+                                      const std::string& user_message,
+                                      const std::string& context_json,
+                                      AssistantResponse& out_response,
+                                      std::string& error_message) {
+  if (!IsEnabled()) {
+    out_response.reply = "AI 助手暂未配置，请联系管理员。";
+    out_response.has_action = false;
+    return true;
+  }
+
+  // 1. 验证会话归属（同时校验持久化是否启用）
+  if (!ValidateSession(session_id, user_id, error_message)) return false;
+
+  // 2. 保存用户消息
+  SaveMessage(session_id, user_id, "user", user_message);
+
+  // 3. 读取历史构建上下文
+  auto history = LoadRecentMessages(session_id, kContextMessages);
+
+  // 4. 调用 LLM
+  const std::string system_prompt = BuildSystemPrompt();
+  const std::string user_prompt   = BuildUserPrompt(user_message, context_json);
+
+  // history 中已包含本次用户消息（SaveMessage 刚写入后 LoadRecent 能读到），
+  // 但 CallQwenAPI 会再追加一条 user 消息，所以传入 history 时排除最后一条
+  std::vector<ChatMessage> history_without_last = history;
+  if (!history_without_last.empty() &&
+      history_without_last.back().role == "user") {
+    history_without_last.pop_back();
+  }
+
+  std::string llm_error;
+  const std::string llm_text = CallQwenAPI(
+      system_prompt, user_prompt, history_without_last, llm_error);
+
+  if (llm_text.empty() && !llm_error.empty()) {
+    Logger::Error("AssistantService::ChatInSession LLM error: " + llm_error);
+    out_response.reply = "抱歉，AI 服务暂时不可用，请稍后再试。";
+    out_response.has_action = false;
+  } else {
+    ParseLLMResponse(llm_text, out_response);
+  }
+
+  // 5. 保存 AI 回复
+  if (!out_response.reply.empty()) {
+    SaveMessage(session_id, user_id, "assistant", out_response.reply);
+  }
+
+  // 6. 更新会话时间，首次消息时设置 title
+  bool is_first = (mongo_->Count("chat_messages", {{"session_id", session_id}}) <= 2);
+  TouchSession(session_id, is_first ? user_message : "");
+
+  return true;
 }

@@ -1,0 +1,32 @@
+[
+  {
+    "id": "qwen-turbo",
+    "name": "通义千问 · 极速模型",
+    "provider": "阿里云通义千问",
+    "locale": "国内",
+    "description": "国产模型，适合中文内容生成与企业数据安全，延迟低。",
+    "latency": "low",
+    "cost": "included",
+    "capabilities": ["中文生成", "知识问答", "PPT大纲"]
+  },
+  {
+    "id": "chatgpt5-global",
+    "name": "ChatGPT 5 (OpenAI)",
+    "provider": "OpenAI",
+    "locale": "国际",
+    "description": "国际通用模型，支持多语言表达与创意场景。",
+    "latency": "medium",
+    "cost": "premium",
+    "capabilities": ["多语言", "创意写作", "图表建议"]
+  },
+  {
+    "id": "future-lab",
+    "name": "Future PPT Lab",
+    "provider": "内部研发",
+    "locale": "自研",
+    "description": "计划基于企业PPT语料训练的专用模型，尚在迭代中。",
+    "latency": "experimental",
+    "cost": "tbd",
+    "capabilities": ["企业语境", "深度定制", "数据对齐"]
+  }
+]

@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <fcntl.h>
+#include <unistd.h>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -509,6 +511,49 @@ std::string ExtractToken(const HttpRequest& request) {
   return {};
 }
 
+// 构建进度文件路径（基于 request_id，生成完成前 output_path 为空时也可用）
+std::string BuildProgressPath(const GenerationConfig& config, std::uint64_t request_id) {
+  std::filesystem::path output_dir(config.output_dir);
+  std::error_code ec;
+  std::filesystem::create_directories(output_dir, ec);
+  return (output_dir / ("progress_" + std::to_string(request_id) + ".json"))
+      .lexically_normal()
+      .string();
+}
+
+// 写入生成进度到文件（progress: 0-100, stage: 阶段描述, step: 当前步骤）
+void WriteProgress(const std::string& progress_path, int progress, const std::string& stage,
+                   const std::string& step = "") {
+  if (progress_path.empty()) return;
+  try {
+    nlohmann::json j;
+    j["progress"] = progress;
+    j["stage"] = stage;
+    if (!step.empty()) j["step"] = step;
+    std::ofstream f(progress_path, std::ios::trunc);
+    if (f) f << j.dump();
+  } catch (...) {}
+}
+
+// 构建错误原因文件路径
+std::string BuildErrorPath(const GenerationConfig& config, std::uint64_t request_id) {
+  std::filesystem::path output_dir(config.output_dir);
+  std::error_code ec;
+  std::filesystem::create_directories(output_dir, ec);
+  return (output_dir / ("error_" + std::to_string(request_id) + ".txt"))
+      .lexically_normal()
+      .string();
+}
+
+// 写入失败原因到文件，供前端轮询读取
+void WriteErrorReason(const std::string& error_path, const std::string& reason) {
+  if (error_path.empty() || reason.empty()) return;
+  try {
+    std::ofstream f(error_path, std::ios::trunc);
+    if (f) f << reason;
+  } catch (...) {}
+}
+
 std::string BuildOutputPath(const GenerationConfig& config,
                             std::uint64_t request_id,
                             const std::string& title,
@@ -893,6 +938,18 @@ bool RunPptxGenFromPreset(const std::vector<SlideContent>& slides,
     if (!slide.layout_hint.empty()) {
       item["layoutHint"] = slide.layout_hint;
     }
+    if (slide.chart_data.has_value()) {
+      const auto& cd = slide.chart_data.value();
+      nlohmann::json chart_json;
+      chart_json["type"] = cd.type;
+      chart_json["title"] = cd.title;
+      nlohmann::json items_arr = nlohmann::json::array();
+      for (const auto& cdi : cd.items) {
+        items_arr.push_back({{"label", cdi.label}, {"value", cdi.value}});
+      }
+      chart_json["items"] = std::move(items_arr);
+      item["chartData"] = std::move(chart_json);
+    }
     payload["slides"].push_back(std::move(item));
   }
 
@@ -1227,12 +1284,36 @@ void DoActualGeneration(
     std::shared_ptr<QwenClient> qwen_client,
     std::shared_ptr<S3Client> s3_client,
     std::shared_ptr<WanxiangImageClient> wanx_client,
-    GenerationConfig generation_config) {
+    GenerationConfig generation_config,
+    std::shared_ptr<RedisClient> redis,
+    int redis_ttl_ppt_status) {
   using namespace std::chrono;
   const auto start_time = steady_clock::now();
   const std::uint64_t request_id = job.ppt_request.id;
   PptMetrics::IncGenerationTotal();
   Logger::Info("generation_start request_id=" + std::to_string(request_id));
+
+  const std::string progress_path = BuildProgressPath(generation_config, request_id);
+  const std::string error_path = BuildErrorPath(generation_config, request_id);
+  WriteProgress(progress_path, 5, "初始化", "正在准备生成环境...");
+
+  // Redis 状态 key
+  const std::string redis_status_key = "ppt:status:" + std::to_string(request_id);
+
+  // 辅助 lambda：写 Redis 进度（Redis 不可用时静默忽略）
+  const auto redis_set_progress = [&](const std::string& status,
+                                      const std::string& progress,
+                                      const std::string& stage) {
+    if (!redis) return;
+    redis->HMSet(redis_status_key, {
+        {"status",   status},
+        {"progress", progress},
+        {"stage",    stage},
+    });
+  };
+
+  // 标记处理中
+  redis_set_progress("processing", "5", "init");
 
   const auto record_end = [&](bool success) {
     const auto elapsed_ms = duration_cast<milliseconds>(steady_clock::now() - start_time).count();
@@ -1253,7 +1334,12 @@ void DoActualGeneration(
 
   auto template_info_opt = template_svc->FindById(job.template_id);
   if (!template_info_opt) {
+    WriteErrorReason(error_path, "模板文件不存在（id: " + job.template_id + "），请尝试更换其他模板后重新生成");
     ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+    if (redis) {
+      redis->HMSet(redis_status_key, {{"status","failed"},{"progress","0"},{"stage","error"}});
+      redis->Expire(redis_status_key, redis_ttl_ppt_status);
+    }
     Logger::Error("DoActualGeneration: template not found " + job.template_id);
     record_end(false);
     return;
@@ -1274,7 +1360,12 @@ void DoActualGeneration(
   }
 
   if (!qwen_client || !qwen_client->IsEnabled()) {
+    WriteErrorReason(error_path, "AI 服务（Qwen）未配置或不可用，请联系管理员检查 API Key 配置");
     ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+    if (redis) {
+      redis->HMSet(redis_status_key, {{"status","failed"},{"progress","0"},{"stage","error"}});
+      redis->Expire(redis_status_key, redis_ttl_ppt_status);
+    }
     record_end(false);
     return;
   }
@@ -1284,8 +1375,9 @@ void DoActualGeneration(
     outline.resize(static_cast<std::size_t>(input.pages));
   }
 
-  // Build material context string if material_id is provided
+  // Build material context string if material_id is provided (and collect data_mentions for chart validation)
   std::string material_context;
+  std::vector<std::string> material_data_mentions;
   if (!input.material_id.empty() && job.material_service) {
     Material mat;
     std::string mat_error;
@@ -1321,7 +1413,8 @@ void DoActualGeneration(
             ctx << "  关键数据: ";
             for (std::size_t i = 0; i < er["data_mentions"].size(); ++i) {
               if (i > 0) ctx << "；";
-              ctx << er["data_mentions"][i].get<std::string>();
+              material_data_mentions.push_back(er["data_mentions"][i].get<std::string>());
+              ctx << material_data_mentions.back();
             }
             ctx << "\n";
           }
@@ -1333,6 +1426,8 @@ void DoActualGeneration(
             }
             ctx << "\n";
           }
+          ctx << "\n【约束】生成 PPT 时：所有数字、比例、统计结果、实验结论必须仅来自以上参考材料，禁止编造或篡改。"
+              << "若某页包含图表(chart_data)，图表的 items 必须全部来自以上「关键数据」，不得使用其他数字。";
           material_context = ctx.str();
           Logger::Info("DoActualGeneration: injecting material context for " + input.material_id);
         } catch (const std::exception& ex) {
@@ -1359,12 +1454,16 @@ void DoActualGeneration(
 
   if (!is_ai_native) {
     if (outline.empty()) {
+      WriteProgress(progress_path, 15, "生成大纲", "AI 正在分析主题，规划内容结构...");
+      redis_set_progress("processing", "15", "outline");
       std::string outline_error;
       if (!qwen_client->GenerateOutline(enriched_topic, input.pages, template_prompt, outline, outline_error)) {
         Logger::Warn("PPT outline generation failed: " + outline_error);
       }
     }
 
+    WriteProgress(progress_path, 30, "分析版式", "正在加载模板版式信息...");
+    redis_set_progress("processing", "30", "layout");
     const int layout_slide_count = outline.empty()
                                        ? std::max(1, std::min(input.pages, 10))
                                        : static_cast<int>(outline.size());
@@ -1377,6 +1476,8 @@ void DoActualGeneration(
       }
     }
 
+    WriteProgress(progress_path, 45, "生成内容", "AI 正在为每张幻灯片生成详细内容...");
+    redis_set_progress("processing", "45", "slides");
     if (!outline.empty()) {
       if (qwen_client->GenerateSlidesFromOutlineWithLayout(enriched_topic, outline, input.include_images,
                                                            layout_guide_json, slides, qwen_error,
@@ -1403,7 +1504,18 @@ void DoActualGeneration(
 
     if (!generated) {
       Logger::Warn("Qwen slide generation failed: " + qwen_error);
+      std::string reason = "AI 内容生成失败";
+      if (qwen_error.find("Timeout") != std::string::npos || qwen_error.find("timeout") != std::string::npos) {
+        reason = "AI 服务请求超时，主题内容可能过长，请尝试减少页数或简化主题描述后重新生成";
+      } else if (!qwen_error.empty()) {
+        reason = "AI 内容生成失败：" + qwen_error;
+      }
+      WriteErrorReason(error_path, reason);
       ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+      if (redis) {
+        redis->HMSet(redis_status_key, {{"status","failed"},{"progress","0"},{"stage","error"}});
+        redis->Expire(redis_status_key, redis_ttl_ppt_status);
+      }
       record_end(false);
       return;
     }
@@ -1427,11 +1539,46 @@ void DoActualGeneration(
     slides = std::move(with_sections);
   }
 
+  // 文献模式下校验图表数据：若某页 chart_data 中的数值/标签未在文献 data_mentions 中出现则清除该页图表
+  if (!material_context.empty() && input.include_charts && !material_data_mentions.empty()) {
+    for (auto& s : slides) {
+      if (!s.chart_data.has_value() || s.chart_data->items.empty()) continue;
+      const auto& cd = s.chart_data.value();
+      bool any_unmatched = false;
+      for (const auto& item : cd.items) {
+        std::string val_str;
+        if (item.value == static_cast<double>(static_cast<int>(item.value)))
+          val_str = std::to_string(static_cast<int>(item.value));
+        else
+          val_str = std::to_string(item.value);
+        bool found = false;
+        for (const std::string& m : material_data_mentions) {
+          if (m.find(val_str) != std::string::npos || (!item.label.empty() && m.find(item.label) != std::string::npos)) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          any_unmatched = true;
+          break;
+        }
+      }
+      if (any_unmatched) {
+        Logger::Warn("DoActualGeneration: 清除未在文献关键数据中匹配的图表，标题=" + s.title);
+        s.chart_data = std::nullopt;
+      }
+    }
+  }
+
   // ai_native 模式图片由 AiNativePptService 内部处理，此处跳过
   if (!is_ai_native && input.include_images) {
+    WriteProgress(progress_path, 60, "配图生成", "正在为幻灯片搜索和生成配图...");
+    redis_set_progress("processing", "60", "images");
     AttachImagesWithWanxiangAndUnsplash(generation_config, wanx_client.get(), slides, ppt_request.id, input.topic);
   }
 
+  WriteProgress(progress_path, 80, "渲染文件", "正在将内容渲染为 PPT 文件...");
+  redis_set_progress("processing", "80", "rendering");
   std::string output_path = BuildOutputPath(generation_config, ppt_request.id, input.title, job.user_email);
   Logger::Info("Generating PPT (async): " + output_path);
   std::string generate_error;
@@ -1456,6 +1603,11 @@ void DoActualGeneration(
         generation_config.qwen_api_key,
         generation_config.qwen_timeout_seconds * 2);  // 链路 3 需要更长超时
 
+    // 进度回调：将 AiNativePptService 内部细粒度进度写入进度文件
+    auto ai_progress_cb = [&progress_path](int prog, const std::string& stage, const std::string& step) {
+      WriteProgress(progress_path, prog, stage, step);
+    };
+
     gen_ok = ai_svc->Generate(
         input.topic,
         input.style,
@@ -1467,21 +1619,24 @@ void DoActualGeneration(
         generate_error,
         input.include_images,
         input.include_charts,
-        wanx_client.get());
+        wanx_client.get(),
+        ai_progress_cb,
+        material_context);
 
     if (!gen_ok) {
       const std::string fallback_reason = generate_error;
       Logger::Warn("AiNative generation failed, falling back to style mode: " + fallback_reason);
-      // 降级到链路 2（style 模式）：先用 Qwen 生成幻灯片内容
+      WriteProgress(progress_path, 40, "降级处理", "AI 原生生成遇到问题，切换到预设主题模式...");
       generate_error.clear();
       if (slides.empty()) {
-        // 需要先生成幻灯片内容供 style 模式渲染
         std::string outline_error;
         if (outline.empty()) {
+          WriteProgress(progress_path, 45, "生成大纲", "AI 正在重新生成大纲...");
           qwen_client->GenerateOutline(enriched_topic, input.pages, template_prompt, outline, outline_error);
         }
         std::string slides_error;
         if (!outline.empty()) {
+          WriteProgress(progress_path, 55, "生成内容", "AI 正在生成幻灯片内容...");
           qwen_client->GenerateSlidesFromOutline(enriched_topic, outline, input.include_images,
                                                  slides, slides_error, input.include_charts);
         }
@@ -1490,11 +1645,11 @@ void DoActualGeneration(
                                       input.include_images, slides, slides_error);
         }
       }
+      WriteProgress(progress_path, 75, "渲染文件", "正在将内容渲染为 PPT 文件...");
       nlohmann::json style_options;
       style_options["themePreset"] = "midnight";
       gen_ok = RunPptxGenFromPreset(slides, output_path, input.style,
                                     style_options.dump(), generation_config, generate_error);
-      // 将降级原因写入 warn 文件，供前端轮询时读取
       if (gen_ok) {
         const std::string warn_path = output_path + ".warn";
         std::ofstream wf(warn_path, std::ios::trunc);
@@ -1506,7 +1661,12 @@ void DoActualGeneration(
   } else {
     if (!template_file) {
       Logger::Warn("Template file missing for id: " + template_info_opt->id);
+      WriteErrorReason(error_path, "模板文件丢失（" + template_info_opt->id + "），该模板可能已被删除，请更换其他模板后重新生成");
       ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+      if (redis) {
+        redis->HMSet(redis_status_key, {{"status","failed"},{"progress","0"},{"stage","error"}});
+        redis->Expire(redis_status_key, redis_ttl_ppt_status);
+      }
       record_end(false);
       return;
     }
@@ -1520,6 +1680,8 @@ void DoActualGeneration(
   }
 
   if (gen_ok) {
+    WriteProgress(progress_path, 95, "收尾处理", "PPT 文件生成完成，正在进行最终处理...");
+    redis_set_progress("processing", "95", "finishing");
     ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, output_path, "completed", update_error);
     if (!outline.empty()) {
       AppendOutlineToPreviewJson(output_path, outline);
@@ -1554,10 +1716,41 @@ void DoActualGeneration(
     } else {
       Logger::Warn("PDF generation skipped: " + pdf_error);
     }
+    // Redis：写终态 completed，失效用户历史缓存
+    if (redis) {
+      redis->HMSet(redis_status_key, {
+          {"status",   "completed"},
+          {"progress", "100"},
+          {"stage",    "done"},
+      });
+      redis->Expire(redis_status_key, redis_ttl_ppt_status);
+      redis->Del("ppt:history:user:" + std::to_string(job.user_id));
+    }
+    // 生成完成，删除进度文件和错误文件
+    std::error_code ec;
+    std::filesystem::remove(progress_path, ec);
+    std::filesystem::remove(error_path, ec);
     record_end(true);
   } else {
     Logger::Warn("PPTX generation failed: " + generate_error);
+    std::string reason = "PPT 文件渲染失败";
+    if (!generate_error.empty()) {
+      reason = "PPT 文件渲染失败：" + generate_error;
+    }
+    WriteErrorReason(error_path, reason);
     ppt_svc->UpdateRequestOutput(ppt_request.id, job.user_id, "", "failed", update_error);
+    // Redis：写终态 failed
+    if (redis) {
+      redis->HMSet(redis_status_key, {
+          {"status",   "failed"},
+          {"progress", "0"},
+          {"stage",    "error"},
+      });
+      redis->Expire(redis_status_key, redis_ttl_ppt_status);
+    }
+    // 生成失败，删除进度文件
+    std::error_code ec;
+    std::filesystem::remove(progress_path, ec);
     record_end(false);
   }
 }
@@ -1573,7 +1766,10 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
                            std::shared_ptr<S3Client> s3_client,
                            std::shared_ptr<WanxiangImageClient> wanx_client,
                            std::shared_ptr<ThreadPool> thread_pool,
-                           std::shared_ptr<MaterialService> material_service)
+                           std::shared_ptr<MaterialService> material_service,
+                           std::shared_ptr<RedisClient> redis,
+                           int redis_ttl_ppt_status,
+                           int redis_ttl_ppt_history)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
@@ -1583,7 +1779,10 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
       s3_client_(std::move(s3_client)),
       wanx_client_(std::move(wanx_client)),
       thread_pool_(std::move(thread_pool)),
-      material_service_(std::move(material_service)) {}
+      material_service_(std::move(material_service)),
+      redis_(std::move(redis)),
+      redis_ttl_ppt_status_(redis_ttl_ppt_status),
+      redis_ttl_ppt_history_(redis_ttl_ppt_history) {}
 
 HttpResponse PptController::Generate(const HttpRequest& request) {
   std::string error;
@@ -1666,14 +1865,31 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     job.template_id = template_info_opt->id;
     job.material_service = material_service_;
 
+    // Redis：初始化生成状态 Hash
+    if (redis_) {
+      const std::string sk = "ppt:status:" + std::to_string(ppt_request.id);
+      redis_->HMSet(sk, {
+          {"status",   "queued"},
+          {"progress", "0"},
+          {"stage",    "init"},
+      });
+      redis_->Expire(sk, redis_ttl_ppt_status_);
+      // 失效该用户的历史列表缓存（新任务入队后历史已变化）
+      redis_->Del("ppt:history:user:" + std::to_string(user->id));
+    }
+
     auto ppt_svc = ppt_service_;
     auto template_svc = template_service_;
     auto qwen = qwen_client_;
     auto s3 = s3_client_;
     auto wanx = wanx_client_;
+    auto redis = redis_;
+    int ttl_status = redis_ttl_ppt_status_;
     GenerationConfig config = generation_config_;
-    thread_pool_->EnqueueDetached([job, ppt_svc, template_svc, qwen, s3, wanx, config]() {
-      DoActualGeneration(job, ppt_svc, template_svc, qwen, s3, wanx, config);
+    thread_pool_->EnqueueDetached([job, ppt_svc, template_svc, qwen, s3, wanx, config,
+                                   redis, ttl_status]() {
+      DoActualGeneration(job, ppt_svc, template_svc, qwen, s3, wanx, config,
+                         redis, ttl_status);
     });
 
     nlohmann::json payload{{"request", RequestToJson(ppt_request)}};
@@ -1699,6 +1915,27 @@ HttpResponse PptController::GetRequestStatus(const HttpRequest& request) {
     return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_REQUEST_ID", "Invalid request ID"));
   }
 
+  // ── Redis 优先读取生成状态 ──────────────────────────────────────────────
+  // 对 pending/processing 状态的高频轮询，从 Redis Hash 直接返回进度，跳过 MySQL。
+  // completed/failed/其他 状态仍需从 MySQL 取完整记录（含 output_path 等字段）。
+  if (redis_) {
+    const std::string sk = "ppt:status:" + std::to_string(request_id);
+    auto fields = redis_->HGetAll(sk);
+    if (!fields.empty()) {
+      const std::string& cached_status = fields.count("status") ? fields.at("status") : "";
+      if (cached_status == "queued" || cached_status == "processing") {
+        // 直接用 Redis 中的进度数据构造轻量响应，不查 MySQL
+        nlohmann::json req_json;
+        req_json["id"]       = request_id;
+        req_json["status"]   = cached_status;
+        req_json["progress"] = fields.count("progress") ? fields.at("progress") : "0";
+        req_json["stage"]    = fields.count("stage")    ? fields.at("stage")    : "";
+        return HttpResponse::Json(200, nlohmann::json{{"request", req_json}});
+      }
+    }
+  }
+
+  // ── 缓存未命中或终态（completed/failed），查 MySQL 取完整记录 ──────────
   PptRequest ppt_request;
   if (!ppt_service_->GetRequest(user->id, request_id, ppt_request, error)) {
     return HttpResponse::Json(404, ErrorJson("ERR_PPT_REQUEST_NOT_FOUND", error.empty() ? "Request not found" : error));
@@ -1728,6 +1965,50 @@ HttpResponse PptController::GetRequestStatus(const HttpRequest& request) {
       if (!warn_msg.empty()) {
         req_json["warn"] = warn_msg;
       }
+    }
+  }
+
+  // 若 Redis 中有进度信息且状态为中间态，补充进度字段（兼容无 Redis 场景）
+  if (redis_ && (ppt_request.status == "pending" || ppt_request.status == "processing")) {
+    const std::string sk = "ppt:status:" + std::to_string(request_id);
+    auto fields = redis_->HGetAll(sk);
+    if (!fields.empty()) {
+      if (fields.count("progress")) req_json["progress"] = fields.at("progress");
+      if (fields.count("stage"))    req_json["stage"]    = fields.at("stage");
+    }
+  }
+
+  // 无 Redis 时降级：读取进度文件（原有逻辑保留）
+  if (!redis_ && (ppt_request.status == "pending" || ppt_request.status == "processing")) {
+    const std::string prog_path = BuildProgressPath(generation_config_, request_id);
+    std::ifstream pf(prog_path);
+    if (pf.good()) {
+      try {
+        std::string prog_str((std::istreambuf_iterator<char>(pf)),
+                              std::istreambuf_iterator<char>());
+        if (!prog_str.empty()) {
+          auto prog_json = nlohmann::json::parse(prog_str);
+          if (prog_json.contains("progress")) req_json["progress"] = prog_json["progress"];
+          if (prog_json.contains("stage"))    req_json["stage"]    = prog_json["stage"];
+          if (prog_json.contains("step"))     req_json["step"]     = prog_json["step"];
+        }
+      } catch (...) {}
+    }
+  }
+
+  // 读取失败原因文件（仅 failed 状态有意义）
+  if (ppt_request.status == "failed") {
+    const std::string err_path = BuildErrorPath(generation_config_, request_id);
+    std::ifstream ef(err_path);
+    if (ef.good()) {
+      std::string err_msg((std::istreambuf_iterator<char>(ef)),
+                           std::istreambuf_iterator<char>());
+      if (!err_msg.empty()) {
+        req_json["errorReason"] = err_msg;
+      }
+    }
+    if (!req_json.contains("errorReason")) {
+      req_json["errorReason"] = "PPT 生成失败，请稍后重试";
     }
   }
 
@@ -1967,6 +2248,7 @@ HttpResponse PptController::Outline(const HttpRequest& request) {
               }
               ctx << "\n";
             }
+            ctx << "\n【约束】所有数据必须仅来自以上参考材料，禁止编造或篡改。";
             enriched_topic = ctx.str() + "\n请基于以上内容，为主题「" + input.topic + "」生成结构清晰的PPT大纲。";
             Logger::Info("Outline: injecting material context for " + input.material_id);
           } catch (const std::exception& ex) {
@@ -2056,6 +2338,12 @@ HttpResponse PptController::Delete(const HttpRequest& request) {
       return HttpResponse::Json(404, ErrorJson("ERR_PPT_REQUEST_NOT_FOUND", error));
     }
     return HttpResponse::Json(400, ErrorJson("ERR_PPT_DELETE_FAILED", error.empty() ? "Deletion failed" : error));
+  }
+
+  // Redis：清除状态 Hash 和用户历史列表缓存
+  if (redis_) {
+    redis_->Del("ppt:status:" + std::to_string(request_id));
+    redis_->Del("ppt:history:user:" + std::to_string(user->id));
   }
 
   if (!ppt_request.output_path.empty()) {
@@ -2391,7 +2679,7 @@ HttpResponse PptController::GetStructure(const HttpRequest& request) {
     } else {
       // 再没有预览就给一个空的结构骨架
       std::vector<SlideContent> slides;
-      slides.push_back(SlideContent{ppt_request.title, {}, {}, {}, {}, {}, {}, {}, "title_content", {}});
+      slides.push_back(SlideContent{ppt_request.title, {}, {}, {}, {}, {}, {}, {}, "title_content", {}, std::nullopt});
       structure_json = SlidesToEditableJson(ppt_request, slides);
     }
   }
@@ -2557,4 +2845,264 @@ std::uint64_t PptController::ParseId(const std::string& str) const {
   } catch (...) {
     return 0;
   }
+}
+
+HttpResponse PptController::BatchDownload(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  // ── 1. 解析请求体 ──────────────────────────────────────────────────────────
+  nlohmann::json body;
+  try {
+    body = nlohmann::json::parse(request.body);
+  } catch (...) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON body"));
+  }
+
+  if (!body.contains("ids") || !body["ids"].is_array() || body["ids"].empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Missing or empty 'ids' array"));
+  }
+
+  constexpr int kMaxBatch = 20;
+  const auto& ids_json = body["ids"];
+  if (static_cast<int>(ids_json.size()) > kMaxBatch) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BATCH_TOO_MANY",
+        "单次最多下载 " + std::to_string(kMaxBatch) + " 个文件"));
+  }
+
+  // 解析 id 列表（支持数字或字符串形式）
+  std::vector<std::uint64_t> ids;
+  for (const auto& v : ids_json) {
+    std::uint64_t id = 0;
+    if (v.is_number_unsigned()) {
+      id = v.get<std::uint64_t>();
+    } else if (v.is_string()) {
+      try { id = std::stoull(v.get<std::string>()); } catch (...) {}
+    }
+    if (id > 0) ids.push_back(id);
+  }
+
+  if (ids.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "No valid ids provided"));
+  }
+
+  // ── 2. 批量查询，仅返回属于当前用户且已完成的记录 ──────────────────────────
+  std::string svc_error;
+  const auto requests = ppt_service_->GetRequestsByIds(user->id, ids, svc_error);
+
+  // 过滤有效文件（status=completed 且 output_path 非空且文件存在）
+  struct FileEntry {
+    std::string path;
+    std::string display_name;   // 用于 ZIP 内的文件名
+  };
+  std::vector<FileEntry> entries;
+  for (const auto& req : requests) {
+    if (req.status != "completed" || req.output_path.empty()) continue;
+    std::error_code ec;
+    if (!std::filesystem::exists(req.output_path, ec) || ec) continue;
+    // 生成人类可读文件名：id_title.pptx
+    std::string display = std::to_string(req.id) + "_";
+    const std::string& raw = req.title.empty() ? req.topic : req.title;
+    // 保留字母/数字/中文，其余替换为下划线
+    for (unsigned char c : raw) {
+      if (std::isalnum(c) || c > 127) display.push_back(static_cast<char>(c));
+      else display.push_back('_');
+    }
+    if (display.size() > 80) display.resize(80);
+    display += ".pptx";
+    entries.push_back({req.output_path, display});
+  }
+
+  if (entries.empty()) {
+    return HttpResponse::Json(404, ErrorJson("ERR_NOT_FOUND",
+        "没有找到可下载的已完成文件（请确认所选 PPT 状态为已完成且文件存在）"));
+  }
+
+  // ── 3. 创建临时目录，复制文件，zip 打包 ────────────────────────────────────
+  // 用毫秒时间戳生成唯一临时路径
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  const std::string tmp_dir  = "/tmp/ppt_batch_" + std::to_string(now_ms);
+  const std::string zip_path = tmp_dir + ".zip";
+
+  {
+    std::error_code ec;
+    std::filesystem::create_directory(tmp_dir, ec);
+    if (ec) {
+      Logger::Error("BatchDownload: cannot create tmp dir: " + tmp_dir + " err=" + ec.message());
+      return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
+    }
+  }
+
+  // 处理同名文件冲突：加序号前缀
+  std::unordered_map<std::string, int> name_count;
+  for (auto& e : entries) {
+    auto& cnt = name_count[e.display_name];
+    if (cnt > 0) {
+      // 在扩展名前插入序号
+      const auto dot = e.display_name.rfind('.');
+      if (dot != std::string::npos) {
+        e.display_name = e.display_name.substr(0, dot) + "_" + std::to_string(cnt) + e.display_name.substr(dot);
+      } else {
+        e.display_name += "_" + std::to_string(cnt);
+      }
+    }
+    ++cnt;
+  }
+
+  // 复制文件到临时目录
+  bool any_copy_ok = false;
+  for (const auto& e : entries) {
+    std::error_code ec;
+    const std::string dest = tmp_dir + "/" + e.display_name;
+    std::filesystem::copy_file(e.path, dest, std::filesystem::copy_options::overwrite_existing, ec);
+    if (!ec) {
+      any_copy_ok = true;
+    } else {
+      Logger::Warn("BatchDownload: copy failed: " + e.path + " -> " + dest + " err=" + ec.message());
+    }
+  }
+
+  if (!any_copy_ok) {
+    std::filesystem::remove_all(tmp_dir);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "文件复制失败"));
+  }
+
+  // 调用系统 zip 命令打包（-j 表示不保留目录结构，-q 安静模式）
+  const std::string zip_cmd = "zip -j -q \"" + zip_path + "\" \"" + tmp_dir + "\"/*.pptx 2>/dev/null";
+  const int zip_ret = std::system(zip_cmd.c_str());
+
+  // 清理临时目录
+  {
+    std::error_code ec;
+    std::filesystem::remove_all(tmp_dir, ec);
+  }
+
+  if (zip_ret != 0) {
+    std::error_code ec;
+    std::filesystem::remove(zip_path, ec);
+    Logger::Error("BatchDownload: zip failed, exit=" + std::to_string(zip_ret));
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "ZIP 打包失败"));
+  }
+
+  std::error_code size_ec;
+  const auto zip_size = std::filesystem::file_size(zip_path, size_ec);
+  if (size_ec || zip_size == 0) {
+    std::filesystem::remove(zip_path);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "ZIP 文件生成异常"));
+  }
+
+  // ── 4. 将 ZIP 移动到持久目录，返回下载 URL（避免将大文件读入内存后通过代理传输）─
+  const std::string batch_dir = generation_config_.output_dir + "/batch_zips";
+  {
+    std::error_code ec;
+    std::filesystem::create_directories(batch_dir, ec);
+  }
+
+  // 使用时间戳作为 token，避免冲突
+  const std::string token = std::to_string(now_ms);
+
+  // 构造下载文件名：ppt_batch_YYYYMMDD.zip
+  std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  char date_buf[16];
+  std::strftime(date_buf, sizeof(date_buf), "%Y%m%d", std::localtime(&t));
+  const std::string zip_filename = std::string("ppt_batch_") + date_buf + ".zip";
+
+  const std::string dest_zip = batch_dir + "/" + token + ".zip";
+  {
+    std::error_code ec;
+    std::filesystem::rename(zip_path, dest_zip, ec);
+    if (ec) {
+      // rename 跨设备时 fallback 到 copy
+      std::filesystem::copy_file(zip_path, dest_zip, std::filesystem::copy_options::overwrite_existing, ec);
+      std::filesystem::remove(zip_path);
+      if (ec) {
+        Logger::Error("BatchDownload: move zip failed: " + ec.message());
+        return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "ZIP 保存失败"));
+      }
+    }
+  }
+
+  // 返回 JSON，前端凭 token 通过 GET /api/ppt/batch_zip 直接下载
+  nlohmann::json result;
+  result["download_url"] = "/api/ppt/batch_zip?token=" + token;
+  result["filename"]     = zip_filename;
+  result["size"]         = zip_size;
+  return HttpResponse::Json(200, result);
+}
+
+HttpResponse PptController::BatchDownloadFile(const HttpRequest& request) {
+  // 验证用户身份（支持 Authorization header 或 ?auth= query param）
+  std::string auth_error;
+  auto user = Authenticate(request, auth_error);
+  if (!user) {
+    // 尝试从 query param auth= 读取 token
+    if (auto it = request.query_params.find("auth"); it != request.query_params.end()) {
+      HttpRequest fake_req = request;
+      fake_req.headers["authorization"] = "Bearer " + it->second;
+      user = Authenticate(fake_req, auth_error);
+    }
+    if (!user) {
+      return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", "Unauthorized"));
+    }
+  }
+
+  // 验证 token 格式为纯数字（防路径穿越）
+  std::string token;
+  if (auto it = request.query_params.find("token"); it != request.query_params.end()) {
+    token = it->second;
+  }
+  if (token.empty() || token.find_first_not_of("0123456789") != std::string::npos) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid token"));
+  }
+
+  const std::string zip_path = generation_config_.output_dir + "/batch_zips/" + token + ".zip";
+
+  std::error_code size_ec;
+  const auto file_size = std::filesystem::file_size(zip_path, size_ec);
+  if (size_ec || file_size == 0) {
+    return HttpResponse::Json(404, ErrorJson("ERR_NOT_FOUND", "ZIP 文件不存在或已过期"));
+  }
+
+  // 使用 sendfile 系统调用流式传输，零拷贝，不受 HTTP server 缓冲区限制
+  int fd = ::open(zip_path.c_str(), O_RDONLY);
+  if (fd < 0) {
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
+  }
+
+  // 构造下载文件名
+  std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  char date_buf[16];
+  std::strftime(date_buf, sizeof(date_buf), "%Y%m%d", std::localtime(&t));
+  const std::string zip_filename = std::string("ppt_batch_") + date_buf + ".zip";
+
+  // 将文件内容读入 string（此路由由浏览器直接请求，无 Vite proxy 缓冲限制）
+  std::string body;
+  body.resize(file_size);
+  ssize_t total = 0;
+  while (total < static_cast<ssize_t>(file_size)) {
+    ssize_t n = ::read(fd, body.data() + total, file_size - total);
+    if (n <= 0) break;
+    total += n;
+  }
+  ::close(fd);
+  body.resize(total);
+
+  // 异步删除（TTL：下载完成即删除）
+  std::thread([zip_path]() {
+    std::error_code ec;
+    std::filesystem::remove(zip_path, ec);
+  }).detach();
+
+  HttpResponse resp;
+  resp.status_code    = 200;
+  resp.status_message = "OK";
+  resp.headers["Content-Type"]        = "application/zip";
+  resp.headers["Content-Disposition"] = "attachment; filename=\"" + zip_filename + "\"";
+  resp.headers["Content-Length"]      = std::to_string(body.size());
+  resp.body = std::move(body);
+  return resp;
 }

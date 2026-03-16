@@ -1,6 +1,6 @@
 <template>
   <div class="admin-shell">
-    <aside class="admin-sidebar">
+    <aside class="admin-sidebar" :class="{ 'admin-sidebar--collapsed': adminSidebarCollapsed }">
       <div class="brand-block">
         <div class="brand-logo">PPT OPS</div>
         <p class="brand-subtitle">后台管理控制台</p>
@@ -22,6 +22,7 @@
           :class="{ active: activeNav === item.id, disabled: item.disabled }"
           :disabled="item.disabled"
           @click="activeNav = item.id"
+          :title="adminSidebarCollapsed ? item.label : undefined"
         >
           <span class="nav-icon">
             <el-icon><component :is="item.icon" /></el-icon>
@@ -32,11 +33,21 @@
       </nav>
 
       <div class="nav-footer">
-        <button class="back-btn" @click="router.push('/main')">
+        <button class="back-btn" @click="router.push('/main')" title="返回用户端">
           <el-icon><ArrowLeft /></el-icon>
-          返回用户端
+          <span class="back-btn-text">返回用户端</span>
         </button>
       </div>
+
+      <button
+        class="sidebar-toggle"
+        :title="adminSidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+        @click="adminSidebarCollapsed = !adminSidebarCollapsed"
+      >
+        <el-icon>
+          <component :is="adminSidebarCollapsed ? ArrowRight : ArrowLeft" />
+        </el-icon>
+      </button>
     </aside>
 
     <section class="admin-main">
@@ -362,6 +373,7 @@ import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft,
+  ArrowRight,
   DataLine,
   Download,
   Document,
@@ -379,6 +391,7 @@ const store = useStore()
 const router = useRouter()
 
 const activeNav = ref('overview')
+const adminSidebarCollapsed = ref(false)
 const timeRange = ref('week')
 const searchQuery = ref('')
 const statusFilter = ref('all')
@@ -928,7 +941,7 @@ onMounted(() => {
 .admin-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: auto 1fr;
   background: radial-gradient(circle at top, rgba(14, 165, 233, 0.12), transparent 50%),
     linear-gradient(135deg, #f8fafc 0%, #f0f9ff 45%, #e0f2fe 100%);
   font-family: 'Plus Jakarta Sans', 'Noto Sans SC', 'PingFang SC', sans-serif;
@@ -936,6 +949,7 @@ onMounted(() => {
 }
 
 .admin-sidebar {
+  width: 280px;
   padding: var(--space-xl) var(--space-lg);
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.95), rgba(15, 23, 42, 0.9));
   color: #e2e8f0;
@@ -943,7 +957,8 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--space-xl);
   position: relative;
-  overflow: hidden;
+  overflow: visible;
+  transition: width 0.25s ease;
 }
 
 .admin-sidebar::after {
@@ -1091,6 +1106,180 @@ onMounted(() => {
 
 .back-btn:hover {
   background: rgba(148, 163, 184, 0.2);
+}
+
+/* 收起按钮：固定在侧栏右侧中部 */
+.sidebar-toggle {
+  position: absolute;
+  right: -14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(226, 232, 240, 0.25);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(15, 23, 42, 0.95));
+  color: #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  transition: background var(--transition-default), color var(--transition-default), transform var(--transition-default);
+}
+
+.sidebar-toggle:hover {
+  background: rgba(14, 165, 233, 0.4);
+  color: #fff;
+  transform: translateY(-50%) scale(1.05);
+}
+
+/* 收起态：适当收窄（约 96px），顶部品牌+用户信息缩小字号以便基本完整显示 */
+.admin-sidebar--collapsed {
+  width: 96px;
+  padding: 12px 8px;
+}
+
+.admin-sidebar--collapsed .brand-block {
+  text-align: center;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.admin-sidebar--collapsed .brand-logo {
+  font-size: 0.75rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  display: block;
+  line-height: 1.2;
+}
+
+.admin-sidebar--collapsed .brand-subtitle {
+  font-size: 0.6rem;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  color: rgba(226, 232, 240, 0.7);
+  line-height: 1.2;
+}
+
+.admin-sidebar--collapsed .admin-user {
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 0;
+  gap: 4px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.admin-sidebar--collapsed .admin-avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.admin-sidebar--collapsed .admin-user-info {
+  overflow: hidden;
+  width: 100%;
+  text-align: center;
+  min-width: 0;
+}
+
+.admin-sidebar--collapsed .admin-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.65rem;
+  line-height: 1.25;
+}
+
+.admin-sidebar--collapsed .admin-role {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.58rem;
+  margin-top: 1px;
+  color: rgba(226, 232, 240, 0.75);
+}
+
+.admin-sidebar--collapsed .nav-label,
+.admin-sidebar--collapsed .nav-badge,
+.admin-sidebar--collapsed .back-btn-text {
+  position: absolute;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  width: 0;
+  height: 0;
+  padding: 0;
+  margin: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* 收起态：导航项统一尺寸，图标居中对齐 */
+.admin-sidebar--collapsed .admin-nav {
+  gap: 6px;
+  width: 100%;
+}
+
+.admin-sidebar--collapsed .nav-item {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  min-height: 44px;
+  width: 100%;
+  transform: none;
+}
+
+.admin-sidebar--collapsed .nav-item:hover:not(.disabled),
+.admin-sidebar--collapsed .nav-item.active {
+  transform: none;
+}
+
+.admin-sidebar--collapsed .nav-icon {
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+}
+
+.admin-sidebar--collapsed .nav-icon .el-icon {
+  font-size: 1.15rem;
+}
+
+.admin-sidebar--collapsed .nav-footer {
+  padding: 0;
+  margin-top: auto;
+}
+
+.admin-sidebar--collapsed .back-btn {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  min-height: 44px;
+  width: 100%;
+}
+
+.admin-sidebar--collapsed .back-btn .el-icon {
+  font-size: 1.15rem;
+  margin: 0;
 }
 
 .admin-main {

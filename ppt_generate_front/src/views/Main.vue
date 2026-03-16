@@ -1,8 +1,8 @@
 <template>
   <div class="main-container">
-    <aside class="sidebar">
+    <aside class="sidebar" :class="{ 'sidebar--collapsed': sidebarCollapsed }">
       <div class="sidebar-header">
-        <h2>PPT智能生成系统</h2>
+        <h2 class="sidebar-title">PPT智能生成系统</h2>
         <div class="user-info">
           <div class="avatar">{{ userInitials }}</div>
           <div class="user-details">
@@ -20,6 +20,7 @@
           class="nav-item"
           :class="{ 'active': activeMenu === item.id }"
           @click="activeMenu = item.id"
+          :title="sidebarCollapsed ? item.text : undefined"
         >
           <el-icon class="nav-icon"><component :is="item.icon" /></el-icon>
           <span class="nav-text">{{ item.text }}</span>
@@ -31,15 +32,26 @@
           v-if="currentUser?.isAdmin"
           class="admin-entry"
           @click="router.push('/admin')"
+          title="后台管理"
         >
           <el-icon class="admin-entry-icon"><Setting /></el-icon>
           <span>后台管理</span>
         </button>
-        <button @click="handleLogout" class="logout-btn">
+        <button @click="handleLogout" class="logout-btn" title="退出登录">
           <el-icon class="logout-icon"><SwitchButton /></el-icon>
           <span>退出登录</span>
         </button>
       </div>
+
+      <button
+        class="sidebar-toggle"
+        :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+        @click="sidebarCollapsed = !sidebarCollapsed"
+      >
+        <el-icon class="sidebar-toggle-icon">
+          <component :is="sidebarCollapsed ? ArrowRight : ArrowLeft" />
+        </el-icon>
+      </button>
     </aside>
 
     <main class="main-content">
@@ -307,12 +319,13 @@
 
                   <div v-if="generateForm.generateMode === 'template'" class="form-group">
                     <label>选择模板</label>
-                    <div class="template-options" v-if="!templatesLoading && templates.length">
+                    <div class="template-options template-options-grid" v-if="!templatesLoading && templates.length">
                       <label
                         v-for="tpl in templates"
                         :key="tpl.id"
-                        class="template-option"
+                        class="template-option template-option-compact"
                         :class="{ selected: generateForm.templateId === tpl.id }"
+                        :title="tpl.description"
                       >
                         <input
                           type="radio"
@@ -320,26 +333,23 @@
                           v-model="generateForm.templateId"
                           hidden
                         />
-                        <div class="template-thumb">
+                        <div class="template-thumb template-thumb-compact">
                           <img
-                            v-if="tpl.previewImage || tpl.preview_image"
+                            v-if="(tpl.previewImage || tpl.preview_image) && !templatePreviewFailed(tpl.id)"
                             :src="tpl.previewImage || tpl.preview_image"
                             :alt="tpl.name"
                             loading="lazy"
+                            @error="setTemplatePreviewFailed(tpl.id)"
                           >
-                          <div v-else class="template-thumb-fallback">无预览</div>
-                        </div>
-                        <div class="template-option-info">
-                          <div class="template-title-row">
-                            <strong>{{ tpl.name }}</strong>
-                            <span class="template-badge" v-if="tpl.localDownloadUrl">内置模板</span>
-                          </div>
-                          <small>{{ tpl.provider }}</small>
-                          <p>{{ tpl.description }}</p>
-                          <div class="template-option-tags" v-if="tpl.tags?.length">
-                            <span v-for="tag in tpl.tags" :key="tag">#{{ tag }}</span>
+                          <div
+                            v-else
+                            class="template-thumb-fallback template-thumb-themed"
+                            :style="templatePlaceholderStyle(tpl)"
+                          >
+                            <el-icon :size="18"><Document /></el-icon>
                           </div>
                         </div>
+                        <span class="template-option-name">{{ tpl.name }}</span>
                       </label>
                     </div>
                     <div v-else class="templates-empty">模板列表加载中...</div>
@@ -642,6 +652,65 @@
                   {{ generating ? '生成中...' : '开始生成 PPT →' }}
                 </button>
               </div>
+
+              <!-- 生成进度展示 -->
+              <!-- 生成进度/失败面板（生成中 或 失败后保留展示） -->
+              <div v-if="generating || generationFailed" class="generation-progress-panel" :class="{ 'is-failed': generationFailed }">
+
+                <!-- 失败状态头部 -->
+                <div v-if="generationFailed" class="gp-fail-banner">
+                  <span class="gp-fail-icon">✕</span>
+                  <div class="gp-fail-info">
+                    <span class="gp-fail-title">生成失败</span>
+                    <span class="gp-fail-reason">{{ generationFailReason }}</span>
+                  </div>
+                  <button class="gp-fail-close" @click="generationFailed = false">关闭</button>
+                </div>
+
+                <!-- 正常进度头部 -->
+                <div v-else class="gp-header">
+                  <span class="gp-stage-icon">{{ generationStageIcon }}</span>
+                  <div class="gp-stage-info">
+                    <span class="gp-stage-name">{{ generationStage || '初始化' }}</span>
+                    <span class="gp-step-text">{{ generationStep }}</span>
+                  </div>
+                  <span class="gp-percent">{{ generationProgress }}%</span>
+                </div>
+
+                <!-- 进度条（失败时显示为红色） -->
+                <div class="gp-bar-wrap">
+                  <div class="gp-bar-track">
+                    <div
+                      class="gp-bar-fill"
+                      :class="{ 'is-failed': generationFailed }"
+                      :style="{ width: (generationFailed ? generationProgress || 30 : generationProgress) + '%' }"
+                    ></div>
+                  </div>
+                </div>
+
+                <!-- 阶段步骤列表 -->
+                <div class="gp-stages">
+                  <div
+                    v-for="(s, idx) in generationStageList"
+                    :key="s.key"
+                    class="gp-stage-item"
+                    :class="{
+                      'is-done': !generationFailed && generationProgress > s.endAt,
+                      'is-active': !generationFailed && generationProgress >= s.startAt && generationProgress <= s.endAt,
+                      'is-failed-active': generationFailed && generationProgress >= s.startAt && generationProgress <= s.endAt,
+                      'is-pending': generationProgress < s.startAt
+                    }"
+                  >
+                    <div class="gp-stage-dot">
+                      <span v-if="!generationFailed && generationProgress > s.endAt">✓</span>
+                      <span v-else-if="generationFailed && generationProgress >= s.startAt && generationProgress <= s.endAt">✕</span>
+                      <span v-else-if="!generationFailed && generationProgress >= s.startAt" class="dot-pulse"></span>
+                      <span v-else>{{ idx + 1 }}</span>
+                    </div>
+                    <span class="gp-stage-label">{{ s.label }}</span>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div v-if="activeGeneratePanel === 'preview'" class="generate-preview-panel">
@@ -663,7 +732,7 @@
                 </div>
               </div>
               <div
-                v-if="previewEmbedUrl || hasLocalPreview"
+                v-if="previewRequestId"
                 class="preview-card"
                 :class="{ 'preview-has-bg': Boolean(previewCardStyle.backgroundImage) }"
                 :style="previewCardStyle"
@@ -671,27 +740,6 @@
                 <div class="preview-header">
                   <div class="preview-label">PPT 预览</div>
                   <div class="preview-actions">
-                    <div v-if="previewMode === 'local' && hasLocalPreview" class="preview-counter">
-                      第 {{ previewIndex + 1 }} / {{ previewSlideCount }} 页
-                    </div>
-                    <div class="preview-mode">
-                      <button
-                        class="preview-toggle"
-                        :class="{ active: previewMode === 'online' }"
-                        :disabled="!canUseOnlinePreview"
-                        @click="setPreviewMode('online')"
-                      >
-                        在线预览
-                      </button>
-                      <button
-                        class="preview-toggle"
-                        :class="{ active: previewMode === 'local' }"
-                        :disabled="!canUseLocalPreview"
-                        @click="setPreviewMode('local')"
-                      >
-                        本地预览
-                      </button>
-                    </div>
                     <el-dropdown
                       trigger="click"
                       :disabled="!hasPreviewFile"
@@ -711,7 +759,7 @@
                     </el-dropdown>
                   </div>
                 </div>
-                <div v-if="previewMode === 'online'" class="preview-embed">
+                <div class="preview-embed">
                   <iframe
                     v-if="previewEmbedUrl"
                     class="preview-iframe"
@@ -720,69 +768,7 @@
                     frameborder="0"
                     allowfullscreen
                   ></iframe>
-                  <div v-else class="preview-placeholder">在线预览不可用，请切换到本地预览。</div>
-                </div>
-                <div v-else class="preview-body" :class="previewLayoutClass">
-                  <template v-if="hasLocalPreview">
-                    <div class="layout-grid">
-                      <div class="layout-text">
-                        <h3>{{ currentPreviewSlide?.title || '未命名标题' }}</h3>
-                        <ul v-if="currentPreviewBullets.length">
-                          <li v-for="(item, index) in currentPreviewBullets" :key="`${previewIndex}-bullet-${index}`">
-                            {{ item }}
-                          </li>
-                        </ul>
-                        <div v-else-if="currentPreviewRawText" class="preview-raw">
-                          {{ currentPreviewRawText }}
-                        </div>
-                        <div v-else class="preview-placeholder">暂无正文内容</div>
-                        <div v-if="currentPreviewNotes" class="preview-raw">备注：{{ currentPreviewNotes }}</div>
-                        <div v-if="currentPreviewSuggestions.length" class="image-prompts">
-                          <span v-for="(item, index) in currentPreviewSuggestions" :key="`${previewIndex}-suggestion-${index}`">
-                            {{ item }}
-                          </span>
-                        </div>
-                      </div>
-                      <div v-if="hasPreviewMedia" class="layout-media">
-                        <div v-if="currentPreviewImages.length" class="preview-images">
-                          <img
-                            v-for="(url, index) in currentPreviewImages"
-                            :key="`${previewIndex}-img-${index}`"
-                            :src="url"
-                            alt="预览图片"
-                            loading="lazy"
-                          >
-                        </div>
-                        <div v-else-if="previewFallbackImage" class="preview-template-fallback">
-                          <img :src="previewFallbackImage" alt="模板预览">
-                        </div>
-                        <div v-if="currentPreviewPrompts.length" class="image-prompts">
-                          <span v-for="(item, index) in currentPreviewPrompts" :key="`${previewIndex}-prompt-${index}`">
-                            {{ item }}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="preview-controls">
-                      <button class="preview-nav" :disabled="previewIndex === 0" @click="goPreviewPrev">上一页</button>
-                      <button class="preview-nav" :disabled="previewIndex >= previewSlideCount - 1" @click="goPreviewNext">
-                        下一页
-                      </button>
-                    </div>
-                    <div class="preview-thumbnails">
-                      <button
-                        v-for="(slide, index) in previewSlides"
-                        :key="`thumb-${index}`"
-                        class="preview-thumb"
-                        :class="{ active: index === previewIndex }"
-                        @click="selectPreviewSlide(index)"
-                      >
-                        <span class="thumb-index">{{ index + 1 }}</span>
-                        <span>{{ slide.title || '未命名' }}</span>
-                      </button>
-                    </div>
-                  </template>
-                  <div v-else class="preview-placeholder">本地预览暂无数据，请先生成PPT。</div>
+                  <div v-else class="preview-placeholder">在线预览不可用，请下载后查看。</div>
                 </div>
               </div>
               <div v-else class="preview-empty">暂无PPT预览，请先生成PPT。</div>
@@ -818,10 +804,48 @@
             </div>
           </div>
 
+          <!-- 批量操作工具栏 -->
+          <div v-if="!historyBusy && filteredHistory.length" class="batch-toolbar">
+            <label class="batch-select-all">
+              <input
+                type="checkbox"
+                :checked="batchSelectAll"
+                :indeterminate.prop="batchIndeterminate"
+                @change="toggleSelectAll"
+              />
+              <span>全选已完成</span>
+            </label>
+            <span v-if="batchSelected.size > 0" class="batch-count">已选 {{ batchSelected.size }} 项</span>
+            <button
+              class="batch-download-btn"
+              :disabled="batchSelected.size === 0 || batchDownloading"
+              @click="handleBatchDownload"
+            >
+              <el-icon v-if="batchDownloading" class="spin"><Loading /></el-icon>
+              <el-icon v-else><Download /></el-icon>
+              {{ batchDownloading ? '打包中…' : '批量下载 ZIP' }}
+            </button>
+          </div>
+
           <div v-if="historyBusy" class="history-empty">{{ historyBusyLabel }}</div>
           <div v-else-if="!filteredHistory.length" class="history-empty">暂无记录，立即生成第一份PPT吧！</div>
           <div v-else class="history-list">
-            <div v-for="item in pagedHistory" :key="item.id" class="history-item">
+            <div
+              v-for="item in pagedHistory"
+              :key="item.id"
+              class="history-item"
+              :class="{ 'history-item--selected': batchSelected.has(item.id) }"
+            >
+              <!-- 多选 checkbox（仅 completed 可选） -->
+              <div class="history-checkbox">
+                <input
+                  v-if="item.status === 'completed' && item.hasFile"
+                  type="checkbox"
+                  :checked="batchSelected.has(item.id)"
+                  @change="toggleBatchItem(item.id)"
+                />
+                <div v-else class="checkbox-placeholder"></div>
+              </div>
               <div class="history-preview">
                 <div class="preview-icon">📄</div>
                 <div class="preview-content">
@@ -886,7 +910,10 @@
 
         <section v-if="activeMenu === 'templates'" class="templates-section">
           <div class="section-header">
-            <h2>模板中心</h2>
+            <div class="section-title-block">
+              <h2>模板中心</h2>
+              <p class="section-subtitle">模板来自微软 OfficePLUS（<a href="https://www.officeplus.cn/" target="_blank" rel="noopener">officeplus.cn</a>），提供多种风格可选</p>
+            </div>
             <div class="search-box template-search-box">
               <el-input
                 v-model="templateQuery"
@@ -915,10 +942,21 @@
           <div v-else class="templates-grid">
             <div v-for="template in filteredTemplates" :key="template.id" class="template-card">
               <div class="template-preview">
-                <img :src="template.previewImage" :alt="template.name" v-if="template.previewImage" loading="lazy">
-                <div class="default-preview" v-else>
-                  <div class="preview-slides">
-                    <div class="slide" v-for="n in 3" :key="n"></div>
+                <img
+                  v-if="template.previewImage && !templatePreviewFailed(template.id)"
+                  :src="template.previewImage"
+                  :alt="template.name"
+                  loading="lazy"
+                  @error="setTemplatePreviewFailed(template.id)"
+                >
+                <div
+                  v-else
+                  class="default-preview default-preview-themed"
+                  :style="templatePlaceholderStyle(template)"
+                >
+                  <div class="default-preview-inner">
+                    <el-icon class="default-preview-icon" :size="36"><Document /></el-icon>
+                    <span class="default-preview-name">{{ template.name }}</span>
                   </div>
                 </div>
               </div>
@@ -964,6 +1002,92 @@
           </div>
         </section>
 
+        <!-- ===== 个人信息（内嵌） ===== -->
+        <section v-if="activeMenu === 'profile'" class="profile-section">
+          <div class="profile-section-layout">
+            <div class="profile-hero-card">
+              <div class="profile-avatar-wrap">
+                <span class="profile-avatar">{{ profileInitials }}</span>
+                <span v-if="currentUser?.isAdmin || currentUser?.is_admin" class="profile-role-pill">管理员</span>
+              </div>
+              <h2 class="profile-display-name">{{ currentUser?.username || '—' }}</h2>
+              <p class="profile-display-email">{{ currentUser?.email || '—' }}</p>
+              <dl class="profile-meta-list">
+                <div class="profile-meta-item">
+                  <dt>用户 ID</dt>
+                  <dd>{{ currentUser?.id ?? '—' }}</dd>
+                </div>
+                <div class="profile-meta-item" v-if="currentUser?.createdAt || currentUser?.created_at">
+                  <dt>注册时间</dt>
+                  <dd>{{ profileFormatDate(currentUser?.createdAt || currentUser?.created_at) }}</dd>
+                </div>
+                <div class="profile-meta-item" v-if="currentUser?.lastLogin || currentUser?.last_login">
+                  <dt>最近登录</dt>
+                  <dd>{{ profileFormatDate(currentUser?.lastLogin || currentUser?.last_login) }}</dd>
+                </div>
+              </dl>
+            </div>
+            <div class="profile-password-card">
+              <h3 class="profile-password-title">
+                <el-icon><Lock /></el-icon>
+                修改密码
+              </h3>
+              <el-form
+                ref="profilePasswordFormRef"
+                :model="profilePasswordForm"
+                :rules="profilePasswordRules"
+                label-position="top"
+                class="profile-password-form"
+                @submit.prevent="submitProfilePassword"
+              >
+                <el-form-item label="当前密码" prop="currentPassword">
+                  <el-input
+                    v-model="profilePasswordForm.currentPassword"
+                    type="password"
+                    placeholder="请输入当前密码"
+                    size="large"
+                    show-password
+                    autocomplete="current-password"
+                  >
+                    <template #prefix><el-icon><Lock /></el-icon></template>
+                  </el-input>
+                </el-form-item>
+                <el-form-item label="新密码" prop="newPassword">
+                  <el-input
+                    v-model="profilePasswordForm.newPassword"
+                    type="password"
+                    placeholder="至少 6 位字符"
+                    size="large"
+                    show-password
+                    autocomplete="new-password"
+                  >
+                    <template #prefix><el-icon><Lock /></el-icon></template>
+                  </el-input>
+                </el-form-item>
+                <el-form-item label="确认新密码" prop="confirmPassword">
+                  <el-input
+                    v-model="profilePasswordForm.confirmPassword"
+                    type="password"
+                    placeholder="再次输入新密码"
+                    size="large"
+                    show-password
+                    autocomplete="new-password"
+                  >
+                    <template #prefix><el-icon><Lock /></el-icon></template>
+                  </el-input>
+                </el-form-item>
+                <button
+                  type="submit"
+                  class="profile-password-submit"
+                  :disabled="profilePasswordLoading"
+                >
+                  {{ profilePasswordLoading ? '提交中...' : '确认修改密码' }}
+                </button>
+              </el-form>
+            </div>
+          </div>
+        </section>
+
         <!-- ===== 我的材料 ===== -->
         <section v-if="activeMenu === 'materials'" class="materials-section">
           <div class="materials-header">
@@ -971,18 +1095,30 @@
               <h2>我的材料</h2>
               <p>上传教学材料或论文文献，AI 自动提取关键信息，一键用于 PPT 生成。</p>
             </div>
-            <button class="generate-btn" @click="activeMenu = 'generate'; router.push('/main/generate'); generateSource = 'material'">
+            <button class="generate-btn" @click="showBatchUpload = !showBatchUpload">
               <el-icon class="btn-icon"><Plus /></el-icon>
-              <span>上传新材料</span>
+              <span>{{ showBatchUpload ? '收起上传' : '批量上传' }}</span>
             </button>
+          </div>
+
+          <!-- 批量上传面板 -->
+          <div v-if="showBatchUpload" class="batch-upload-panel">
+            <MaterialBatchUpload
+              :max-files="10"
+              :max-size-mb="20"
+              :concurrency="3"
+              @uploaded="onBatchUploaded"
+              @use-material="useMaterialFromList"
+              @queue-change="onBatchQueueChange"
+            />
           </div>
 
           <div v-if="materialsLoading" class="materials-loading">加载中...</div>
 
           <div v-else-if="!materialsList.length" class="materials-empty">
             <el-icon style="font-size:3rem;color:#94a3b8"><Document /></el-icon>
-            <p>暂无材料，前往智能生成页上传文档</p>
-            <button class="action-primary" @click="activeMenu = 'generate'; router.push('/main/generate'); generateSource = 'material'">
+            <p>暂无材料，点击「批量上传」添加文档</p>
+            <button class="action-primary" @click="showBatchUpload = true">
               去上传
             </button>
           </div>
@@ -1138,11 +1274,13 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch , watchEffec
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, Download, Delete, EditPen, Search, Setting, SwitchButton, Plus, DataAnalysis, Brush, Document, Timer, Star, RefreshRight, ArrowDown } from '@element-plus/icons-vue'
+import { MagicStick, Download, Delete, EditPen, Search, Setting, SwitchButton, Plus, DataAnalysis, Brush, Document, Timer, Star, RefreshRight, ArrowDown, User, Lock, ArrowLeft, ArrowRight, Loading } from '@element-plus/icons-vue'
 import templatesAPI from '@/api/templates'
 import pptAPI from '@/api/ppt'
 import materialAPI from '@/api/material'
+import authAPI from '@/api/auth'
 import dayjs from 'dayjs'
+import MaterialBatchUpload from '@/components/MaterialBatchUpload.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -1153,6 +1291,88 @@ const modelsLoading = computed(() => store.getters.modelsLoading)
 const selectedModel = computed(() => store.getters.selectedModel)
 
 const generating = ref(false)
+const generationFailed = ref(false)
+const generationFailReason = ref('')
+const generationProgress = ref(0)   // 当前显示进度（平滑值）
+const generationStage = ref('')
+const generationStep = ref('')
+
+// 内部：后端上报的"真实目标进度"，显示值向此靠近但不超越
+let _targetProgress = 0
+let _smoothTimer = null
+
+/**
+ * 启动平滑推进定时器
+ * - 每 120ms tick 一次，当前显示值向目标值靠近
+ * - 速度：距离越远推进越快（最快 +1.2%/tick），但始终保留 1% 缓冲等待下一个真实进度
+ * - 若已到达目标且目标 < 100，停在 target-1 等待后端更新
+ */
+function startSmoothProgress() {
+  stopSmoothProgress()
+  _smoothTimer = setInterval(() => {
+    const current = generationProgress.value
+    const ceiling = _targetProgress >= 100 ? 100 : _targetProgress - 1
+    if (current >= ceiling) return
+    const gap = ceiling - current
+    // 距离越大步进越大，最小 0.2，最大 1.2
+    const step = Math.min(1.2, Math.max(0.2, gap * 0.04))
+    generationProgress.value = Math.min(ceiling, parseFloat((current + step).toFixed(1)))
+  }, 120)
+}
+
+function stopSmoothProgress() {
+  if (_smoothTimer) {
+    clearInterval(_smoothTimer)
+    _smoothTimer = null
+  }
+}
+
+/** 收到后端真实进度时调用，只能前进不回退 */
+function applyRealProgress(progress, stage, step) {
+  if (progress > _targetProgress) {
+    _targetProgress = progress
+  }
+  if (stage) generationStage.value = stage
+  if (step !== undefined) generationStep.value = step
+  // 若是 100%，直接跳到终点
+  if (progress >= 100) {
+    stopSmoothProgress()
+    generationProgress.value = 100
+  }
+}
+
+// 生成阶段列表（通用，与生成模式无关）
+const generationStageList = computed(() => {
+  const mode = generateForm.value?.generateMode || 'template'
+  if (mode === 'ai_native') {
+    return [
+      { key: 'init',    label: '初始化',      startAt: 0,  endAt: 15 },
+      { key: 'brief',   label: 'AI 创意分析', startAt: 15, endAt: 45 },
+      { key: 'content', label: '生成内容',    startAt: 45, endAt: 75 },
+      { key: 'render',  label: '渲染文件',    startAt: 75, endAt: 92 },
+      { key: 'finish',  label: '收尾处理',    startAt: 92, endAt: 100 }
+    ]
+  }
+  return [
+    { key: 'init',    label: '初始化',   startAt: 0,  endAt: 10 },
+    { key: 'outline', label: '生成大纲', startAt: 10, endAt: 30 },
+    { key: 'layout',  label: '分析版式', startAt: 30, endAt: 45 },
+    { key: 'content', label: '生成内容', startAt: 45, endAt: 60 },
+    { key: 'images',  label: '配图生成', startAt: 60, endAt: 78 },
+    { key: 'render',  label: '渲染文件', startAt: 78, endAt: 92 },
+    { key: 'finish',  label: '收尾处理', startAt: 92, endAt: 100 }
+  ]
+})
+
+const generationStageIcon = computed(() => {
+  const icons = {
+    '初始化': '⚙️', '生成大纲': '📋', '分析版式': '🎨', '生成内容': '✍️',
+    '配图生成': '🖼️', '渲染文件': '📄', '收尾处理': '✨', '生成完成': '🎉',
+    'AI 创意分析': '🤖', '降级处理': '🔄'
+  }
+  return icons[generationStage.value] || '⚡'
+})
+
 const templateQuery = ref('')
 const historyQuery = ref('')
 const templateSearchResults = ref([])
@@ -1170,9 +1390,6 @@ const futurePlan = reactive({
   notes: localStorage.getItem('futureNotes') || ''
 })
 const previewFileUrl = ref('')
-const previewMode = ref('online')
-const previewSlides = ref([])
-const previewIndex = ref(0)
 const previewRequestId = ref(0)
 const previewDownloadUrl = ref('')
 const previewDownloadUrlPdf = ref('')
@@ -1243,6 +1460,24 @@ const materialDetailId = ref('')
 const materialDetailData = ref(null)
 const materialDetailVisible = ref(false)
 
+// ---- 批量上传面板状态 ----
+const showBatchUpload = ref(false)
+
+const onBatchUploaded = (material) => {
+  // 某文件提取完成后刷入材料列表（若已存在则更新）
+  const idx = materialsList.value.findIndex(m => m.id === material.id)
+  if (idx >= 0) {
+    materialsList.value.splice(idx, 1, material)
+  } else {
+    materialsList.value.unshift(material)
+  }
+}
+
+const onBatchQueueChange = (queueSize) => {
+  // 队列清空时自动刷新列表
+  if (queueSize === 0) loadMaterialsList()
+}
+
 const generatePanels = [
   { id: 'settings', label: '生成设置', index: '01' },
   { id: 'outline', label: '大纲设计', index: '02' },
@@ -1295,9 +1530,7 @@ watchEffect(() => {
   console.log('Preview File URL:', previewFileUrl.value, 'Download URL:', previewDownloadUrl.value)
 })
 
-const hasLocalPreview = computed(() => Array.isArray(previewSlides.value) && previewSlides.value.length > 0)
-const previewSlideCount = computed(() => previewSlides.value.length)
-const hasPreviewFile = computed(() => Boolean(previewRequestId.value && (previewEmbedUrl.value || hasLocalPreview.value)))
+const hasPreviewFile = computed(() => Boolean(previewRequestId.value))
 const previewRequestItem = computed(() => ({
   id: previewRequestId.value,
   hasFile: hasPreviewFile.value,
@@ -1305,65 +1538,6 @@ const previewRequestItem = computed(() => ({
   downloadUrlPdf: previewDownloadUrlPdf.value || (previewRequestId.value ? `/api/ppt/file?id=${previewRequestId.value}&format=pdf` : ''),
   title: previewTitle.value || 'presentation'
 }))
-const currentPreviewSlide = computed(() => {
-  if (!hasLocalPreview.value) return null
-  const index = Math.min(Math.max(previewIndex.value, 0), previewSlides.value.length - 1)
-  return previewSlides.value[index]
-})
-const previewLayoutClass = computed(() => {
-  const slide = currentPreviewSlide.value
-  if (!slide) return 'layout-default'
-  const rawType = slide.layout?.type || slide.layoutHint || 'default'
-  const normalized = String(rawType)
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-  return `layout-${normalized || 'default'}`
-})
-const currentPreviewImages = computed(() => currentPreviewSlide.value?.imageUrls || [])
-const currentPreviewPrompts = computed(() => currentPreviewSlide.value?.imagePrompts || [])
-const currentPreviewNotes = computed(() => currentPreviewSlide.value?.notes || '')
-const currentPreviewSuggestions = computed(() => currentPreviewSlide.value?.suggestions || [])
-const currentPreviewBullets = computed(() => currentPreviewSlide.value?.bullets || [])
-const currentPreviewRawText = computed(() => currentPreviewSlide.value?.rawText || '')
-const previewFallbackImage = computed(() => {
-  const template = selectedTemplate.value
-  return template?.previewImage || template?.preview_image || ''
-})
-const hasPreviewMedia = computed(() => {
-  return currentPreviewImages.value.length > 0 ||
-    currentPreviewPrompts.value.length > 0 ||
-    Boolean(previewFallbackImage.value)
-})
-const canUseOnlinePreview = computed(() => Boolean(previewEmbedUrl.value))
-const canUseLocalPreview = computed(() => hasLocalPreview.value)
-
-const setPreviewMode = (mode) => {
-  if (mode === 'online' && !canUseOnlinePreview.value) {
-    return
-  }
-  if (mode === 'local' && !canUseLocalPreview.value) {
-    return
-  }
-  previewMode.value = mode
-}
-
-const normalizePreviewSlide = (slide) => {
-  if (!slide || typeof slide !== 'object') return null
-  return {
-    title: slide.title || '',
-    bullets: Array.isArray(slide.bullets) ? slide.bullets : [],
-    rawText: slide.rawText || slide.raw_text || '',
-    imageUrls: Array.isArray(slide.imageUrls || slide.image_urls) ? (slide.imageUrls || slide.image_urls) : [],
-    imagePrompts: Array.isArray(slide.imagePrompts || slide.image_prompts) ? (slide.imagePrompts || slide.image_prompts) : [],
-    suggestions: Array.isArray(slide.suggestions) ? slide.suggestions : [],
-    notes: slide.notes || '',
-    layout: slide.layout || null,
-    layoutHint: slide.layoutHint || slide.layout_hint || ''
-  }
-}
-
 const normalizeOutlineItem = (item = {}) => {
   const kps = Array.isArray(item.keyPoints || item.key_points)
     ? [...(item.keyPoints || item.key_points)]
@@ -1499,7 +1673,7 @@ const buildDownloadUrlPdf = (request) => {
 
 const hydratePreviewFromRequest = async (request, { force = false } = {}) => {
   if (!request?.id) return
-  if (!force && previewRequestId.value === request.id && (previewFileUrl.value || previewSlides.value.length)) {
+  if (!force && previewRequestId.value === request.id && previewFileUrl.value) {
     return
   }
   previewRequestId.value = request.id
@@ -1507,23 +1681,13 @@ const hydratePreviewFromRequest = async (request, { force = false } = {}) => {
   previewDownloadUrlPdf.value = request.downloadUrlPdf || request.download_url_pdf || ''
   previewTitle.value = request.title || ''
   previewFileUrl.value = buildPreviewFileUrl(resolveDownloadUrl(request))
-  previewSlides.value = []
-  previewIndex.value = 0
   try {
     const response = await pptAPI.preview(request.id)
-    const slides = Array.isArray(response.data?.slides)
-      ? response.data.slides
-      : Array.isArray(response.data?.preview)
-        ? response.data.preview
-        : []
-    previewSlides.value = slides.map(normalizePreviewSlide).filter(Boolean)
     if (!outlineReady.value && Array.isArray(response.data?.outline)) {
       outlineItems.value = response.data.outline.map(normalizeOutlineItem)
     }
-  } catch (error) {
-    previewSlides.value = []
-  } finally {
-    syncPreviewMode()
+  } catch (_error) {
+    // 仅在线预览，不再使用预览 JSON 的 slides
   }
 }
 
@@ -1531,7 +1695,7 @@ const applyLatestPreview = async (items, { force = false } = {}) => {
   if (!Array.isArray(items) || !items.length) {
     return
   }
-  if (!force && (previewFileUrl.value || previewSlides.value.length)) {
+  if (!force && previewFileUrl.value) {
     return
   }
   const latest =
@@ -1540,36 +1704,6 @@ const applyLatestPreview = async (items, { force = false } = {}) => {
     items[0]
   if (latest) {
     await hydratePreviewFromRequest(latest, { force })
-  }
-}
-
-const goPreviewPrev = () => {
-  if (!hasLocalPreview.value) return
-  previewIndex.value = Math.max(0, previewIndex.value - 1)
-}
-
-const goPreviewNext = () => {
-  if (!hasLocalPreview.value) return
-  previewIndex.value = Math.min(previewSlides.value.length - 1, previewIndex.value + 1)
-}
-
-const selectPreviewSlide = (index) => {
-  if (!hasLocalPreview.value) return
-  if (index < 0 || index >= previewSlides.value.length) return
-  previewIndex.value = index
-}
-
-const syncPreviewMode = () => {
-  if (previewMode.value === 'online' && canUseOnlinePreview.value) {
-    return
-  }
-  if (previewMode.value === 'local' && canUseLocalPreview.value) {
-    return
-  }
-  if (canUseOnlinePreview.value) {
-    previewMode.value = 'online'
-  } else if (canUseLocalPreview.value) {
-    previewMode.value = 'local'
   }
 }
 
@@ -1585,6 +1719,7 @@ const baseMenuItems = [
   { id: 'materials', text: '我的材料', icon: Document, path: '/main/materials', description: '上传教学材料/论文文献，提取关键信息' },
   { id: 'templates', text: '模板中心', icon: Brush, path: '/main/templates', description: '精选PPT模板库' },
   { id: 'history', text: '历史记录', icon: Document, path: '/main/history', description: '历史生成记录管理' },
+  { id: 'profile', text: '个人信息', icon: User, path: '/main/profile', description: '账户信息与修改密码' },
   { id: 'settings', text: '系统设置', icon: Setting, path: '/main/settings', description: '个性化系统配置' }
 ]
 
@@ -1597,6 +1732,7 @@ const resolveSection = (section) => {
 }
 
 const activeMenu = ref(resolveSection(route.params.section))
+const sidebarCollapsed = ref(false)
 
 watch(
   () => route.params.section,
@@ -1604,6 +1740,60 @@ watch(
     activeMenu.value = resolveSection(section)
   }
 )
+
+const profileInitials = computed(() => {
+  const u = currentUser.value
+  if (!u?.username) return '?'
+  const s = String(u.username).trim()
+  if (s.length >= 2) return (s[0] + s[1]).toUpperCase()
+  return s.slice(0, 2).toUpperCase()
+})
+const profileFormatDate = (value) => {
+  if (!value) return '—'
+  const d = typeof value === 'number' ? new Date(value) : new Date(value)
+  return isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' })
+}
+const profilePasswordFormRef = ref(null)
+const profilePasswordForm = ref({
+  currentPassword: '',
+  newPassword: '',
+  confirmPassword: ''
+})
+const profilePasswordRules = {
+  currentPassword: [{ required: true, message: '请输入当前密码', trigger: 'blur' }],
+  newPassword: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 6, message: '新密码至少 6 位', trigger: 'blur' }
+  ],
+  confirmPassword: [
+    { required: true, message: '请再次输入新密码', trigger: 'blur' },
+    {
+      validator: (rule, value, cb) => {
+        if (value !== profilePasswordForm.value.newPassword) cb(new Error('两次输入的新密码不一致'))
+        else cb()
+      },
+      trigger: 'blur'
+    }
+  ]
+}
+const profilePasswordLoading = ref(false)
+const submitProfilePassword = async () => {
+  if (!profilePasswordFormRef.value) return
+  await profilePasswordFormRef.value.validate(async (valid) => {
+    if (!valid) return
+    profilePasswordLoading.value = true
+    try {
+      await authAPI.changePassword(profilePasswordForm.value.currentPassword, profilePasswordForm.value.newPassword)
+      ElMessage.success('密码已修改，请使用新密码登录')
+      profilePasswordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
+      profilePasswordFormRef.value?.resetFields()
+    } catch (e) {
+      ElMessage.error(e?.response?.data?.message || e?.message || '修改失败')
+    } finally {
+      profilePasswordLoading.value = false
+    }
+  })
+}
 
 const generateForm = ref({
   title: '',
@@ -1655,6 +1845,24 @@ const resolveTemplateTheme = (template) => {
     accent: theme.accentColor || theme.accent_color || '#f97316',
     background: theme.backgroundImage || theme.background_image || ''
   }
+}
+
+/** 模板卡片无预览图时的占位样式：使用主题色渐变 + 模板名 */
+const templatePlaceholderStyle = (template) => {
+  const theme = resolveTemplateTheme(template)
+  const primary = theme.primary || '#475569'
+  const accent = theme.accent || '#94a3b8'
+  return {
+    background: `linear-gradient(135deg, ${primary} 0%, ${accent} 100%)`,
+    color: 'rgba(255, 255, 255, 0.95)'
+  }
+}
+
+const templatePreviewFailedIds = ref({})
+const templatePreviewFailed = (id) => !!templatePreviewFailedIds.value[id]
+const setTemplatePreviewFailed = (id) => {
+  templatePreviewFailedIds.value[id] = true
+  templatePreviewFailedIds.value = { ...templatePreviewFailedIds.value }
 }
 
 const styles = [
@@ -2082,9 +2290,14 @@ const handleGenerate = async () => {
   }
 
   generating.value = true
+  generationFailed.value = false
+  generationFailReason.value = ''
+  generationProgress.value = 0
+  _targetProgress = 5
+  generationStage.value = '初始化'
+  generationStep.value = '正在提交生成请求...'
+  startSmoothProgress()
   previewFileUrl.value = ''
-  previewSlides.value = []
-  previewIndex.value = 0
   try {
     const payload = {
       title: generateForm.value.title.trim(),
@@ -2106,7 +2319,10 @@ const handleGenerate = async () => {
         key_points: (item.keyPoints || []).filter(kp => kp.trim() !== '')
       })),
       materialId: generateForm.value.materialId || '',
-      aiStylePrompt: generateForm.value.generateMode === 'ai_native' ? (generateForm.value.aiStylePrompt || '').trim() : ''
+      aiStylePrompt: generateForm.value.generateMode === 'ai_native' ? (generateForm.value.aiStylePrompt || '').trim() : '',
+      onProgress: ({ progress, stage, step }) => {
+        applyRealProgress(progress, stage, step)
+      }
     }
     const result = await store.dispatch('createPptRequest', payload)
     if (!result?.request) {
@@ -2116,15 +2332,9 @@ const handleGenerate = async () => {
     previewDownloadUrlPdf.value = result.request?.downloadUrlPdf || result.request?.download_url_pdf || ''
     previewTitle.value = result.request?.title || ''
     previewFileUrl.value = buildPreviewFileUrl(resolveDownloadUrl(result.request))
-    previewSlides.value = Array.isArray(result.preview)
-      ? result.preview.map(normalizePreviewSlide).filter(Boolean)
-      : []
-    previewIndex.value = 0
     previewRequestId.value = result.request?.id || 0
-    if (!previewSlides.value.length && result.request?.id) {
+    if (result.request?.id) {
       await hydratePreviewFromRequest(result.request, { force: true })
-    } else {
-      syncPreviewMode()
     }
     await store.dispatch('fetchPptHistory')
     activeMenu.value = 'generate'
@@ -2140,10 +2350,15 @@ const handleGenerate = async () => {
     }
   } catch (error) {
     const msg = error?.message || error?.userMessage || error?.response?.data?.message || '生成失败，请稍后重试'
-    ElMessage.error(msg)
+    generationFailed.value = true
+    generationFailReason.value = msg
+    generationStage.value = '生成失败'
+    ElMessage.error({ message: msg, duration: 0, showClose: true })
     console.error('生成失败:', msg)
   } finally {
+    stopSmoothProgress()
     generating.value = false
+    _targetProgress = 0
   }
 }
 
@@ -2154,6 +2369,111 @@ const editPPT = (item) => {
   }
   router.push(`/main/edit/${item.id}`)
 }
+
+// ---- 历史记录批量选择与下载 ----
+const batchSelected    = ref(new Set())   // 存储选中的 item.id（number）
+const batchDownloading = ref(false)
+
+// 当前页中 completed+hasFile 的条目
+const selectableItems = computed(() =>
+  pagedHistory.value.filter(i => i.status === 'completed' && i.hasFile)
+)
+const batchSelectAll = computed(() =>
+  selectableItems.value.length > 0 &&
+  selectableItems.value.every(i => batchSelected.value.has(i.id))
+)
+const batchIndeterminate = computed(() =>
+  selectableItems.value.some(i => batchSelected.value.has(i.id)) && !batchSelectAll.value
+)
+
+const toggleBatchItem = (id) => {
+  const s = new Set(batchSelected.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  batchSelected.value = s
+}
+
+const toggleSelectAll = () => {
+  if (batchSelectAll.value) {
+    // 取消当前页所有
+    const s = new Set(batchSelected.value)
+    selectableItems.value.forEach(i => s.delete(i.id))
+    batchSelected.value = s
+  } else {
+    // 选中当前页所有可选项
+    const s = new Set(batchSelected.value)
+    selectableItems.value.forEach(i => s.add(i.id))
+    batchSelected.value = s
+  }
+}
+
+const handleBatchDownload = async () => {
+  if (batchSelected.value.size === 0) return
+  if (batchSelected.value.size > 20) {
+    ElMessage.warning('单次最多批量下载 20 个文件')
+    return
+  }
+  batchDownloading.value = true
+  try {
+    const selectedItems = pagedHistory.value.filter(i => batchSelected.value.has(i.id))
+    if (selectedItems.length === 0) {
+      ElMessage.warning('未找到可下载的文件，请刷新后重试')
+      return
+    }
+
+    // Use JSZip to fetch all files in the browser and pack into a single ZIP.
+    // Each file is fetched directly via its presigned S3 URL (Cloudflare tunnel),
+    // so no backend ZIP endpoint is needed, and no large binary goes through axios/proxy.
+    const JSZip = (await import('jszip')).default
+    const zip = new JSZip()
+
+    const failed = []
+    await Promise.all(selectedItems.map(async (item) => {
+      const url = buildDownloadUrl(item)
+      if (!url) { failed.push(item.id); return }
+      try {
+        const resp = await fetch(url, { headers: { 'ngrok-skip-browser-warning': '1' } })
+        if (!resp.ok) { failed.push(item.id); return }
+        const blob = await resp.blob()
+        const title = (item.title || item.topic || `ppt_${item.id}`).replace(/[\\/:*?"<>|]/g, '_')
+        zip.file(`${item.id}_${title}.pptx`, blob)
+      } catch (fetchErr) {
+        failed.push(item.id)
+      }
+    }))
+
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })
+    const zipUrl = URL.createObjectURL(zipBlob)
+    const a = document.createElement('a')
+    a.href = zipUrl
+    a.download = `ppt_batch_${date}.zip`
+    a.style.display = 'none'
+    document.body.appendChild(a)
+    a.click()
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(zipUrl) }, 1000)
+
+    const successCount = selectedItems.length - failed.length
+    if (successCount === 0) {
+      ElMessage.error('所有文件下载失败，请重试')
+      return
+    }
+    if (failed.length > 0) {
+      ElMessage.warning(`${successCount} 个文件已打包，${failed.length} 个文件下载失败（ID: ${failed.join(', ')}）`)
+    } else {
+      ElMessage.success(`已将 ${successCount} 个文件打包下载`)
+    }
+    batchSelected.value = new Set()
+  } catch (e) {
+    const msg = e?.message || '下载失败'
+    ElMessage.error('批量下载失败：' + msg)
+  } finally {
+    batchDownloading.value = false
+  }
+}
+
+// 翻页时清空跨页选择（避免混淆）
+watch(() => historyPage.value, () => { batchSelected.value = new Set() })
 
 const downloadPPT = (item) => {
   if (!item?.hasFile) {
@@ -2414,9 +2734,6 @@ const handleLogout = async () => {
     console.error('退出登录失败:', error)
   } finally {
   previewFileUrl.value = ''
-  previewSlides.value = []
-  previewIndex.value = 0
-  previewMode.value = 'online'
   previewRequestId.value = 0
   previewDownloadUrl.value = ''
   previewDownloadUrlPdf.value = ''
@@ -2549,6 +2866,9 @@ h4 {
   display: flex;
   flex-direction: column;
   box-shadow: 5px 0 15px rgba(0, 0, 0, 0.1);
+  transition: width 0.25s ease;
+  flex-shrink: 0;
+  position: relative;
 }
 
 .sidebar-header {
@@ -2680,6 +3000,132 @@ h4 {
 
 .logout-btn:hover {
   background: rgba(239, 68, 68, 0.2);
+}
+
+/* 收起按钮：固定在侧栏右侧中部 */
+.sidebar-toggle {
+  position: absolute;
+  right: -14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  color: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.sidebar-toggle:hover {
+  background: rgba(14, 165, 233, 0.4);
+  color: white;
+  transform: translateY(-50%) scale(1.05);
+}
+
+.sidebar-toggle-icon {
+  font-size: 1rem;
+}
+
+/* 收起态：适当收窄（约 96px），顶部标题+用户信息缩小字号以便基本完整显示 */
+.sidebar--collapsed {
+  width: 96px;
+}
+
+.sidebar--collapsed .sidebar-header {
+  padding: 12px 8px;
+  flex-shrink: 0;
+}
+
+.sidebar--collapsed .sidebar-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-bottom: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  display: block;
+}
+
+.sidebar--collapsed .user-info {
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.sidebar--collapsed .user-details {
+  overflow: hidden;
+  width: 100%;
+  text-align: center;
+  min-width: 0;
+}
+
+.sidebar--collapsed .username {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.65rem;
+  line-height: 1.25;
+  margin: 0;
+  max-width: 100%;
+}
+
+.sidebar--collapsed .user-email {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.58rem;
+  opacity: 0.9;
+  line-height: 1.2;
+  margin: 1px 0 0;
+  max-width: 100%;
+}
+
+.sidebar--collapsed .avatar {
+  width: 34px;
+  height: 34px;
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+.sidebar--collapsed .nav-text,
+.sidebar--collapsed .admin-entry span,
+.sidebar--collapsed .logout-btn span {
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  width: 0;
+  height: 0;
+  padding: 0;
+  margin: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.sidebar--collapsed .nav-item {
+  justify-content: center;
+  padding: 14px 8px;
+}
+
+.sidebar--collapsed .sidebar-footer .admin-entry,
+.sidebar--collapsed .sidebar-footer .logout-btn {
+  justify-content: center;
+  padding: 12px;
+}
+
+.sidebar--collapsed .sidebar-footer {
+  padding: 12px 8px;
 }
 
 .main-content {
@@ -2863,8 +3309,34 @@ h4 {
 .section-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: var(--space-xl);
+  gap: var(--space-lg);
+}
+
+.section-title-block {
+  flex: 1;
+  min-width: 0;
+}
+
+.section-title-block h2 {
+  margin: 0 0 0.25em;
+}
+
+.section-subtitle {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-text-secondary, #64748b);
+  line-height: 1.4;
+}
+
+.section-subtitle a {
+  color: var(--color-primary, #3b82f6);
+  text-decoration: none;
+}
+
+.section-subtitle a:hover {
+  text-decoration: underline;
 }
 
 .search-box input {
@@ -2949,6 +3421,73 @@ h4 {
 }
 
 
+/* 批量操作工具栏 */
+.batch-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  margin-bottom: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  flex-wrap: wrap;
+}
+
+.batch-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  color: #475569;
+  cursor: pointer;
+  user-select: none;
+}
+
+.batch-count {
+  font-size: 0.82rem;
+  color: #6366f1;
+  font-weight: 600;
+}
+
+.batch-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+  padding: 0.45rem 1.1rem;
+  background: linear-gradient(135deg, #6366f1, #818cf8);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+}
+.batch-download-btn:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+.batch-download-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 历史条目 checkbox */
+.history-checkbox {
+  flex-shrink: 0;
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 4px;
+}
+.history-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #6366f1;
+}
+.checkbox-placeholder {
+  width: 16px;
+  height: 16px;
+}
+
 .history-item {
   display: flex;
   justify-content: space-between;
@@ -2959,9 +3498,18 @@ h4 {
   transition: all 0.3s;
 }
 
+.history-item--selected {
+  border-color: #6366f1;
+  background: #f5f3ff;
+}
+
 .history-item:hover {
   border-color: #0EA5E9;
   box-shadow: 0 5px 15px rgba(14, 165, 233, 0.1);
+}
+.history-item--selected:hover {
+  border-color: #6366f1;
+  box-shadow: 0 5px 15px rgba(99, 102, 241, 0.12);
 }
 
 .history-preview {
@@ -3466,20 +4014,46 @@ h4 {
 }
 
 .default-preview {
-  width: 80%;
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
 }
 
-.preview-slides {
+.default-preview-themed {
+  background: linear-gradient(135deg, #64748b 0%, #94a3b8 100%);
+  color: rgba(255, 255, 255, 0.95);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.default-preview-inner {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  text-align: center;
 }
 
-.preview-slides .slide {
-  height: 30px;
-  background: white;
-  border-radius: 5px;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+.default-preview-icon {
+  color: inherit;
+  opacity: 0.92;
+}
+
+.default-preview-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .template-info {
@@ -4344,10 +4918,452 @@ h4 {
   color: #94a3b8;
 }
 
+/* 生成进度面板 */
+.generation-progress-panel {
+  margin-top: 16px;
+  padding: 18px 20px;
+  background: linear-gradient(135deg, #f0f7ff 0%, #f8fafc 100%);
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  transition: border-color 0.3s, background 0.3s;
+}
+
+.generation-progress-panel.is-failed {
+  background: linear-gradient(135deg, #fff5f5 0%, #fef2f2 100%);
+  border-color: #fecaca;
+}
+
+/* 失败横幅 */
+.gp-fail-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.gp-fail-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #ef4444;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  line-height: 32px;
+  text-align: center;
+}
+
+.gp-fail-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.gp-fail-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #dc2626;
+}
+
+.gp-fail-reason {
+  font-size: 0.8rem;
+  color: #6b7280;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.gp-fail-close {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border: 1px solid #fca5a5;
+  background: #fff;
+  color: #dc2626;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.gp-fail-close:hover {
+  background: #fee2e2;
+}
+
+/* 进度条失败态 */
+.gp-bar-fill.is-failed {
+  background: linear-gradient(90deg, #f87171, #ef4444);
+  animation: none;
+}
+
+.gp-bar-fill.is-failed::after {
+  display: none;
+}
+
+/* 阶段失败激活态 */
+.gp-stage-item.is-failed-active .gp-stage-dot {
+  background: #ef4444;
+  color: #fff;
+  border-color: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239,68,68,0.2);
+}
+
+.gp-stage-item.is-failed-active .gp-stage-label {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.gp-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.gp-stage-icon {
+  font-size: 1.5rem;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.gp-stage-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gp-stage-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #1e40af;
+  line-height: 1.3;
+}
+
+.gp-step-text {
+  font-size: 0.78rem;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gp-percent {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #2563eb;
+  flex-shrink: 0;
+  min-width: 40px;
+  text-align: right;
+}
+
+.gp-bar-wrap {
+  width: 100%;
+}
+
+.gp-bar-track {
+  width: 100%;
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.gp-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #6366f1);
+  border-radius: 99px;
+  transition: width 0.15s linear;
+  position: relative;
+  overflow: hidden;
+}
+
+.gp-bar-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%);
+  animation: gp-shimmer 1.6s infinite;
+}
+
+@keyframes gp-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.gp-stages {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.gp-stage-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  cursor: default;
+  transition: opacity 0.3s;
+}
+
+.gp-stage-item.is-pending {
+  opacity: 0.35;
+}
+
+.gp-stage-item.is-done .gp-stage-dot {
+  background: #22c55e;
+  color: #fff;
+  border-color: #22c55e;
+}
+
+.gp-stage-item.is-active .gp-stage-dot {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.2);
+}
+
+.gp-stage-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid #cbd5e1;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #94a3b8;
+  flex-shrink: 0;
+  transition: all 0.3s;
+}
+
+.dot-pulse {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  animation: dot-blink 1s infinite;
+}
+
+@keyframes dot-blink {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.7); }
+}
+
+.gp-stage-label {
+  font-size: 0.68rem;
+  color: #64748b;
+  text-align: center;
+  line-height: 1.2;
+  word-break: keep-all;
+  white-space: nowrap;
+}
+
+.gp-stage-item.is-done .gp-stage-label {
+  color: #22c55e;
+  font-weight: 500;
+}
+
+.gp-stage-item.is-active .gp-stage-label {
+  color: #2563eb;
+  font-weight: 600;
+}
+
 /* 旧的 outline-generate-bar 兼容 */
 .outline-generate-bar {
   padding-top: 14px;
   border-top: 1px solid #f1f5f9;
+}
+
+/* ===== 生成进度面板 ===== */
+.generation-progress-panel {
+  margin-top: 16px;
+  padding: 16px 18px;
+  background: linear-gradient(135deg, #f8faff 0%, #f0f4ff 100%);
+  border: 1px solid #dde7ff;
+  border-radius: 12px;
+  animation: gp-fadein 0.3s ease;
+}
+
+@keyframes gp-fadein {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.gp-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.gp-stage-icon {
+  font-size: 1.4rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.gp-stage-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.gp-stage-name {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #1e3a8a;
+  line-height: 1.3;
+}
+
+.gp-step-text {
+  display: block;
+  font-size: 0.78rem;
+  color: #64748b;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gp-percent {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #3b82f6;
+  flex-shrink: 0;
+  min-width: 38px;
+  text-align: right;
+}
+
+.gp-bar-wrap {
+  margin-bottom: 14px;
+}
+
+.gp-bar-track {
+  height: 6px;
+  background: #dbeafe;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.gp-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6 0%, #6366f1 100%);
+  border-radius: 3px;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.gp-bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0; left: -40%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent);
+  animation: gp-shimmer 1.6s infinite;
+}
+
+@keyframes gp-shimmer {
+  0%   { left: -40%; }
+  100% { left: 120%; }
+}
+
+.gp-stages {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.gp-stage-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  transition: all 0.3s ease;
+  border: 1px solid transparent;
+}
+
+.gp-stage-item.is-done {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.gp-stage-item.is-active {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.gp-stage-item.is-pending {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #94a3b8;
+}
+
+.gp-stage-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.is-done .gp-stage-dot {
+  background: #22c55e;
+  color: #fff;
+}
+
+.is-active .gp-stage-dot {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.is-pending .gp-stage-dot {
+  background: #e2e8f0;
+  color: #94a3b8;
+}
+
+.gp-stage-label {
+  white-space: nowrap;
+}
+
+@keyframes dot-pulse-anim {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%       { transform: scale(1.3); opacity: 0.7; }
+}
+
+.dot-pulse {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  animation: dot-pulse-anim 1s infinite;
 }
 
 .form-group label {
@@ -4464,6 +5480,12 @@ h4 {
   gap: 12px;
 }
 
+.template-options-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+}
+
 .template-option {
   display: flex;
   gap: 16px;
@@ -4474,9 +5496,31 @@ h4 {
   transition: border-color 0.2s, background 0.2s;
 }
 
-.template-option.selected {
+.template-option-compact {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 10px;
+}
+
+.template-option.selected,
+.template-option-compact.selected {
   border-color: #0EA5E9;
-  background: #f5f3ff;
+  background: #f0f9ff;
+}
+
+.template-option-name {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #1e293b;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  text-align: center;
 }
 
 .template-thumb {
@@ -4490,6 +5534,13 @@ h4 {
   justify-content: center;
 }
 
+.template-thumb-compact {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  min-height: 64px;
+  border-radius: 8px;
+}
+
 .template-thumb img {
   width: 100%;
   height: 100%;
@@ -4497,8 +5548,17 @@ h4 {
 }
 
 .template-thumb-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 0.85rem;
   color: #475569;
+}
+
+.template-thumb-themed {
+  color: rgba(255, 255, 255, 0.95);
 }
 
 .template-option-info strong {
@@ -4882,6 +5942,180 @@ h4 {
   font-size: 0.9rem;
 }
 
+/* ===== 个人信息（内嵌） ===== */
+.profile-section {
+  padding: 0;
+  animation: profileReveal 0.4s ease-out;
+}
+
+@keyframes profileReveal {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .profile-section {
+    animation: none;
+  }
+}
+
+.profile-section-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+@media (max-width: 768px) {
+  .profile-section-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.profile-hero-card {
+  background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  padding: 32px;
+  box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
+  border-left: 4px solid #0ea5e9;
+}
+
+.profile-avatar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.profile-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0ea5e9 0%, #38bdf8 100%);
+  color: #fff;
+  font-size: 1.5rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+}
+
+.profile-role-pill {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.15);
+  color: #0369a1;
+}
+
+.profile-display-name {
+  margin: 0 0 4px;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+
+.profile-display-email {
+  margin: 0 0 20px;
+  font-size: 0.95rem;
+  color: #64748b;
+}
+
+.profile-meta-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+}
+
+.profile-meta-item dt {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  margin-bottom: 2px;
+}
+
+.profile-meta-item dd {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #334155;
+}
+
+.profile-password-card {
+  background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  padding: 32px;
+  box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
+  border-left: 4px solid #0d9488;
+}
+
+.profile-password-title {
+  margin: 0 0 20px;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: #0f172a;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-password-title .el-icon {
+  font-size: 1.2rem;
+  color: #0d9488;
+}
+
+.profile-password-form :deep(.el-form-item) {
+  margin-bottom: 18px;
+}
+
+.profile-password-form :deep(.el-form-item__label) {
+  color: #475569;
+  font-weight: 500;
+}
+
+.profile-password-submit {
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px 20px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #0d9488 0%, #14b8a6 100%);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.profile-password-submit:hover:not(:disabled) {
+  background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%);
+  box-shadow: 0 4px 12px rgba(13, 148, 136, 0.35);
+}
+
+.profile-password-submit:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.profile-password-submit:focus-visible {
+  outline: 2px solid #0d9488;
+  outline-offset: 2px;
+}
+
 /* ===== 材料管理页 ===== */
 .materials-section {
   padding: 0;
@@ -4891,9 +6125,23 @@ h4 {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 28px;
+  margin-bottom: 16px;
   flex-wrap: wrap;
   gap: 16px;
+}
+
+/* 批量上传面板 */
+.batch-upload-panel {
+  margin-bottom: 28px;
+  padding: 1.25rem 1.5rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  animation: panel-in 0.2s ease;
+}
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .materials-header h2 {

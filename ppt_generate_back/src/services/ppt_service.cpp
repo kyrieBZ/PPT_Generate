@@ -1243,3 +1243,69 @@ bool PptService::GetAdminMetrics(const std::string& range, AdminMetrics& out, st
 
   return true;
 }
+
+std::vector<PptRequest> PptService::GetRequestsByIds(std::uint64_t user_id,
+                                                      const std::vector<std::uint64_t>& ids,
+                                                      std::string& error) {
+  std::vector<PptRequest> result;
+  if (ids.empty()) return result;
+
+  auto connection = pool_->GetConnection();
+  MYSQL* conn = connection.Get();
+  if (!conn) {
+    error = "无法获取数据库连接";
+    return result;
+  }
+
+  // Build IN clause with placeholders; ids are uint64 numerics — safe to inline
+  std::ostringstream in_clause;
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    if (i > 0) in_clause << ",";
+    in_clause << ids[i];
+  }
+
+  const std::string sql =
+      "SELECT id, user_id, title, topic, pages, style,"
+      "       include_images, include_charts, include_notes,"
+      "       model_key, model_name, template_id, template_name,"
+      "       status, output_path,"
+      "       UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at)"
+      " FROM ppt_requests"
+      " WHERE user_id = " + std::to_string(user_id) +
+      "   AND id IN (" + in_clause.str() + ")"
+      " ORDER BY created_at DESC";
+
+  if (mysql_query(conn, sql.c_str()) != 0) {
+    error = std::string("批量查询失败: ") + mysql_error(conn);
+    return result;
+  }
+
+  MYSQL_RES* res = mysql_store_result(conn);
+  if (!res) return result;
+
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(res)) != nullptr) {
+    unsigned long* lens = mysql_fetch_lengths(res);
+    PptRequest req;
+    req.id           = row[0]  ? std::stoull(row[0])  : 0;
+    req.user_id      = row[1]  ? std::stoull(row[1])  : 0;
+    req.title        = (row[2]  && lens[2])  ? std::string(row[2],  lens[2])  : "";
+    req.topic        = (row[3]  && lens[3])  ? std::string(row[3],  lens[3])  : "";
+    req.pages        = row[4]  ? std::stoi(row[4])   : 0;
+    req.style        = (row[5]  && lens[5])  ? std::string(row[5],  lens[5])  : "";
+    req.include_images = row[6]  ? (std::string(row[6]) != "0") : false;
+    req.include_charts = row[7]  ? (std::string(row[7]) != "0") : false;
+    req.include_notes  = row[8]  ? (std::string(row[8]) != "0") : false;
+    req.model_id     = (row[9]  && lens[9])  ? std::string(row[9],  lens[9])  : "";
+    req.model_name   = (row[10] && lens[10]) ? std::string(row[10], lens[10]) : "";
+    req.template_id  = (row[11] && lens[11]) ? std::string(row[11], lens[11]) : "";
+    req.template_name= (row[12] && lens[12]) ? std::string(row[12], lens[12]) : "";
+    req.status       = (row[13] && lens[13]) ? std::string(row[13], lens[13]) : "";
+    req.output_path  = (row[14] && lens[14]) ? std::string(row[14], lens[14]) : "";
+    req.created_at   = row[15] ? std::stoull(row[15]) : 0;
+    req.updated_at   = row[16] ? std::stoull(row[16]) : 0;
+    result.push_back(req);
+  }
+  mysql_free_result(res);
+  return result;
+}

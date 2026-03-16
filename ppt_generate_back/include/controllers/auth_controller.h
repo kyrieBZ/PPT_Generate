@@ -18,6 +18,7 @@ class AuthController {
   HttpResponse CurrentUser(const HttpRequest& request);
   HttpResponse RequestPasswordReset(const HttpRequest& request);
   HttpResponse ConfirmPasswordReset(const HttpRequest& request);
+  HttpResponse ChangePassword(const HttpRequest& request);
 
  private:
   std::string ExtractToken(const HttpRequest& request) const;

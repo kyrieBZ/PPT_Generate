@@ -111,5 +111,12 @@ export default {
 
   confirmPasswordReset(payload) {
     return apiClient.post('/auth/password/reset/confirm', payload)
+  },
+
+  changePassword(currentPassword, newPassword) {
+    return apiClient.post('/auth/password/change', {
+      currentPassword,
+      newPassword
+    })
   }
 }

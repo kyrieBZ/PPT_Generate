@@ -246,6 +246,19 @@ bool HttpServer::ParseRequest(int client_fd, HttpRequest& request) {
   return true;
 }
 
+namespace {
+// Send all bytes in buf; returns false if the connection was lost mid-send.
+bool SendAll(int fd, const char* buf, std::size_t len) {
+  std::size_t sent = 0;
+  while (sent < len) {
+    const ssize_t n = ::send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
+    if (n <= 0) return false;
+    sent += static_cast<std::size_t>(n);
+  }
+  return true;
+}
+}  // namespace
+
 void HttpServer::SendResponse(int client_fd, const HttpResponse& original) {
   HttpResponse response = original;
   response.ApplyCors();
@@ -260,14 +273,19 @@ void HttpServer::SendResponse(int client_fd, const HttpResponse& original) {
 
   const std::string reason = response.status_message.empty() ? "OK" : response.status_message;
 
+  // Build only the header portion (avoids copying potentially-large body)
   std::ostringstream stream;
   stream << "HTTP/1.1 " << response.status_code << ' ' << reason << "\r\n";
   for (const auto& [key, value] : response.headers) {
     stream << key << ": " << value << "\r\n";
   }
   stream << "\r\n";
-  stream << response.body;
 
-  const auto serialized = stream.str();
-  ::send(client_fd, serialized.data(), serialized.size(), 0);
+  const auto header_str = stream.str();
+
+  // Send header then body separately to handle large binary payloads correctly
+  if (!SendAll(client_fd, header_str.data(), header_str.size())) return;
+  if (!response.body.empty()) {
+    SendAll(client_fd, response.body.data(), response.body.size());
+  }
 }

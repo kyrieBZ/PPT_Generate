@@ -12,17 +12,18 @@
     "prepare": "husky install"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "axios": "^1.6.0",
+    "dayjs": "^1.11.10",
+    "echarts": "^5.5.0",
+    "element-plus": "^2.13.1",
+    "jszip": "^3.10.1",
+    "lodash-es": "^4.17.21",
+    "uuid": "^9.0.1",
+    "validator": "^13.11.0",
     "vue": "^3.4.0",
     "vue-router": "^4.2.0",
-    "vuex": "^4.1.0",
-    "axios": "^1.6.0",
-    "lodash-es": "^4.17.21",
-    "dayjs": "^1.11.10",
-    "validator": "^13.11.0",
-    "uuid": "^9.0.1",
-    "element-plus": "^2.13.1",
-    "@element-plus/icons-vue": "^2.3.2",
-    "echarts": "^5.5.0"
+    "vuex": "^4.1.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^4.5.0",
