@@ -347,11 +347,316 @@
           </el-card>
         </section>
 
-        <section v-show="activeNav === 'insights'" class="placeholder-section">
-          <div class="placeholder-card">
-            <h2>偏好洞察模块</h2>
-            <p>此模块将接入大模型进行偏好分析，目前仅展示占位。</p>
+        <!-- ── 偏好洞察 ──────────────────────────────────────────────────────── -->
+        <section v-show="activeNav === 'insights'" class="records-section" v-loading="insightsLoading">
+          <div class="records-header">
+            <div>
+              <h2>偏好洞察</h2>
+              <p>基于全量 PPT 生成历史的用户行为与偏好分析。</p>
+            </div>
+            <el-button class="ghost-btn" size="large" @click="loadInsights">
+              <el-icon><Refresh /></el-icon>
+              刷新
+            </el-button>
           </div>
+
+          <div v-if="!insightsLoading && insightsData" class="insights-grid">
+
+            <!-- 用户留存漏斗 -->
+            <el-card class="insight-card insight-card--half" shadow="never">
+              <template #header><span class="insight-card-title">用户转化漏斗</span></template>
+              <ElChart :option="funnelChartOption" :height="280" />
+            </el-card>
+
+            <!-- 模型使用分布饼图 -->
+            <el-card class="insight-card insight-card--half" shadow="never">
+              <template #header><span class="insight-card-title">AI 模型使用分布</span></template>
+              <ElChart :option="modelPieChartOption" :height="280" />
+            </el-card>
+
+            <!-- 页数分布柱状图 -->
+            <el-card class="insight-card insight-card--half" shadow="never">
+              <template #header><span class="insight-card-title">生成页数分布</span></template>
+              <ElChart :option="pagesBarChartOption" :height="260" />
+            </el-card>
+
+            <!-- 热门主题标签云（用横向条形图模拟词云） -->
+            <el-card class="insight-card insight-card--half" shadow="never">
+              <template #header><span class="insight-card-title">热门生成主题（TOP 20）</span></template>
+              <ElChart :option="topicsBarChartOption" :height="260" />
+            </el-card>
+
+            <!-- 生成高峰热力图（全宽） -->
+            <el-card class="insight-card insight-card--full" shadow="never">
+              <template #header><span class="insight-card-title">生成高峰时段热力图（24h × 周几）</span></template>
+              <ElChart :option="heatmapChartOption" :height="220" />
+            </el-card>
+
+          </div>
+
+          <div v-else-if="!insightsLoading" class="placeholder-card" style="margin-top:24px;">
+            <p>暂无数据，请确保已有 PPT 生成记录。</p>
+          </div>
+        </section>
+
+        <!-- ── 公告与通知管理 ─────────────────────────────────────────────── -->
+        <section v-show="activeNav === 'announcements'" class="records-section">
+          <div class="records-header">
+            <div>
+              <h2>公告与通知管理</h2>
+              <p>创建、编辑站内公告，用户端登录后将在顶部看到有效公告横幅。</p>
+            </div>
+            <div class="records-controls">
+              <el-button type="primary" size="large" @click="openAnnouncementDialog()">
+                <el-icon><Plus /></el-icon>
+                发布公告
+              </el-button>
+            </div>
+          </div>
+
+          <el-table
+            :data="announcements"
+            v-loading="announcementsLoading"
+            style="width: 100%; margin-top: 16px;"
+            row-key="id"
+            stripe
+          >
+            <el-table-column label="标题" prop="title" min-width="180" show-overflow-tooltip />
+            <el-table-column label="内容" prop="content" min-width="240" show-overflow-tooltip />
+            <el-table-column label="置顶" width="70" align="center">
+              <template #default="{ row }">
+                <el-tag :type="row.is_pinned ? 'warning' : 'info'" size="small">
+                  {{ row.is_pinned ? '是' : '否' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="生效时间" width="160">
+              <template #default="{ row }">{{ formatDate(row.starts_at) }}</template>
+            </el-table-column>
+            <el-table-column label="过期时间" width="160">
+              <template #default="{ row }">
+                {{ row.expires_at ? formatDate(row.expires_at) : '永不过期' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag :type="announcementStatusType(row)" size="small">
+                  {{ announcementStatusText(row) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="140" fixed="right" align="center">
+              <template #default="{ row }">
+                <el-button type="primary" link size="small" @click="openAnnouncementDialog(row)">
+                  编辑
+                </el-button>
+                <el-button type="danger" link size="small" @click="deleteAnnouncement(row)">
+                  删除
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div class="pagination-bar" v-if="announcementTotal > announcementPageSize">
+            <el-pagination
+              v-model:current-page="announcementPage"
+              :page-size="announcementPageSize"
+              layout="prev, pager, next, total"
+              :total="announcementTotal"
+              background
+              @current-change="loadAnnouncements"
+            />
+          </div>
+        </section>
+
+        <!-- 创建/编辑公告弹窗 -->
+        <el-dialog
+          v-model="annDialog.visible"
+          :title="annDialog.isEdit ? '编辑公告' : '发布公告'"
+          width="560px"
+          draggable
+        >
+          <el-form :model="annDialog.form" label-width="90px" style="padding: 0 12px;">
+            <el-form-item label="标题" required>
+              <el-input v-model="annDialog.form.title" maxlength="200" show-word-limit placeholder="请输入公告标题" />
+            </el-form-item>
+            <el-form-item label="内容" required>
+              <el-input
+                v-model="annDialog.form.content"
+                type="textarea"
+                :rows="5"
+                maxlength="2000"
+                show-word-limit
+                placeholder="请输入公告内容"
+              />
+            </el-form-item>
+            <el-form-item label="置顶">
+              <el-switch v-model="annDialog.form.is_pinned" />
+            </el-form-item>
+            <el-form-item label="生效时间">
+              <el-date-picker
+                v-model="annDialog.form.starts_at"
+                type="datetime"
+                placeholder="默认立即生效"
+                format="YYYY/MM/DD HH:mm"
+                value-format="YYYY-MM-DD HH:mm:ss"
+                style="width: 100%;"
+              />
+            </el-form-item>
+            <el-form-item label="过期时间">
+              <el-date-picker
+                v-model="annDialog.form.expires_at"
+                type="datetime"
+                placeholder="留空则永不过期"
+                format="YYYY/MM/DD HH:mm"
+                value-format="YYYY-MM-DD HH:mm:ss"
+                style="width: 100%;"
+              />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="annDialog.visible = false">取消</el-button>
+            <el-button type="primary" :loading="annDialog.saving" @click="submitAnnouncement">
+              {{ annDialog.isEdit ? '保存修改' : '发布' }}
+            </el-button>
+          </template>
+        </el-dialog>
+
+        <!-- ── 素材全局管理 ───────────────────────────────────────────────── -->
+        <section v-show="activeNav === 'materials'" class="records-section">
+          <div class="records-header">
+            <div>
+              <h2>素材全局管理</h2>
+              <p>查看并管理所有用户上传的素材文件。</p>
+            </div>
+            <div class="records-controls">
+              <el-input
+                v-model="materialSearch.userId"
+                size="large"
+                placeholder="用户 ID"
+                clearable
+                style="width: 130px"
+              />
+              <el-select v-model="materialSearch.status" size="large" class="control-select" style="width: 140px">
+                <el-option label="全部状态" value="" />
+                <el-option label="已完成" value="completed" />
+                <el-option label="处理中" value="pending" />
+                <el-option label="提取中" value="extracting" />
+                <el-option label="失败" value="failed" />
+              </el-select>
+              <el-select v-model="materialSearch.fileType" size="large" class="control-select" style="width: 120px">
+                <el-option label="全部类型" value="" />
+                <el-option label="PDF" value="pdf" />
+                <el-option label="DOCX" value="docx" />
+                <el-option label="TXT" value="txt" />
+              </el-select>
+              <el-button type="primary" size="large" @click="loadMaterials(1)">
+                <el-icon><Search /></el-icon>
+                搜索
+              </el-button>
+              <el-button
+                type="danger"
+                size="large"
+                :disabled="materialSelection.length === 0"
+                @click="batchDeleteMaterials"
+              >
+                批量删除 ({{ materialSelection.length }})
+              </el-button>
+            </div>
+          </div>
+
+          <!-- 统计摘要卡片 -->
+          <div class="material-stats-row" v-if="materialStats.total >= 0">
+            <div class="mstat-card">
+              <span class="mstat-label">总素材数</span>
+              <span class="mstat-value">{{ materialStats.total }}</span>
+            </div>
+            <div class="mstat-card">
+              <span class="mstat-label">总占用空间</span>
+              <span class="mstat-value">{{ formatBytes(materialStats.totalSize) }}</span>
+            </div>
+            <div class="mstat-card success">
+              <span class="mstat-label">已完成提取</span>
+              <span class="mstat-value">{{ materialStats.completed }}</span>
+            </div>
+            <div class="mstat-card warning">
+              <span class="mstat-label">处理中</span>
+              <span class="mstat-value">{{ materialStats.pending }}</span>
+            </div>
+            <div class="mstat-card danger">
+              <span class="mstat-label">失败</span>
+              <span class="mstat-value">{{ materialStats.failed }}</span>
+            </div>
+          </div>
+
+          <el-card class="records-table-card">
+            <el-table
+              :data="materials"
+              stripe
+              v-loading="materialsLoading"
+              element-loading-text="加载中..."
+              @selection-change="(rows) => (materialSelection = rows)"
+            >
+              <el-table-column type="selection" width="50" />
+              <el-table-column prop="id" label="ID" width="240" show-overflow-tooltip />
+              <el-table-column prop="username" label="用户" width="130" show-overflow-tooltip />
+              <el-table-column prop="filename" label="文件名" min-width="180" show-overflow-tooltip />
+              <el-table-column label="类型" width="80">
+                <template #default="{ row }">
+                  <el-tag size="small" type="info">{{ row.fileType?.toUpperCase() || '-' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="大小" width="100">
+                <template #default="{ row }">{{ formatBytes(row.fileSize) }}</template>
+              </el-table-column>
+              <el-table-column label="状态" width="110">
+                <template #default="{ row }">
+                  <el-tag :type="materialStatusType(row.status)" size="small">
+                    {{ materialStatusText(row.status) }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="上传时间" width="175">
+                <template #default="{ row }">
+                  {{ row.createdAt ? dayjs.unix(row.createdAt).format('YYYY/MM/DD HH:mm') : '-' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="210" fixed="right">
+                <template #default="{ row }">
+                  <el-button
+                    size="small"
+                    type="primary"
+                    plain
+                    @click="openMaterialDrawer(row, 'preview')"
+                  >预览</el-button>
+                  <el-button
+                    size="small"
+                    type="warning"
+                    plain
+                    @click="openMaterialDrawer(row, 'review')"
+                  >审核</el-button>
+                  <el-button
+                    size="small"
+                    type="danger"
+                    plain
+                    @click="deleteMaterial(row)"
+                  >删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <div class="pagination-bar">
+              <span>共 {{ materialTotal }} 条记录</span>
+              <el-pagination
+                v-model:current-page="materialPage"
+                :page-size="materialPageSize"
+                layout="prev, pager, next"
+                :total="materialTotal"
+                background
+                @current-change="loadMaterials"
+              />
+            </div>
+          </el-card>
         </section>
 
         <section v-show="activeNav === 'settings'" class="placeholder-section">
@@ -362,6 +667,138 @@
         </section>
       </div>
     </section>
+
+    <!-- ── 素材详情抽屉 ──────────────────────────────────────────────────── -->
+    <el-drawer
+      v-model="materialDrawer.visible"
+      :title="materialDrawer.data ? materialDrawer.data.filename : '素材详情'"
+      direction="rtl"
+      size="620px"
+      :destroy-on-close="true"
+    >
+      <div class="drawer-body" v-if="materialDrawer.data">
+        <!-- 基本信息 -->
+        <div class="drawer-section">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="素材 ID" :span="2">
+              <span class="mono-text">{{ materialDrawer.data.id }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="文件名" :span="2">{{ materialDrawer.data.filename }}</el-descriptions-item>
+            <el-descriptions-item label="类型">{{ materialDrawer.data.fileType?.toUpperCase() }}</el-descriptions-item>
+            <el-descriptions-item label="大小">{{ formatBytes(materialDrawer.data.fileSize) }}</el-descriptions-item>
+            <el-descriptions-item label="提取状态">
+              <el-tag :type="materialStatusType(materialDrawer.data.status)" size="small">
+                {{ materialStatusText(materialDrawer.data.status) }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="上传时间">
+              {{ materialDrawer.data.createdAt
+                ? dayjs.unix(materialDrawer.data.createdAt).format('YYYY/MM/DD HH:mm')
+                : '-' }}
+            </el-descriptions-item>
+          </el-descriptions>
+        </div>
+
+        <!-- Tab 切换：文件预览 / AI 审核 -->
+        <el-tabs v-model="materialDrawer.activeTab" class="drawer-tabs">
+
+          <!-- ── Tab 1：文件预览 ──────────────────────────────────────── -->
+          <el-tab-pane label="文件预览" name="preview">
+            <div class="file-preview-toolbar">
+              <el-button size="small" type="primary" plain @click="openFileInNewTab">
+                在新窗口打开
+              </el-button>
+              <span class="file-preview-tip">
+                {{ materialDrawer.data.fileType === 'pdf' ? 'PDF 支持内联预览' :
+                   materialDrawer.data.fileType === 'txt' ? '文本文件可直接预览' :
+                   'DOCX 文件请在新窗口下载后查看' }}
+              </span>
+            </div>
+
+            <!-- PDF / TXT：iframe 内联预览 -->
+            <div
+              v-if="materialDrawer.data.fileType === 'pdf' || materialDrawer.data.fileType === 'txt'"
+              class="file-preview-frame-wrap"
+            >
+              <iframe
+                :src="materialDrawer.fileUrl"
+                class="file-preview-frame"
+                frameborder="0"
+                @error="materialDrawer.previewError = true"
+              />
+              <div v-if="materialDrawer.previewError" class="preview-fallback">
+                <p>预览加载失败，请尝试在新窗口打开。</p>
+                <el-button type="primary" plain size="small" @click="openFileInNewTab">新窗口打开</el-button>
+              </div>
+            </div>
+
+            <!-- DOCX 等：提示下载 -->
+            <div v-else class="file-preview-fallback">
+              <el-icon style="font-size: 48px; color: #c0c4cc;"><Document /></el-icon>
+              <p>{{ materialDrawer.data.fileType?.toUpperCase() }} 文件不支持浏览器内联预览。</p>
+              <el-button type="primary" @click="openFileInNewTab">下载 / 查看原始文件</el-button>
+            </div>
+          </el-tab-pane>
+
+          <!-- ── Tab 2：AI 内容审核 ───────────────────────────────────── -->
+          <el-tab-pane label="AI 内容审核" name="review">
+            <div class="drawer-section-header" style="margin-bottom: 12px;">
+              <el-button
+                type="primary"
+                size="small"
+                :loading="materialDrawer.reviewing"
+                :disabled="materialDrawer.data.status !== 'completed'"
+                @click="triggerReview"
+              >
+                {{ materialDrawer.reviewResult ? '重新审核' : '发起审核' }}
+              </el-button>
+            </div>
+
+            <div v-if="materialDrawer.data.status !== 'completed'" class="review-hint warning">
+              素材尚未完成文本提取，暂无法进行 AI 审核。
+            </div>
+            <div v-else-if="materialDrawer.reviewing" class="review-hint info">
+              正在调用 AI 分析中，请稍候…
+            </div>
+            <div v-else-if="materialDrawer.reviewResult" class="review-result-card"
+                 :class="materialDrawer.reviewResult.result">
+              <div class="review-badge">
+                <span v-if="materialDrawer.reviewResult.result === 'pass'" class="badge-pass">✓ 内容合规</span>
+                <span v-else-if="materialDrawer.reviewResult.result === 'violation'" class="badge-violation">✕ 存在违规</span>
+                <span v-else class="badge-unknown">? 无法判断</span>
+              </div>
+              <p class="review-reason">{{ materialDrawer.reviewResult.reason }}</p>
+              <p class="review-time" v-if="materialDrawer.reviewResult.reviewedAt">
+                审核时间：{{ dayjs.unix(materialDrawer.reviewResult.reviewedAt).format('YYYY/MM/DD HH:mm:ss') }}
+              </p>
+              <div v-if="materialDrawer.reviewResult.result === 'violation'" class="review-action">
+                <el-button type="danger" size="small" @click="deleteFromDrawer">
+                  确认违规并删除该素材
+                </el-button>
+              </div>
+            </div>
+            <div v-else class="review-hint">
+              点击"发起审核"，将使用 AI 大模型对素材内容进行违规检测。
+            </div>
+
+            <!-- 提取内容（辅助审核参考） -->
+            <template v-if="materialDrawer.data.extractResult">
+              <div style="margin-top: 16px;">
+                <div style="font-size: 13px; color: #909399; margin-bottom: 6px;">提取文本内容（审核依据）</div>
+                <div class="content-preview">
+                  <pre class="content-text">{{ formatExtractContent(materialDrawer.data.extractResult) }}</pre>
+                </div>
+              </div>
+            </template>
+          </el-tab-pane>
+
+        </el-tabs>
+      </div>
+
+      <div v-else class="drawer-loading">
+        <el-skeleton :rows="8" animated />
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -379,10 +816,14 @@ import {
   Document,
   Histogram,
   PieChart,
+  Plus,
   Refresh,
+  Search,
   Setting,
   TrendCharts,
-  UserFilled
+  UserFilled,
+  FolderOpened,
+  Bell
 } from '@element-plus/icons-vue'
 import ElChart from '@/components/ElChart.vue'
 import adminAPI from '@/api/admin'
@@ -424,12 +865,54 @@ const metricsState = reactive({
   moduleHeat: { labels: [], values: [] }
 })
 
+// ── 公告管理状态 ────────────────────────────────────────────────────────────
+const announcements = ref([])
+const announcementsLoading = ref(false)
+const announcementTotal = ref(0)
+const announcementPage = ref(1)
+const announcementPageSize = ref(20)
+
+const annDialog = reactive({
+  visible: false,
+  isEdit: false,
+  saving: false,
+  editId: null,
+  form: { title: '', content: '', is_pinned: false, starts_at: '', expires_at: '' }
+})
+
+// ── 偏好洞察状态 ────────────────────────────────────────────────────────────
+const insightsLoading = ref(false)
+const insightsData = ref(null)   // raw API response
+
+// ── 素材管理状态 ────────────────────────────────────────────────────────────
+const materials = ref([])
+const materialsLoading = ref(false)
+const materialTotal = ref(0)
+const materialPage = ref(1)
+const materialPageSize = ref(15)
+const materialSelection = ref([])
+const materialSearch = reactive({ userId: '', status: '', fileType: '' })
+const materialStats = reactive({ total: -1, totalSize: 0, completed: 0, pending: 0, failed: 0 })
+
+// ── 素材详情抽屉状态 ────────────────────────────────────────────────────────
+const materialDrawer = reactive({
+  visible: false,
+  data: null,          // 从 /admin/materials/content 获取的完整数据
+  reviewing: false,
+  reviewResult: null,  // { result, reason, reviewedAt }
+  activeTab: 'preview',
+  fileUrl: '',         // 带 token 的原始文件 URL
+  previewError: false
+})
+
 const navItems = [
   { id: 'overview', label: '运营总览', icon: DataLine },
   { id: 'charts', label: '数据看板', icon: TrendCharts },
   { id: 'records', label: '生成记录', icon: Document, badge: 'NEW' },
   { id: 'users', label: '用户管理', icon: UserFilled },
-  { id: 'insights', label: '偏好洞察', icon: PieChart, disabled: true },
+  { id: 'materials', label: '素材管理', icon: FolderOpened },
+  { id: 'announcements', label: '公告管理', icon: Bell },
+  { id: 'insights', label: '偏好洞察', icon: PieChart },
   { id: 'settings', label: '系统设置', icon: Setting, disabled: true }
 ]
 
@@ -874,8 +1357,34 @@ const toggleUserStatus = async (user) => {
 }
 
 const refreshData = () => {
-  store.dispatch('fetchAdminHistory').catch(() => {})
-  loadMetrics()
+  // 根据当前激活的 tab 刷新对应模块数据
+  switch (activeNav.value) {
+    case 'overview':
+      loadMetrics()
+      break
+    case 'charts':
+      loadMetrics()
+      break
+    case 'records':
+      store.dispatch('fetchAdminHistory').catch(() => {})
+      break
+    case 'users':
+      loadUsers()
+      break
+    case 'materials':
+      loadMaterials(materialPage.value)
+      loadMaterialStats()
+      break
+    case 'announcements':
+      loadAnnouncements(announcementPage.value)
+      break
+    case 'insights':
+      loadInsights()
+      break
+    default:
+      store.dispatch('fetchAdminHistory').catch(() => {})
+      loadMetrics()
+  }
 }
 
 const statusText = (status) => (isFailureStatus(status) ? '失败' : '已完成')
@@ -914,12 +1423,454 @@ watch(timeRange, () => {
   loadMetrics()
 })
 
+// ── 素材管理方法 ────────────────────────────────────────────────────────────
+const formatBytes = (bytes) => {
+  if (!bytes || bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let i = 0
+  let val = Number(bytes)
+  while (val >= 1024 && i < units.length - 1) { val /= 1024; i++ }
+  return val.toFixed(i === 0 ? 0 : 1) + ' ' + units[i]
+}
+
+const materialStatusText = (status) => {
+  const map = { completed: '已完成', pending: '等待中', extracting: '提取中', failed: '失败' }
+  return map[status] || status
+}
+
+const materialStatusType = (status) => {
+  const map = { completed: 'success', pending: 'warning', extracting: 'info', failed: 'danger' }
+  return map[status] || 'info'
+}
+
+const loadMaterials = async (page = materialPage.value) => {
+  materialsLoading.value = true
+  materialPage.value = page
+  try {
+    const params = { page, page_size: materialPageSize.value }
+    if (materialSearch.userId) params.user_id = materialSearch.userId
+    if (materialSearch.status) params.status = materialSearch.status
+    if (materialSearch.fileType) params.file_type = materialSearch.fileType
+    const res = await adminAPI.materials(params)
+    materials.value = res.data?.items || []
+    materialTotal.value = res.data?.total || 0
+  } catch (e) {
+    console.error('获取素材列表失败:', e?.userMessage || e)
+  } finally {
+    materialsLoading.value = false
+  }
+}
+
+const loadMaterialStats = async () => {
+  try {
+    const res = await adminAPI.materialStats()
+    Object.assign(materialStats, res.data || {})
+  } catch (e) {
+    console.error('获取素材统计失败:', e?.userMessage || e)
+  }
+}
+
+// ── 公告管理方法 ────────────────────────────────────────────────────────────
+const loadAnnouncements = async (page = announcementPage.value) => {
+  announcementsLoading.value = true
+  announcementPage.value = page
+  try {
+    const res = await adminAPI.announcements({ page, page_size: announcementPageSize.value })
+    announcements.value = res.data?.items || []
+    announcementTotal.value = res.data?.total || 0
+  } catch (e) {
+    console.error('获取公告列表失败:', e?.userMessage || e)
+  } finally {
+    announcementsLoading.value = false
+  }
+}
+
+const announcementStatusText = (row) => {
+  const now = Math.floor(Date.now() / 1000)
+  if (row.starts_at > now) return '未生效'
+  if (row.expires_at && row.expires_at < now) return '已过期'
+  return '生效中'
+}
+
+const announcementStatusType = (row) => {
+  const now = Math.floor(Date.now() / 1000)
+  if (row.starts_at > now) return 'info'
+  if (row.expires_at && row.expires_at < now) return 'danger'
+  return 'success'
+}
+
+const openAnnouncementDialog = (row = null) => {
+  annDialog.isEdit = !!row
+  annDialog.editId = row?.id || null
+  annDialog.saving = false
+  if (row) {
+    annDialog.form.title = row.title
+    annDialog.form.content = row.content
+    annDialog.form.is_pinned = row.is_pinned
+    // starts_at / expires_at 来自后端 unix timestamp，转换为 datetime-local 字符串
+    annDialog.form.starts_at = row.starts_at
+      ? dayjs.unix(row.starts_at).format('YYYY-MM-DD HH:mm:ss') : ''
+    annDialog.form.expires_at = row.expires_at
+      ? dayjs.unix(row.expires_at).format('YYYY-MM-DD HH:mm:ss') : ''
+  } else {
+    annDialog.form.title = ''
+    annDialog.form.content = ''
+    annDialog.form.is_pinned = false
+    annDialog.form.starts_at = ''
+    annDialog.form.expires_at = ''
+  }
+  annDialog.visible = true
+}
+
+const submitAnnouncement = async () => {
+  if (!annDialog.form.title.trim()) {
+    ElMessage.warning('请填写公告标题')
+    return
+  }
+  if (!annDialog.form.content.trim()) {
+    ElMessage.warning('请填写公告内容')
+    return
+  }
+  annDialog.saving = true
+  try {
+    const payload = {
+      title: annDialog.form.title.trim(),
+      content: annDialog.form.content.trim(),
+      is_pinned: annDialog.form.is_pinned,
+      starts_at: annDialog.form.starts_at || '',
+      expires_at: annDialog.form.expires_at || ''
+    }
+    if (annDialog.isEdit) {
+      await adminAPI.updateAnnouncement(annDialog.editId, payload)
+      ElMessage.success('公告已更新')
+    } else {
+      await adminAPI.createAnnouncement(payload)
+      ElMessage.success('公告已发布')
+    }
+    annDialog.visible = false
+    await loadAnnouncements(1)
+  } catch (e) {
+    console.error('提交公告失败:', e?.userMessage || e)
+  } finally {
+    annDialog.saving = false
+  }
+}
+
+const deleteAnnouncement = async (row) => {
+  try {
+    await ElMessageBox.confirm(`确定删除公告「${row.title}」？`, '删除确认', {
+      confirmButtonText: '确认删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await adminAPI.deleteAnnouncement(row.id)
+    ElMessage.success('公告已删除')
+    await loadAnnouncements(1)
+  } catch (e) {
+    if (e !== 'cancel' && e !== 'close') {
+      console.error('删除公告失败:', e?.userMessage || e)
+    }
+  }
+}
+
+// ── 偏好洞察方法 + 图表 computed ────────────────────────────────────────────
+const loadInsights = async () => {
+  insightsLoading.value = true
+  try {
+    const res = await adminAPI.insights()
+    insightsData.value = res.data || null
+  } catch (e) {
+    console.error('获取偏好洞察失败:', e?.userMessage || e)
+  } finally {
+    insightsLoading.value = false
+  }
+}
+
+// 用户漏斗
+const funnelChartOption = computed(() => {
+  const d = insightsData.value
+  const reg  = d?.userFunnel?.registered     || 0
+  const gen1 = d?.userFunnel?.generatedOnce  || 0
+  const genM = d?.userFunnel?.generatedMulti || 0
+  return {
+    tooltip: { trigger: 'item', formatter: '{b}: {c} 人' },
+    series: [{
+      type: 'funnel',
+      left: '10%', width: '80%',
+      label: { show: true, position: 'inside', formatter: '{b}\n{c}人' },
+      data: [
+        { value: reg,  name: '注册用户' },
+        { value: gen1, name: '生成过 PPT' },
+        { value: genM, name: '高频用户(≥3次)' }
+      ],
+      color: ['#409eff', '#67c23a', '#e6a23c']
+    }]
+  }
+})
+
+// 模型饼图
+const modelPieChartOption = computed(() => {
+  const items = (insightsData.value?.modelUsage || []).map((m) => ({
+    name: m.model,
+    value: m.count
+  }))
+  return {
+    tooltip: { trigger: 'item', formatter: '{b}: {c} 次 ({d}%)' },
+    legend: { orient: 'vertical', right: 10, top: 'center', type: 'scroll' },
+    series: [{
+      type: 'pie',
+      radius: ['40%', '70%'],
+      center: ['40%', '50%'],
+      data: items,
+      label: { show: false },
+      emphasis: { label: { show: true, fontSize: 14, fontWeight: 'bold' } }
+    }]
+  }
+})
+
+// 页数分布柱状图
+const pagesBarChartOption = computed(() => {
+  const items = insightsData.value?.pagesDistribution || []
+  return {
+    tooltip: { trigger: 'axis' },
+    xAxis: { type: 'category', data: items.map((i) => i.label) },
+    yAxis: { type: 'value', name: '次数' },
+    series: [{
+      type: 'bar',
+      data: items.map((i) => i.value),
+      itemStyle: { color: '#409eff', borderRadius: [4, 4, 0, 0] },
+      label: { show: true, position: 'top', color: '#606266' }
+    }],
+    grid: { left: 40, right: 20, top: 30, bottom: 30 }
+  }
+})
+
+// 热门主题横向条形图
+const topicsBarChartOption = computed(() => {
+  const items = [...(insightsData.value?.topTopics || [])].reverse()
+  return {
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    grid: { left: 140, right: 20, top: 10, bottom: 20 },
+    xAxis: { type: 'value' },
+    yAxis: {
+      type: 'category',
+      data: items.map((t) => t.keyword),
+      axisLabel: { width: 120, overflow: 'truncate', fontSize: 12 }
+    },
+    series: [{
+      type: 'bar',
+      data: items.map((t) => t.count),
+      itemStyle: { color: '#67c23a', borderRadius: [0, 4, 4, 0] },
+      label: { show: true, position: 'right', color: '#606266' }
+    }]
+  }
+})
+
+// 热力图 (24h × 7day)
+const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const HOUR_LABELS = Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}:00`)
+
+const heatmapChartOption = computed(() => {
+  const cells = insightsData.value?.hourlyHeatmap || []
+  const maxVal = cells.reduce((m, c) => Math.max(m, c.count), 0) || 1
+  const data = cells.map((c) => [c.hour, c.weekday, c.count])
+  return {
+    tooltip: {
+      formatter: (p) => `${WEEKDAY_LABELS[p.data[1]]} ${HOUR_LABELS[p.data[0]]}: ${p.data[2]} 次`
+    },
+    grid: { left: 50, right: 20, top: 20, bottom: 40 },
+    xAxis: {
+      type: 'category',
+      data: HOUR_LABELS,
+      axisLabel: { fontSize: 10, interval: 1, rotate: 45 },
+      splitArea: { show: true }
+    },
+    yAxis: {
+      type: 'category',
+      data: WEEKDAY_LABELS,
+      splitArea: { show: true }
+    },
+    visualMap: {
+      min: 0, max: maxVal,
+      calculable: true,
+      orient: 'horizontal',
+      left: 'center',
+      bottom: 0,
+      inRange: { color: ['#eef7ff', '#409eff', '#0050b3'] }
+    },
+    series: [{
+      type: 'heatmap',
+      data,
+      label: { show: false },
+      emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } }
+    }]
+  }
+})
+
+const deleteMaterial = async (row) => {
+  try {
+    const { value: reason } = await ElMessageBox.prompt(
+      `确定删除素材「${row.filename}」？请填写删除原因（将通知用户）。`,
+      '删除确认',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        inputPlaceholder: '请输入删除原因，如：违规内容、版权问题等',
+        inputType: 'textarea',
+        inputValidator: (v) => v && v.trim().length > 0 ? true : '请填写删除原因',
+        type: 'warning'
+      }
+    )
+    await adminAPI.deleteMaterial(row.id, reason.trim())
+    ElMessage.success('删除成功，已通知用户')
+    await loadMaterials()
+    await loadMaterialStats()
+  } catch (e) {
+    if (e !== 'cancel' && e !== 'close') {
+      console.error('删除素材失败:', e?.userMessage || e)
+    }
+  }
+}
+
+// ── 素材详情抽屉方法 ────────────────────────────────────────────────────────
+const formatExtractContent = (extractResult) => {
+  if (!extractResult) return ''
+  if (typeof extractResult === 'string') return extractResult
+  // JSON 对象：优先取 text 或 content 字段
+  if (extractResult.text) return extractResult.text
+  if (extractResult.content) return extractResult.content
+  if (Array.isArray(extractResult.sections)) {
+    return extractResult.sections.map((s) => s.content || '').join('\n\n')
+  }
+  return JSON.stringify(extractResult, null, 2)
+}
+
+const openMaterialDrawer = async (row, tab = 'preview') => {
+  materialDrawer.visible = true
+  materialDrawer.data = null
+  materialDrawer.reviewing = false
+  materialDrawer.reviewResult = null
+  materialDrawer.activeTab = tab
+  materialDrawer.fileUrl = ''
+  materialDrawer.previewError = false
+
+  try {
+    const res = await adminAPI.getMaterialContent(row.id)
+    materialDrawer.data = res.data || {}
+    // 构造文件预览 URL（带 token）
+    materialDrawer.fileUrl = adminAPI.getMaterialFileUrl(row.id)
+    // 如果数据库中已有审核结论，直接展示
+    if (materialDrawer.data.reviewResult) {
+      materialDrawer.reviewResult = materialDrawer.data.reviewResult
+    }
+  } catch (e) {
+    ElMessage.error('获取素材详情失败')
+    materialDrawer.visible = false
+  }
+}
+
+const openFileInNewTab = () => {
+  if (materialDrawer.fileUrl) {
+    window.open(materialDrawer.fileUrl, '_blank', 'noopener,noreferrer')
+  }
+}
+
+const triggerReview = async () => {
+  if (!materialDrawer.data?.id) return
+  materialDrawer.reviewing = true
+  try {
+    const res = await adminAPI.reviewMaterial(materialDrawer.data.id)
+    materialDrawer.reviewResult = res.data
+    // 同步更新列表中的行（如果能找到）
+    const row = materials.value.find((m) => m.id === materialDrawer.data.id)
+    if (row) {
+      row.reviewResult = res.data
+    }
+    ElMessage.success('AI 审核完成')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || 'AI 审核失败，请稍后重试')
+  } finally {
+    materialDrawer.reviewing = false
+  }
+}
+
+const deleteFromDrawer = async () => {
+  if (!materialDrawer.data?.id) return
+  // 违规删除：预填原因
+  const defaultReason = materialDrawer.reviewResult?.reason
+    ? `AI 审核违规：${materialDrawer.reviewResult.reason}`
+    : 'AI 审核判定存在违规内容'
+  try {
+    const { value: reason } = await ElMessageBox.prompt(
+      `确认删除违规素材「${materialDrawer.data.filename}」？请确认或修改删除原因。`,
+      '确认删除违规素材',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        inputPlaceholder: '删除原因',
+        inputType: 'textarea',
+        inputValue: defaultReason,
+        inputValidator: (v) => v && v.trim().length > 0 ? true : '请填写删除原因',
+        type: 'error'
+      }
+    )
+    await adminAPI.deleteMaterial(materialDrawer.data.id, reason.trim())
+    ElMessage.success('违规素材已删除，已通知用户')
+    materialDrawer.visible = false
+    await loadMaterials()
+    await loadMaterialStats()
+  } catch (e) {
+    if (e !== 'cancel' && e !== 'close') {
+      ElMessage.error('删除失败')
+    }
+  }
+}
+
+const batchDeleteMaterials = async () => {
+  if (materialSelection.value.length === 0) return
+  const ids = materialSelection.value.map((r) => r.id)
+  try {
+    const { value: reason } = await ElMessageBox.prompt(
+      `确定删除选中的 ${ids.length} 个素材？请填写删除原因（将统一通知各用户）。`,
+      '批量删除确认',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        inputPlaceholder: '请输入删除原因',
+        inputType: 'textarea',
+        inputValidator: (v) => v && v.trim().length > 0 ? true : '请填写删除原因',
+        type: 'warning'
+      }
+    )
+    const res = await adminAPI.batchDeleteMaterials(ids, reason.trim())
+    const { success, failed } = res.data || {}
+    ElMessage.success(`删除完成：成功 ${success}，失败 ${failed}，已通知用户`)
+    materialSelection.value = []
+    await loadMaterials()
+    await loadMaterialStats()
+  } catch (e) {
+    if (e !== 'cancel' && e !== 'close') {
+      console.error('批量删除失败:', e?.userMessage || e)
+    }
+  }
+}
+
 watch(activeNav, (value) => {
   if (value === 'users' && users.value.length === 0 && !usersLoading.value) {
     loadUsers()
   }
   if (value === 'charts') {
     resizeCharts()
+  }
+  if (value === 'materials' && materials.value.length === 0 && !materialsLoading.value) {
+    loadMaterials(1)
+    loadMaterialStats()
+  }
+  if (value === 'announcements' && announcements.value.length === 0 && !announcementsLoading.value) {
+    loadAnnouncements(1)
+  }
+  if (value === 'insights' && !insightsData.value && !insightsLoading.value) {
+    loadInsights()
   }
 })
 
@@ -1419,6 +2370,26 @@ onMounted(() => {
   gap: 16px;
 }
 
+/* ── 偏好洞察布局 ──────────────────────────────────────────────────────────── */
+.insights-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+.insight-card--half {
+  grid-column: span 1;
+}
+.insight-card--full {
+  grid-column: span 2;
+}
+.insight-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+
+/* 旧的 dark insight-card（数据看板用） */
 .insight-card {
   padding: var(--space-lg);
   border-radius: var(--radius-card);
@@ -1653,5 +2624,211 @@ onMounted(() => {
   .records-controls {
     width: 100%;
   }
+}
+
+/* ── 素材统计卡片 ─────────────────────────────────────────────────────────── */
+.material-stats-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.mstat-card {
+  flex: 1;
+  min-width: 120px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.mstat-card.success { border-left: 3px solid #10b981; }
+.mstat-card.warning { border-left: 3px solid #f59e0b; }
+.mstat-card.danger  { border-left: 3px solid #ef4444; }
+
+.mstat-label {
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.mstat-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.2;
+}
+
+/* ── 素材详情抽屉 ─────────────────────────────────────────────────────────── */
+.drawer-body {
+  padding: 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.drawer-loading {
+  padding: 24px;
+}
+
+.drawer-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.drawer-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.drawer-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 0;
+  padding-bottom: 4px;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.mono-text {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: #475569;
+}
+
+.review-hint {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: #64748b;
+}
+.review-hint.warning { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+.review-hint.info    { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
+
+.review-result-card {
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1.5px solid #e2e8f0;
+  background: #f8fafc;
+}
+.review-result-card.pass      { border-color: #6ee7b7; background: #f0fdf4; }
+.review-result-card.violation { border-color: #fca5a5; background: #fff5f5; }
+.review-result-card.unknown   { border-color: #fcd34d; background: #fffbeb; }
+
+.review-badge {
+  font-size: 15px;
+  font-weight: 700;
+}
+.badge-pass      { color: #059669; }
+.badge-violation { color: #dc2626; }
+.badge-unknown   { color: #d97706; }
+
+.review-reason {
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.review-time {
+  font-size: 11px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.review-action {
+  margin-top: 4px;
+}
+
+.content-preview {
+  background: #0f172a;
+  border-radius: 8px;
+  padding: 14px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.content-text {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 12px;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  line-height: 1.7;
+}
+
+/* ── 文件预览 Tab ─────────────────────────────────────────────────────── */
+.drawer-tabs {
+  margin-top: 4px;
+}
+
+.file-preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.file-preview-tip {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.file-preview-frame-wrap {
+  position: relative;
+  width: 100%;
+  height: 560px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+.file-preview-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.preview-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.file-preview-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 60px 20px;
+  background: #f8fafc;
+  border: 1px dashed #e2e8f0;
+  border-radius: 8px;
+  color: #64748b;
+  font-size: 14px;
+  text-align: center;
 }
 </style>

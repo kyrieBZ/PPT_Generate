@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -165,10 +166,14 @@ nlohmann::json MaterialToJson(const Material& m) {
 
 MaterialController::MaterialController(std::shared_ptr<AuthService> auth_service,
                                        std::shared_ptr<MaterialService> material_service,
-                                       std::shared_ptr<ThreadPool> thread_pool)
+                                       std::shared_ptr<ThreadPool> thread_pool,
+                                       std::string qwen_api_key,
+                                       std::uint32_t qwen_timeout_sec)
     : auth_service_(std::move(auth_service)),
       material_service_(std::move(material_service)),
-      thread_pool_(std::move(thread_pool)) {}
+      thread_pool_(std::move(thread_pool)),
+      qwen_api_key_(std::move(qwen_api_key)),
+      qwen_timeout_sec_(qwen_timeout_sec > 0 ? qwen_timeout_sec : 60) {}
 
 std::shared_ptr<User> MaterialController::Authenticate(const HttpRequest& request,
                                                         std::string& error) const {
@@ -633,4 +638,477 @@ HttpResponse MaterialController::Delete(const HttpRequest& request) {
   }
 
   return HttpResponse::Json(200, {{"message", "删除成功"}});
+}
+
+HttpResponse MaterialController::BatchDelete(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  if (request.body.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Missing request body"));
+  }
+  nlohmann::json body;
+  try {
+    body = nlohmann::json::parse(request.body);
+  } catch (...) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON body"));
+  }
+  if (!body.contains("ids") || !body["ids"].is_array() || body["ids"].empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "ids must be a non-empty array"));
+  }
+
+  const auto& ids_json = body["ids"];
+  constexpr std::size_t kMaxBatch = 50;
+  if (ids_json.size() > kMaxBatch) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "单次最多批量删除 50 条"));
+  }
+
+  nlohmann::json results = nlohmann::json::array();
+  int success_count = 0;
+
+  for (const auto& v : ids_json) {
+    std::string material_id;
+    if (v.is_string()) material_id = v.get<std::string>();
+    else if (v.is_number()) material_id = std::to_string(v.get<std::int64_t>());
+
+    nlohmann::json item;
+    item["id"] = material_id;
+
+    if (material_id.empty()) {
+      item["status"] = "error";
+      item["message"] = "invalid id";
+      results.push_back(item);
+      continue;
+    }
+
+    std::string item_error;
+    if (!material_service_->DeleteMaterial(material_id, user->id, item_error)) {
+      item["status"] = "error";
+      item["message"] = item_error.empty() ? "材料不存在" : item_error;
+      results.push_back(item);
+      continue;
+    }
+
+    item["status"] = "ok";
+    item["message"] = "deleted";
+    results.push_back(item);
+    ++success_count;
+  }
+
+  const int total = static_cast<int>(ids_json.size());
+  const int failed = total - success_count;
+  const int status_code = (failed == 0) ? 200 : (success_count == 0 ? 400 : 207);
+  return HttpResponse::Json(status_code, {
+    {"success", success_count},
+    {"failed", failed},
+    {"total", total},
+    {"results", results}
+  });
+}
+
+// ── 管理员专用接口 ──────────────────────────────────────────────────────────
+
+namespace {
+std::shared_ptr<User> AuthenticateAdminMaterial(
+    const std::shared_ptr<AuthService>& auth_service,
+    const HttpRequest& request,
+    std::string& error) {
+  auto header = request.Header("authorization");
+  if (header.rfind("Bearer ", 0) == 0 || header.rfind("bearer ", 0) == 0) {
+    header = header.substr(7);
+  }
+  if (header.empty()) {
+    if (auto it = request.query_params.find("token"); it != request.query_params.end()) {
+      header = it->second;
+    }
+  }
+  if (header.empty()) { error = "Token not provided"; return nullptr; }
+  auto user = auth_service->GetUserFromToken(header, error);
+  if (!user) { error = error.empty() ? "Invalid token" : error; return nullptr; }
+  if (!user->is_admin) { error = "Forbidden"; return nullptr; }
+  return std::make_shared<User>(*user);
+}
+
+nlohmann::json AdminMaterialToJson(const Material& m) {
+  nlohmann::json j = MaterialToJson(m);
+  // Decode username from the encoded error_msg convention used in service layer
+  if (m.error_msg.rfind("__username__:", 0) == 0) {
+    j["username"] = m.error_msg.substr(13);
+    j["errorMsg"] = nullptr;
+  }
+  return j;
+}
+}  // namespace
+
+HttpResponse MaterialController::AdminGetContent(const HttpRequest& request) {
+  std::string error;
+  auto admin = AuthenticateAdminMaterial(auth_service_, request, error);
+  if (!admin) {
+    if (error == "Forbidden") return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", error));
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error));
+  }
+
+  std::string material_id;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    material_id = it->second;
+  }
+  if (material_id.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Missing id"));
+  }
+
+  Material mat;
+  if (!material_service_->AdminGetMaterial(material_id, mat, error)) {
+    return HttpResponse::Json(404, ErrorJson("ERR_MATERIAL_NOT_FOUND", error.empty() ? "材料不存在" : error));
+  }
+
+  nlohmann::json payload;
+  payload["id"]            = mat.id;
+  payload["filename"]      = mat.filename;
+  payload["fileType"]      = mat.file_type;
+  payload["fileSize"]      = mat.file_size;
+  payload["status"]        = mat.status;
+  payload["userId"]        = mat.user_id;
+  payload["createdAt"]     = mat.created_at;
+
+  // 解析提取结果
+  if (!mat.extract_result.empty()) {
+    try {
+      payload["extractResult"] = nlohmann::json::parse(mat.extract_result);
+    } catch (...) {
+      payload["extractResult"] = mat.extract_result;
+    }
+  } else {
+    payload["extractResult"] = nullptr;
+  }
+
+  // 解析审核结论
+  if (!mat.review_result.empty()) {
+    try {
+      payload["reviewResult"] = nlohmann::json::parse(mat.review_result);
+    } catch (...) {
+      payload["reviewResult"] = mat.review_result;
+    }
+  } else {
+    payload["reviewResult"] = nullptr;
+  }
+
+  if (!mat.error_msg.empty()) {
+    payload["errorMsg"] = mat.error_msg;
+  }
+
+  return HttpResponse::Json(200, payload);
+}
+
+HttpResponse MaterialController::AdminGetFile(const HttpRequest& request) {
+  std::string error;
+  auto admin = AuthenticateAdminMaterial(auth_service_, request, error);
+  if (!admin) {
+    if (error == "Forbidden") return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", error));
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error));
+  }
+
+  std::string material_id;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    material_id = it->second;
+  }
+  if (material_id.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Missing id"));
+  }
+
+  Material mat;
+  if (!material_service_->AdminGetMaterial(material_id, mat, error)) {
+    return HttpResponse::Json(404, ErrorJson("ERR_MATERIAL_NOT_FOUND", error.empty() ? "材料不存在" : error));
+  }
+
+  // Read file from disk
+  std::ifstream file(mat.file_path, std::ios::binary | std::ios::ate);
+  if (!file.is_open()) {
+    Logger::Error("AdminGetFile: cannot open file: " + mat.file_path);
+    return HttpResponse::Json(404, ErrorJson("ERR_FILE_NOT_FOUND", "原始文件不存在或已被移动"));
+  }
+
+  const std::streamsize file_size = file.tellg();
+  file.seekg(0, std::ios::beg);
+
+  std::string content(static_cast<std::size_t>(file_size), '\0');
+  if (!file.read(content.data(), file_size)) {
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "文件读取失败"));
+  }
+
+  // Determine MIME type from file_type
+  std::string mime = "application/octet-stream";
+  if (mat.file_type == "pdf") {
+    mime = "application/pdf";
+  } else if (mat.file_type == "docx") {
+    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  } else if (mat.file_type == "txt") {
+    mime = "text/plain; charset=utf-8";
+  } else if (mat.file_type == "doc") {
+    mime = "application/msword";
+  }
+
+  HttpResponse resp;
+  resp.status_code = 200;
+  resp.status_message = "OK";
+  resp.body = std::move(content);
+  resp.headers["content-type"] = mime;
+  // inline: 让浏览器直接展示（pdf/txt），而非强制下载
+  resp.headers["content-disposition"] = "inline; filename=\"" + mat.filename + "\"";
+  resp.headers["content-length"] = std::to_string(file_size);
+  resp.headers["cache-control"] = "no-store";
+  return resp;
+}
+
+HttpResponse MaterialController::AdminReview(const HttpRequest& request) {
+  std::string error;
+  auto admin = AuthenticateAdminMaterial(auth_service_, request, error);
+  if (!admin) {
+    if (error == "Forbidden") return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", error));
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error));
+  }
+
+  std::string material_id;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    material_id = it->second;
+  }
+  if (material_id.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Missing id"));
+  }
+
+  MaterialService::ReviewResult review;
+  if (!material_service_->AdminReviewMaterial(material_id, qwen_api_key_,
+                                               qwen_timeout_sec_, review, error)) {
+    Logger::Error(std::string("AdminReview failed for ") + material_id + ": " + error);
+    return HttpResponse::Json(422, ErrorJson("ERR_REVIEW_FAILED", error.empty() ? "AI 审核失败" : error));
+  }
+
+  return HttpResponse::Json(200, {
+    {"id",          material_id},
+    {"result",      review.result},
+    {"reason",      review.reason},
+    {"reviewedAt",  review.reviewed_at}
+  });
+}
+
+HttpResponse MaterialController::AdminList(const HttpRequest& request) {
+  std::string error;
+  auto admin = AuthenticateAdminMaterial(auth_service_, request, error);
+  if (!admin) {
+    if (error == "Forbidden") return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", error));
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error));
+  }
+
+  MaterialService::AdminMaterialFilter filter;
+
+  if (auto it = request.query_params.find("user_id"); it != request.query_params.end()) {
+    try { filter.user_id = std::stoull(it->second); } catch (...) {}
+  }
+  if (auto it = request.query_params.find("status"); it != request.query_params.end()) {
+    filter.status = it->second;
+  }
+  if (auto it = request.query_params.find("file_type"); it != request.query_params.end()) {
+    filter.file_type = it->second;
+  }
+  if (auto it = request.query_params.find("page"); it != request.query_params.end()) {
+    try { filter.page = std::stoi(it->second); } catch (...) {}
+  }
+  if (auto it = request.query_params.find("page_size"); it != request.query_params.end()) {
+    try { filter.page_size = std::stoi(it->second); } catch (...) {}
+  }
+
+  int total = 0;
+  auto items = material_service_->AdminListMaterials(filter, total, error);
+  if (!error.empty()) {
+    Logger::Error(std::string("AdminListMaterials failed: ") + error);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "获取素材列表失败"));
+  }
+
+  nlohmann::json arr = nlohmann::json::array();
+  for (const auto& m : items) {
+    arr.push_back(AdminMaterialToJson(m));
+  }
+
+  return HttpResponse::Json(200, {
+    {"items", arr},
+    {"total", total},
+    {"page", filter.page},
+    {"pageSize", filter.page_size}
+  });
+}
+
+HttpResponse MaterialController::AdminStats(const HttpRequest& request) {
+  std::string error;
+  auto admin = AuthenticateAdminMaterial(auth_service_, request, error);
+  if (!admin) {
+    if (error == "Forbidden") return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", error));
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error));
+  }
+
+  auto stats = material_service_->AdminGetStats(error);
+  if (!error.empty()) {
+    Logger::Error(std::string("AdminGetStats failed: ") + error);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "获取统计数据失败"));
+  }
+
+  return HttpResponse::Json(200, {
+    {"total",     stats.total},
+    {"totalSize", stats.total_size},
+    {"completed", stats.completed},
+    {"pending",   stats.pending},
+    {"failed",    stats.failed}
+  });
+}
+
+HttpResponse MaterialController::AdminDelete(const HttpRequest& request) {
+  std::string error;
+  auto admin = AuthenticateAdminMaterial(auth_service_, request, error);
+  if (!admin) {
+    if (error == "Forbidden") return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", error));
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error));
+  }
+
+  std::string material_id;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    material_id = it->second;
+  }
+  if (material_id.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Missing id"));
+  }
+
+  // 解析删除原因（可选，来自请求体 JSON）
+  std::string delete_reason;
+  if (!request.body.empty()) {
+    try {
+      auto body = nlohmann::json::parse(request.body);
+      if (body.contains("reason") && body["reason"].is_string()) {
+        delete_reason = body["reason"].get<std::string>();
+      }
+    } catch (...) {}
+  }
+
+  if (!material_service_->AdminDeleteMaterial(material_id, delete_reason, admin->username, error)) {
+    return HttpResponse::Json(404, ErrorJson("ERR_MATERIAL_NOT_FOUND", error.empty() ? "材料不存在" : error));
+  }
+
+  return HttpResponse::Json(200, {{"message", "删除成功"}, {"id", material_id}});
+}
+
+HttpResponse MaterialController::AdminBatchDelete(const HttpRequest& request) {
+  std::string error;
+  auto admin = AuthenticateAdminMaterial(auth_service_, request, error);
+  if (!admin) {
+    if (error == "Forbidden") return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", error));
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error));
+  }
+
+  if (request.body.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Missing request body"));
+  }
+  nlohmann::json body;
+  try {
+    body = nlohmann::json::parse(request.body);
+  } catch (...) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON body"));
+  }
+  if (!body.contains("ids") || !body["ids"].is_array() || body["ids"].empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "ids must be a non-empty array"));
+  }
+
+  // 解析删除原因（可选）
+  std::string delete_reason;
+  if (body.contains("reason") && body["reason"].is_string()) {
+    delete_reason = body["reason"].get<std::string>();
+  }
+
+  const auto& ids_json = body["ids"];
+  constexpr std::size_t kMaxBatch = 100;
+  if (ids_json.size() > kMaxBatch) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "单次最多批量删除 100 条"));
+  }
+
+  nlohmann::json results = nlohmann::json::array();
+  int success_count = 0;
+  for (const auto& v : ids_json) {
+    std::string mid;
+    if (v.is_string()) mid = v.get<std::string>();
+    else if (v.is_number()) mid = std::to_string(v.get<std::int64_t>());
+
+    nlohmann::json item;
+    item["id"] = mid;
+    if (mid.empty()) {
+      item["status"] = "error"; item["message"] = "invalid id";
+      results.push_back(item); continue;
+    }
+    std::string item_error;
+    if (!material_service_->AdminDeleteMaterial(mid, delete_reason, admin->username, item_error)) {
+      item["status"] = "error"; item["message"] = item_error.empty() ? "材料不存在" : item_error;
+    } else {
+      item["status"] = "ok"; item["message"] = "deleted";
+      ++success_count;
+    }
+    results.push_back(item);
+  }
+
+  const int total = static_cast<int>(ids_json.size());
+  const int failed = total - success_count;
+  const int sc = (failed == 0) ? 200 : (success_count == 0 ? 400 : 207);
+  return HttpResponse::Json(sc, {
+    {"success", success_count}, {"failed", failed}, {"total", total}, {"results", results}
+  });
+}
+
+HttpResponse MaterialController::GetDeletionNotices(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  auto notices = material_service_->GetDeletionNotices(user->id, error);
+  if (!error.empty()) {
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
+  }
+
+  auto arr = nlohmann::json::array();
+  for (const auto& n : notices) {
+    arr.push_back({
+      {"id",           n.id},
+      {"filename",     n.filename},
+      {"fileType",     n.file_type},
+      {"fileSize",     n.file_size},
+      {"deleteReason", n.delete_reason},
+      {"deletedBy",    n.deleted_by},
+      {"createdAt",    n.created_at}
+    });
+  }
+  return HttpResponse::Json(200, {{"notices", arr}});
+}
+
+HttpResponse MaterialController::MarkNoticesRead(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  std::vector<std::uint64_t> ids;
+  if (!request.body.empty()) {
+    try {
+      auto body = nlohmann::json::parse(request.body);
+      if (body.contains("ids") && body["ids"].is_array()) {
+        for (const auto& v : body["ids"]) {
+          if (v.is_number_unsigned()) ids.push_back(v.get<std::uint64_t>());
+          else if (v.is_number()) ids.push_back(static_cast<std::uint64_t>(v.get<std::int64_t>()));
+        }
+      }
+    } catch (...) {}
+  }
+
+  if (!material_service_->MarkNoticesRead(user->id, ids, error)) {
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
+  }
+  return HttpResponse::Json(200, {{"message", "已标记为已读"}});
 }

@@ -39,7 +39,10 @@ class PptController {
   HttpResponse History(const HttpRequest& request);
   HttpResponse AdminHistory(const HttpRequest& request);
   HttpResponse AdminMetrics(const HttpRequest& request);
+  HttpResponse AdminInsights(const HttpRequest& request);
   HttpResponse Delete(const HttpRequest& request);
+  /** POST /api/ppt/batch_delete  — body: {"ids":[...]}，批量删除（最多 50 条） */
+  HttpResponse BatchDelete(const HttpRequest& request);
   HttpResponse Download(const HttpRequest& request);
   /** POST /api/ppt/batch_download  — body: {"ids":[...]}，生成 ZIP 并返回 download_url */
   HttpResponse BatchDownload(const HttpRequest& request);

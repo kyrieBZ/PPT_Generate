@@ -13,6 +13,7 @@ struct Material {
   std::string status;   // pending / extracting / completed / failed
   std::string extract_result;  // JSON string
   std::string error_msg;
+  std::string review_result;   // JSON: {"result":"pass|violation|unknown","reason":"...","reviewed_at":unix_ts}
   std::uint64_t created_at = 0;
   std::uint64_t updated_at = 0;
 };

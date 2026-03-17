@@ -55,6 +55,39 @@ class PptService {
   // Get admin dashboard metrics (time range: day/week/month)
   bool GetAdminMetrics(const std::string& range, AdminMetrics& out, std::string& error);
 
+  // ── 偏好洞察数据结构 ─────────────────────────────────────────────────────
+  struct TopicKeyword {
+    std::string keyword;
+    int count = 0;
+  };
+
+  struct ModelUsage {
+    std::string model;
+    int count = 0;
+  };
+
+  struct HeatmapCell {
+    int hour = 0;      // 0-23
+    int weekday = 0;   // 0=Mon … 6=Sun
+    int count = 0;
+  };
+
+  struct InsightData {
+    std::vector<TopicKeyword> top_topics;
+    std::vector<ModelUsage> model_usage;
+    std::vector<HeatmapCell> hourly_heatmap;
+    // 用户漏斗
+    int funnel_registered = 0;
+    int funnel_generated_once = 0;
+    int funnel_generated_multi = 0;
+    // 页数分布
+    std::vector<std::string> pages_labels;
+    std::vector<int> pages_values;
+  };
+
+  // Get insights data for admin (不需要 range，覆盖全量历史)
+  bool GetInsights(InsightData& out, std::string& error);
+
   // Delete a PPT generation request record
   bool DeleteRequest(std::uint64_t user_id, std::uint64_t request_id, std::string& error);
 

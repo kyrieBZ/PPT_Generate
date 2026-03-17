@@ -1309,3 +1309,131 @@ std::vector<PptRequest> PptService::GetRequestsByIds(std::uint64_t user_id,
   mysql_free_result(res);
   return result;
 }
+
+// ── 偏好洞察 ─────────────────────────────────────────────────────────────────
+bool PptService::GetInsights(InsightData& out, std::string& error) {
+  auto connection = pool_->GetConnection();
+  MYSQL* conn = connection.Get();
+  if (!conn) { error = "无法获取数据库连接"; return false; }
+
+  auto run = [&](const std::string& sql, MYSQL_RES*& res) -> bool {
+    if (mysql_query(conn, sql.c_str()) != 0) {
+      error = "查询失败: " + std::string(mysql_error(conn));
+      return false;
+    }
+    res = mysql_store_result(conn);
+    return true;
+  };
+
+  // ── 1. 模型使用分布 ────────────────────────────────────────────────────────
+  {
+    MYSQL_RES* res = nullptr;
+    if (!run("SELECT model_key, COUNT(*) AS cnt FROM ppt_requests "
+             "WHERE model_key <> '' GROUP BY model_key ORDER BY cnt DESC LIMIT 10",
+             res)) return false;
+    if (res) {
+      MYSQL_ROW row;
+      while ((row = mysql_fetch_row(res))) {
+        ModelUsage mu;
+        mu.model = row[0] ? row[0] : "unknown";
+        mu.count = row[1] ? std::stoi(row[1]) : 0;
+        out.model_usage.push_back(std::move(mu));
+      }
+      mysql_free_result(res);
+    }
+  }
+
+  // ── 2. 热门主题关键词（取 topic 字段前 10 个字作为短语，GROUP BY 统计） ──
+  //    简单策略：截取 topic 前 20 字作为 key，取频次 TOP 20
+  {
+    MYSQL_RES* res = nullptr;
+    if (!run("SELECT LEFT(TRIM(topic), 20) AS kw, COUNT(*) AS cnt "
+             "FROM ppt_requests WHERE topic <> '' "
+             "GROUP BY kw ORDER BY cnt DESC LIMIT 20",
+             res)) return false;
+    if (res) {
+      MYSQL_ROW row;
+      while ((row = mysql_fetch_row(res))) {
+        TopicKeyword tk;
+        tk.keyword = row[0] ? row[0] : "";
+        tk.count   = row[1] ? std::stoi(row[1]) : 0;
+        if (!tk.keyword.empty()) out.top_topics.push_back(std::move(tk));
+      }
+      mysql_free_result(res);
+    }
+  }
+
+  // ── 3. 生成高峰时段热力图 (hour × weekday) ─────────────────────────────────
+  {
+    MYSQL_RES* res = nullptr;
+    if (!run("SELECT HOUR(created_at) AS h, WEEKDAY(created_at) AS wd, COUNT(*) AS cnt "
+             "FROM ppt_requests GROUP BY h, wd ORDER BY h, wd",
+             res)) return false;
+    if (res) {
+      MYSQL_ROW row;
+      while ((row = mysql_fetch_row(res))) {
+        HeatmapCell cell;
+        cell.hour    = row[0] ? std::stoi(row[0]) : 0;
+        cell.weekday = row[1] ? std::stoi(row[1]) : 0;
+        cell.count   = row[2] ? std::stoi(row[2]) : 0;
+        out.hourly_heatmap.push_back(cell);
+      }
+      mysql_free_result(res);
+    }
+  }
+
+  // ── 4. 用户留存漏斗 ────────────────────────────────────────────────────────
+  {
+    MYSQL_RES* res = nullptr;
+    // 注册用户总数
+    if (!run("SELECT COUNT(*) FROM users", res)) return false;
+    if (res) {
+      MYSQL_ROW row = mysql_fetch_row(res);
+      out.funnel_registered = (row && row[0]) ? std::stoi(row[0]) : 0;
+      mysql_free_result(res);
+    }
+    // 至少生成过一次 PPT 的用户
+    if (!run("SELECT COUNT(DISTINCT user_id) FROM ppt_requests", res)) return false;
+    if (res) {
+      MYSQL_ROW row = mysql_fetch_row(res);
+      out.funnel_generated_once = (row && row[0]) ? std::stoi(row[0]) : 0;
+      mysql_free_result(res);
+    }
+    // 生成次数 >= 3 的用户（"高频"用户）
+    if (!run("SELECT COUNT(*) FROM ("
+             "  SELECT user_id FROM ppt_requests "
+             "  GROUP BY user_id HAVING COUNT(*) >= 3"
+             ") AS t",
+             res)) return false;
+    if (res) {
+      MYSQL_ROW row = mysql_fetch_row(res);
+      out.funnel_generated_multi = (row && row[0]) ? std::stoi(row[0]) : 0;
+      mysql_free_result(res);
+    }
+  }
+
+  // ── 5. 页数分布（1-5 / 6-10 / 11-20 / 21+）────────────────────────────────
+  {
+    out.pages_labels = {"1-5页", "6-10页", "11-20页", "21页+"};
+    out.pages_values.assign(4, 0);
+    MYSQL_RES* res = nullptr;
+    if (!run("SELECT "
+             "SUM(pages BETWEEN 1 AND 5)  AS b1, "
+             "SUM(pages BETWEEN 6 AND 10) AS b2, "
+             "SUM(pages BETWEEN 11 AND 20) AS b3, "
+             "SUM(pages >= 21) AS b4 "
+             "FROM ppt_requests",
+             res)) return false;
+    if (res) {
+      MYSQL_ROW row = mysql_fetch_row(res);
+      if (row) {
+        for (int i = 0; i < 4; ++i) {
+          out.pages_values[i] = (row[i]) ? std::stoi(row[i]) : 0;
+        }
+      }
+      mysql_free_result(res);
+    }
+  }
+
+  return true;
+}

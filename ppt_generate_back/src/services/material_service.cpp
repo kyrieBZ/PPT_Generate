@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 
+#include <curl/curl.h>
 #include <mysql/mysql.h>
 #include <nlohmann/json.hpp>
 
@@ -39,19 +40,24 @@ std::uint64_t NowSeconds() {
           .count());
 }
 
+// 标准列顺序（11 列）：
+//   0:id  1:user_id  2:filename  3:file_type  4:file_path  5:file_size
+//   6:status  7:extract_result  8:error_msg  9:review_result
+//   10:UNIX_TIMESTAMP(created_at)  11:UNIX_TIMESTAMP(updated_at)
 Material RowToMaterial(MYSQL_ROW row, unsigned long* lengths) {
   Material m;
-  if (row[0] && lengths[0]) m.id            = std::string(row[0], lengths[0]);
-  if (row[1]) m.user_id       = std::stoull(row[1]);
-  if (row[2] && lengths[2]) m.filename      = std::string(row[2], lengths[2]);
-  if (row[3] && lengths[3]) m.file_type     = std::string(row[3], lengths[3]);
-  if (row[4] && lengths[4]) m.file_path     = std::string(row[4], lengths[4]);
-  if (row[5]) m.file_size     = std::stoull(row[5]);
-  if (row[6] && lengths[6]) m.status        = std::string(row[6], lengths[6]);
+  if (row[0] && lengths[0]) m.id             = std::string(row[0], lengths[0]);
+  if (row[1])               m.user_id        = std::stoull(row[1]);
+  if (row[2] && lengths[2]) m.filename       = std::string(row[2], lengths[2]);
+  if (row[3] && lengths[3]) m.file_type      = std::string(row[3], lengths[3]);
+  if (row[4] && lengths[4]) m.file_path      = std::string(row[4], lengths[4]);
+  if (row[5])               m.file_size      = std::stoull(row[5]);
+  if (row[6] && lengths[6]) m.status         = std::string(row[6], lengths[6]);
   if (row[7] && lengths[7]) m.extract_result = std::string(row[7], lengths[7]);
-  if (row[8] && lengths[8]) m.error_msg     = std::string(row[8], lengths[8]);
-  if (row[9])  m.created_at  = std::stoull(row[9]);
-  if (row[10]) m.updated_at  = std::stoull(row[10]);
+  if (row[8] && lengths[8]) m.error_msg      = std::string(row[8], lengths[8]);
+  if (row[9] && lengths[9]) m.review_result  = std::string(row[9], lengths[9]);
+  if (row[10])              m.created_at     = std::stoull(row[10]);
+  if (row[11])              m.updated_at     = std::stoull(row[11]);
   return m;
 }
 
@@ -168,69 +174,26 @@ bool MaterialService::GetMaterial(const std::string& material_id,
   MYSQL* conn = conn_guard.Get();
   if (!conn) { error = "无法获取数据库连接"; return false; }
 
-  const std::string sql = R"(
-    SELECT id, user_id, filename, file_type, file_path, file_size, status,
-           extract_result, error_msg,
-           UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at)
-    FROM materials WHERE id = ? AND user_id = ?
-  )";
-
-  MYSQL_STMT* stmt = mysql_stmt_init(conn);
-  if (!stmt) { error = "无法初始化SQL语句"; return false; }
-  if (mysql_stmt_prepare(stmt, sql.c_str(), sql.length()) != 0) {
-    mysql_stmt_close(stmt);
-    error = "SQL准备失败";
-    return false;
-  }
-
-  MYSQL_BIND params[2];
-  memset(params, 0, sizeof(params));
-  params[0].buffer_type   = MYSQL_TYPE_STRING;
-  params[0].buffer        = (void*)material_id.c_str();
-  params[0].buffer_length = material_id.length();
-  unsigned long long uid_val = static_cast<unsigned long long>(user_id);
-  params[1].buffer_type   = MYSQL_TYPE_LONGLONG;
-  params[1].buffer        = &uid_val;
-  params[1].is_unsigned   = 1;
-
-  if (mysql_stmt_bind_param(stmt, params) != 0 ||
-      mysql_stmt_execute(stmt) != 0) {
-    error = "SQL执行失败";
-    mysql_stmt_close(stmt);
-    return false;
-  }
-
-  MYSQL_RES* meta = mysql_stmt_result_metadata(stmt);
-  if (!meta) { mysql_stmt_close(stmt); error = "无结果元数据"; return false; }
-  mysql_stmt_store_result(stmt);
-
-  if (mysql_stmt_num_rows(stmt) == 0) {
-    mysql_free_result(meta);
-    mysql_stmt_close(stmt);
-    error = "材料不存在";
-    return false;
-  }
-
-  // Use mysql_stmt_fetch with dynamic result
-  mysql_free_result(meta);
-  mysql_stmt_close(stmt);
-
-  // Re-query with mysql_query for simplicity (result set is small)
+  // material_id is a UUID (hex + dashes only) — safe to inline.
+  // user_id is a numeric — safe to inline.
   std::ostringstream q;
-  // Escape id manually (it's a UUID, safe chars only)
   q << "SELECT id, user_id, filename, file_type, file_path, file_size, status, "
-    << "extract_result, error_msg, "
+    << "extract_result, error_msg, review_result, "
     << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at) "
     << "FROM materials WHERE id = '" << material_id << "' AND user_id = " << user_id;
 
   if (mysql_query(conn, q.str().c_str()) != 0) {
-    error = "查询失败";
+    error = "查询失败: " + std::string(mysql_error(conn));
     return false;
   }
   MYSQL_RES* res = mysql_store_result(conn);
-  if (!res) { error = "无结果"; return false; }
+  if (!res) { error = "无结果集"; return false; }
   MYSQL_ROW row = mysql_fetch_row(res);
-  if (!row) { mysql_free_result(res); error = "材料不存在"; return false; }
+  if (!row) {
+    mysql_free_result(res);
+    error = "材料不存在";
+    return false;
+  }
   unsigned long* lengths = mysql_fetch_lengths(res);
   out_material = RowToMaterial(row, lengths);
   mysql_free_result(res);
@@ -245,7 +208,7 @@ std::vector<Material> MaterialService::ListMaterials(std::uint64_t user_id, std:
 
   std::ostringstream q;
   q << "SELECT id, user_id, filename, file_type, file_path, file_size, status, "
-    << "extract_result, error_msg, "
+    << "extract_result, error_msg, review_result, "
     << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at) "
     << "FROM materials WHERE user_id = " << user_id
     << " ORDER BY created_at DESC LIMIT 50";
@@ -426,7 +389,7 @@ void MaterialService::RunExtraction(const std::string& material_id) {
 
   std::ostringstream q;
   q << "SELECT id, user_id, filename, file_type, file_path, file_size, status, "
-    << "extract_result, error_msg, "
+    << "extract_result, error_msg, review_result, "
     << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at) "
     << "FROM materials WHERE id = '" << material_id << "'";
 
@@ -520,4 +483,514 @@ void MaterialService::RunExtraction(const std::string& material_id) {
 
   Logger::Info("MaterialService: extraction completed for " + material_id);
   UpdateExtractResult(material_id, "completed", output, "", db_error);
+}
+
+std::vector<Material> MaterialService::AdminListMaterials(const AdminMaterialFilter& filter,
+                                                          int& out_total,
+                                                          std::string& error) {
+  std::vector<Material> result;
+  auto conn_guard = pool_->GetConnection();
+  MYSQL* conn = conn_guard.Get();
+  if (!conn) { error = "无法获取数据库连接"; return result; }
+
+  std::ostringstream where;
+  where << " WHERE 1=1";
+  if (filter.user_id > 0) {
+    where << " AND user_id = " << filter.user_id;
+  }
+  if (!filter.status.empty()) {
+    // Escape: status is enum-like, only allow safe chars
+    std::string safe_status;
+    for (char c : filter.status) {
+      if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') safe_status.push_back(c);
+    }
+    if (!safe_status.empty()) {
+      where << " AND status = '" << safe_status << "'";
+    }
+  }
+  if (!filter.file_type.empty()) {
+    std::string safe_type;
+    for (char c : filter.file_type) {
+      if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') safe_type.push_back(c);
+    }
+    if (!safe_type.empty()) {
+      where << " AND file_type = '" << safe_type << "'";
+    }
+  }
+
+  // Count query
+  const std::string count_sql = "SELECT COUNT(*) FROM materials" + where.str();
+  if (mysql_query(conn, count_sql.c_str()) != 0) {
+    error = "统计查询失败";
+    return result;
+  }
+  {
+    MYSQL_RES* res = mysql_store_result(conn);
+    if (res) {
+      MYSQL_ROW row = mysql_fetch_row(res);
+      if (row && row[0]) out_total = std::atoi(row[0]);
+      mysql_free_result(res);
+    }
+  }
+
+  const int page = std::max(1, filter.page);
+  const int page_size = std::max(1, std::min(100, filter.page_size));
+  const int offset = (page - 1) * page_size;
+
+  // Data query — join with users to get username
+  std::ostringstream data_sql;
+  // 列顺序：0..11 同 RowToMaterial，第 12 列是 username
+  data_sql << "SELECT m.id, m.user_id, m.filename, m.file_type, m.file_path, m.file_size, "
+           << "m.status, m.extract_result, m.error_msg, m.review_result, "
+           << "UNIX_TIMESTAMP(m.created_at), UNIX_TIMESTAMP(m.updated_at), "
+           << "IFNULL(u.username, '') "
+           << "FROM materials m LEFT JOIN users u ON m.user_id = u.id"
+           << where.str()
+           << " ORDER BY m.created_at DESC"
+           << " LIMIT " << page_size << " OFFSET " << offset;
+
+  if (mysql_query(conn, data_sql.str().c_str()) != 0) {
+    error = "查询失败";
+    return result;
+  }
+  MYSQL_RES* res = mysql_store_result(conn);
+  if (!res) return result;
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(res)) != nullptr) {
+    unsigned long* lengths = mysql_fetch_lengths(res);
+    Material m = RowToMaterial(row, lengths);
+    // row[12] is username — 编码到 error_msg 字段（仅 error_msg 为空时安全）
+    if (row[12] && lengths[12] && m.error_msg.empty()) {
+      m.error_msg = std::string("__username__:") + std::string(row[12], lengths[12]);
+    }
+    result.push_back(m);
+  }
+  mysql_free_result(res);
+  return result;
+}
+
+MaterialService::AdminMaterialStats MaterialService::AdminGetStats(std::string& error) {
+  AdminMaterialStats stats;
+  auto conn_guard = pool_->GetConnection();
+  MYSQL* conn = conn_guard.Get();
+  if (!conn) { error = "无法获取数据库连接"; return stats; }
+
+  const std::string sql =
+      "SELECT COUNT(*), IFNULL(SUM(file_size),0), "
+      "SUM(status='completed'), SUM(status='pending' OR status='extracting'), SUM(status='failed') "
+      "FROM materials";
+  if (mysql_query(conn, sql.c_str()) != 0) {
+    error = "统计查询失败";
+    return stats;
+  }
+  MYSQL_RES* res = mysql_store_result(conn);
+  if (!res) return stats;
+  MYSQL_ROW row = mysql_fetch_row(res);
+  if (row) {
+    if (row[0]) stats.total       = std::atoi(row[0]);
+    if (row[1]) stats.total_size  = std::stoull(row[1]);
+    if (row[2]) stats.completed   = std::atoi(row[2]);
+    if (row[3]) stats.pending     = std::atoi(row[3]);
+    if (row[4]) stats.failed      = std::atoi(row[4]);
+  }
+  mysql_free_result(res);
+  return stats;
+}
+
+bool MaterialService::AdminDeleteMaterial(const std::string& material_id,
+                                          const std::string& delete_reason,
+                                          const std::string& deleted_by,
+                                          std::string& error) {
+  auto conn_guard = pool_->GetConnection();
+  MYSQL* conn = conn_guard.Get();
+  if (!conn) { error = "无法获取数据库连接"; return false; }
+
+  // Fetch metadata before deletion (user_id, filename, file_type, file_size, file_path)
+  std::ostringstream q;
+  q << "SELECT user_id, filename, file_type, file_size, file_path FROM materials"
+    << " WHERE id = '" << material_id << "'";
+  if (mysql_query(conn, q.str().c_str()) != 0) {
+    error = "查询失败";
+    return false;
+  }
+  std::uint64_t user_id = 0;
+  std::string filename, file_type, file_path;
+  std::uint64_t file_size = 0;
+  {
+    MYSQL_RES* res = mysql_store_result(conn);
+    if (res) {
+      MYSQL_ROW row = mysql_fetch_row(res);
+      if (row) {
+        if (row[0]) user_id   = std::stoull(row[0]);
+        if (row[1]) filename  = row[1];
+        if (row[2]) file_type = row[2];
+        if (row[3]) file_size = std::stoull(row[3]);
+        if (row[4]) file_path = row[4];
+      }
+      mysql_free_result(res);
+    }
+  }
+
+  if (user_id == 0) { error = "材料不存在"; return false; }
+
+  // Delete the record
+  std::ostringstream del;
+  del << "DELETE FROM materials WHERE id = '" << material_id << "'";
+  if (mysql_query(conn, del.str().c_str()) != 0) {
+    error = "删除失败";
+    return false;
+  }
+  if (mysql_affected_rows(conn) == 0) {
+    error = "材料不存在";
+    return false;
+  }
+
+  // Remove file from disk
+  if (!file_path.empty()) {
+    std::error_code ec;
+    std::filesystem::remove(file_path, ec);
+  }
+
+  // Write deletion notice for the user
+  {
+    // Escape strings
+    auto escape = [&](const std::string& s) -> std::string {
+      std::string out(s.size() * 2 + 1, '\0');
+      const auto len = mysql_real_escape_string(conn, out.data(), s.c_str(), s.length());
+      out.resize(len);
+      return out;
+    };
+    const std::string reason_safe = escape(delete_reason.empty() ? "管理员审核删除" : delete_reason);
+    const std::string by_safe     = escape(deleted_by.empty() ? "admin" : deleted_by);
+    const std::string fname_safe  = escape(filename);
+    const std::string ftype_safe  = escape(file_type);
+
+    std::ostringstream ins;
+    ins << "INSERT INTO material_deletion_notices"
+        << " (user_id, filename, file_type, file_size, delete_reason, deleted_by)"
+        << " VALUES (" << user_id
+        << ", '" << fname_safe << "'"
+        << ", '" << ftype_safe << "'"
+        << ", " << file_size
+        << ", '" << reason_safe << "'"
+        << ", '" << by_safe << "')";
+    if (mysql_query(conn, ins.str().c_str()) != 0) {
+      Logger::Warn(std::string("AdminDeleteMaterial: 写入删除通知失败: ") + mysql_error(conn));
+      // 通知写入失败不影响删除本身
+    }
+  }
+
+  return true;
+}
+
+std::vector<MaterialService::DeletionNotice> MaterialService::GetDeletionNotices(
+    std::uint64_t user_id, std::string& error) {
+  std::vector<DeletionNotice> result;
+  auto conn_guard = pool_->GetConnection();
+  MYSQL* conn = conn_guard.Get();
+  if (!conn) { error = "无法获取数据库连接"; return result; }
+
+  std::ostringstream q;
+  q << "SELECT id, filename, file_type, file_size, delete_reason, deleted_by,"
+    << " UNIX_TIMESTAMP(created_at)"
+    << " FROM material_deletion_notices"
+    << " WHERE user_id = " << user_id << " AND is_read = 0"
+    << " ORDER BY created_at DESC LIMIT 20";
+
+  if (mysql_query(conn, q.str().c_str()) != 0) {
+    error = "查询通知失败";
+    return result;
+  }
+  MYSQL_RES* res = mysql_store_result(conn);
+  if (!res) return result;
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(res)) != nullptr) {
+    DeletionNotice n;
+    if (row[0]) n.id            = std::stoull(row[0]);
+    if (row[1]) n.filename      = row[1];
+    if (row[2]) n.file_type     = row[2];
+    if (row[3]) n.file_size     = std::stoull(row[3]);
+    if (row[4]) n.delete_reason = row[4];
+    if (row[5]) n.deleted_by    = row[5];
+    if (row[6]) n.created_at    = std::stoull(row[6]);
+    result.push_back(n);
+  }
+  mysql_free_result(res);
+  return result;
+}
+
+bool MaterialService::MarkNoticesRead(std::uint64_t user_id,
+                                      const std::vector<std::uint64_t>& ids,
+                                      std::string& error) {
+  auto conn_guard = pool_->GetConnection();
+  MYSQL* conn = conn_guard.Get();
+  if (!conn) { error = "无法获取数据库连接"; return false; }
+
+  std::ostringstream q;
+  if (ids.empty()) {
+    // Mark all unread for this user
+    q << "UPDATE material_deletion_notices SET is_read = 1"
+      << " WHERE user_id = " << user_id << " AND is_read = 0";
+  } else {
+    q << "UPDATE material_deletion_notices SET is_read = 1"
+      << " WHERE user_id = " << user_id << " AND id IN (";
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      if (i > 0) q << ",";
+      q << ids[i];
+    }
+    q << ")";
+  }
+
+  if (mysql_query(conn, q.str().c_str()) != 0) {
+    error = "标记已读失败";
+    return false;
+  }
+  return true;
+}
+
+bool MaterialService::AdminGetMaterial(const std::string& material_id,
+                                       Material& out_material,
+                                       std::string& error) {
+  auto conn_guard = pool_->GetConnection();
+  MYSQL* conn = conn_guard.Get();
+  if (!conn) { error = "无法获取数据库连接"; return false; }
+
+  std::ostringstream q;
+  q << "SELECT id, user_id, filename, file_type, file_path, file_size, status, "
+    << "extract_result, error_msg, review_result, "
+    << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at) "
+    << "FROM materials WHERE id = '" << material_id << "'";
+
+  if (mysql_query(conn, q.str().c_str()) != 0) {
+    error = "查询失败";
+    return false;
+  }
+  MYSQL_RES* res = mysql_store_result(conn);
+  if (!res) { error = "无结果"; return false; }
+  MYSQL_ROW row = mysql_fetch_row(res);
+  if (!row) {
+    mysql_free_result(res);
+    error = "材料不存在";
+    return false;
+  }
+  unsigned long* lengths = mysql_fetch_lengths(res);
+  out_material = RowToMaterial(row, lengths);
+  mysql_free_result(res);
+  return true;
+}
+
+namespace {
+// 简单 curl 写回调（复用 qwen_client 同样的模式）
+std::size_t MaterialCurlWrite(void* ptr, std::size_t size, std::size_t nmemb, void* userp) {
+  const std::size_t total = size * nmemb;
+  static_cast<std::string*>(userp)->append(static_cast<char*>(ptr), total);
+  return total;
+}
+
+// 调用通义千问做内容审核，返回原始 AI 文本
+bool CallQwenForReview(const std::string& api_key,
+                       const std::string& prompt,
+                       std::string& text_out,
+                       std::string& error,
+                       std::uint32_t timeout_sec) {
+  constexpr const char* kEndpoint =
+      "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
+
+  CURL* curl = curl_easy_init();
+  if (!curl) { error = "无法初始化 HTTP 客户端"; return false; }
+
+  nlohmann::json body;
+  body["model"] = "qwen-plus";
+  body["parameters"]["result_format"] = "message";
+  body["input"]["messages"] = nlohmann::json::array({
+    {{"role", "user"}, {"content", prompt}}
+  });
+
+  const std::string payload = body.dump();
+  std::string response_buf;
+
+  struct curl_slist* headers = nullptr;
+  headers = curl_slist_append(headers, "Content-Type: application/json");
+  const std::string auth = "Authorization: Bearer " + api_key;
+  headers = curl_slist_append(headers, auth.c_str());
+
+  curl_easy_setopt(curl, CURLOPT_URL, kEndpoint);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, MaterialCurlWrite);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buf);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_sec > 0 ? timeout_sec : 60));
+
+  const CURLcode rc = curl_easy_perform(curl);
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+
+  if (rc != CURLE_OK) { error = curl_easy_strerror(rc); return false; }
+
+  try {
+    auto resp = nlohmann::json::parse(response_buf);
+    // 兼容两种格式：output.text 或 output.choices[0].message.content
+    if (resp.contains("output")) {
+      auto& output = resp["output"];
+      if (output.contains("text") && output["text"].is_string()) {
+        text_out = output["text"].get<std::string>();
+        return true;
+      }
+      if (output.contains("choices") && output["choices"].is_array() && !output["choices"].empty()) {
+        auto& msg = output["choices"][0];
+        if (msg.contains("message") && msg["message"].contains("content")) {
+          text_out = msg["message"]["content"].get<std::string>();
+          return true;
+        }
+      }
+    }
+    error = resp.value("message", "通义千问返回内容为空");
+    return false;
+  } catch (const std::exception& ex) {
+    error = ex.what();
+    return false;
+  }
+}
+
+// 从 AI 回复中解析审核结论（result + reason）
+MaterialService::ReviewResult ParseReviewText(const std::string& text) {
+  MaterialService::ReviewResult rv;
+  rv.reviewed_at = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+
+  // 尝试从返回文本中提取 JSON 对象
+  const auto obj_start = text.find('{');
+  const auto obj_end   = text.rfind('}');
+  if (obj_start != std::string::npos && obj_end != std::string::npos && obj_end > obj_start) {
+    try {
+      auto j = nlohmann::json::parse(text.substr(obj_start, obj_end - obj_start + 1));
+      rv.result = j.value("result", "unknown");
+      rv.reason = j.value("reason", "");
+      return rv;
+    } catch (...) {}
+  }
+
+  // 回退：按关键词判断
+  const std::string lower_text = [&]() {
+    std::string s = text;
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return s;
+  }();
+
+  if (lower_text.find("违规") != std::string::npos ||
+      lower_text.find("violation") != std::string::npos ||
+      lower_text.find("不合规") != std::string::npos ||
+      lower_text.find("涉及违") != std::string::npos) {
+    rv.result = "violation";
+  } else if (lower_text.find("合规") != std::string::npos ||
+             lower_text.find("pass") != std::string::npos ||
+             lower_text.find("无违规") != std::string::npos ||
+             lower_text.find("正常") != std::string::npos) {
+    rv.result = "pass";
+  } else {
+    rv.result = "unknown";
+  }
+  rv.reason = text.size() > 500 ? text.substr(0, 500) + "…" : text;
+  return rv;
+}
+}  // namespace
+
+bool MaterialService::AdminReviewMaterial(const std::string& material_id,
+                                          const std::string& api_key,
+                                          std::uint32_t timeout_sec,
+                                          ReviewResult& out_review,
+                                          std::string& error) {
+  if (api_key.empty()) {
+    error = "未配置通义千问 API Key，无法执行 AI 审核";
+    return false;
+  }
+
+  Material mat;
+  if (!AdminGetMaterial(material_id, mat, error)) {
+    return false;
+  }
+
+  if (mat.status != "completed" || mat.extract_result.empty()) {
+    error = "素材尚未完成文本提取，无法进行 AI 审核";
+    return false;
+  }
+
+  // 从 extract_result JSON 中提取文本内容
+  std::string content_text;
+  try {
+    auto j = nlohmann::json::parse(mat.extract_result);
+    if (j.contains("text") && j["text"].is_string()) {
+      content_text = j["text"].get<std::string>();
+    } else if (j.contains("content") && j["content"].is_string()) {
+      content_text = j["content"].get<std::string>();
+    } else if (j.contains("sections") && j["sections"].is_array()) {
+      for (const auto& sec : j["sections"]) {
+        if (sec.contains("content") && sec["content"].is_string()) {
+          content_text += sec["content"].get<std::string>() + "\n";
+        }
+      }
+    } else {
+      content_text = mat.extract_result;
+    }
+  } catch (...) {
+    content_text = mat.extract_result;
+  }
+
+  // 截断至 3000 字，避免超出模型上下文
+  constexpr std::size_t kMaxContentLen = 3000;
+  if (content_text.size() > kMaxContentLen) {
+    content_text = content_text.substr(0, kMaxContentLen) + "…（内容已截断）";
+  }
+
+  const std::string prompt =
+      "你是一名内容安全审核专家。请审核以下文档内容，判断是否存在以下任一违规情况：\n"
+      "1. 色情、淫秽内容\n"
+      "2. 政治敏感、反社会或违法内容\n"
+      "3. 侵权、抄袭或虚假信息\n"
+      "4. 人身攻击、仇恨言论\n"
+      "5. 其他明显违规内容\n\n"
+      "文档内容如下：\n---\n" + content_text + "\n---\n\n"
+      "请严格按照以下 JSON 格式输出审核结论，不要输出任何其他内容：\n"
+      "{\"result\": \"pass 或 violation\", \"reason\": \"简明说明（50字以内）\"}\n"
+      "result 字段只能是 pass（合规）或 violation（违规）。";
+
+  std::string ai_response;
+  if (!CallQwenForReview(api_key, prompt, ai_response, error, timeout_sec)) {
+    return false;
+  }
+
+  out_review = ParseReviewText(ai_response);
+
+  // 持久化审核结论到数据库
+  nlohmann::json review_json = {
+    {"result",      out_review.result},
+    {"reason",      out_review.reason},
+    {"reviewed_at", out_review.reviewed_at}
+  };
+  const std::string review_str = review_json.dump();
+
+  auto conn_guard = pool_->GetConnection();
+  MYSQL* conn = conn_guard.Get();
+  if (conn) {
+    std::string safe_id;
+    for (char c : material_id) {
+      if (std::isalnum(static_cast<unsigned char>(c)) || c == '-') safe_id.push_back(c);
+    }
+    // Escape review_str via mysql_real_escape_string
+    std::string escaped_review(review_str.size() * 2 + 1, '\0');
+    const auto elen = mysql_real_escape_string(
+        conn, escaped_review.data(), review_str.c_str(), review_str.length());
+    escaped_review.resize(elen);
+
+    std::ostringstream upd;
+    upd << "UPDATE materials SET review_result = '" << escaped_review
+        << "', updated_at = NOW() WHERE id = '" << safe_id << "'";
+    if (mysql_query(conn, upd.str().c_str()) != 0) {
+      Logger::Warn(std::string("AdminReviewMaterial: 写入审核结论失败: ") + mysql_error(conn));
+    }
+  }
+
+  return true;
 }

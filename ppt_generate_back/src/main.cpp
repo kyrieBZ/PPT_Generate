@@ -14,6 +14,7 @@
 #include "controllers/template_controller.h"
 #include "controllers/material_controller.h"
 #include "controllers/model_controller.h"
+#include "controllers/announcement_controller.h"
 #include "database/mongo_client.h"
 #include "database/mysql_connection_pool.h"
 #include "database/redis_client.h"
@@ -158,7 +159,9 @@ int main(int argc, char* argv[]) {
     AuthController auth_controller(auth_service);
     AdminController admin_controller(auth_service);
     AssistantController assistant_controller(auth_service, assistant_service);
-    MaterialController material_controller(auth_service, material_service, thread_pool);
+    MaterialController material_controller(auth_service, material_service, thread_pool,
+                                           config.providers().qwen_api_key,
+                                           config.providers().qwen_timeout_seconds);
     PptController ppt_controller(auth_service,
                                  ppt_service,
                                  model_service,
@@ -174,6 +177,7 @@ int main(int argc, char* argv[]) {
                                  config.redis().ttl_ppt_history);
     TemplateController template_controller(template_service);
     ModelController model_controller(model_service);
+    AnnouncementController announcement_controller(auth_service, pool);
 
     Logger::Info("PPT output directory: " + config.generation().output_dir);
 
@@ -233,6 +237,9 @@ int main(int argc, char* argv[]) {
     router.AddRoute("GET", "/api/admin/ppt/metrics", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.AdminMetrics(request);
     });
+    router.AddRoute("GET", "/api/admin/insights", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.AdminInsights(request);
+    });
     router.AddRoute("GET", "/api/admin/users", [&admin_controller](const HttpRequest& request) {
       return admin_controller.ListUsers(request);
     });
@@ -240,8 +247,34 @@ int main(int argc, char* argv[]) {
       return admin_controller.UpdateUserStatus(request);
     });
 
+    // ── 管理员素材管理 ──────────────────────────────────────────────────────
+    router.AddRoute("GET", "/api/admin/materials", [&material_controller](const HttpRequest& request) {
+      return material_controller.AdminList(request);
+    });
+    router.AddRoute("GET", "/api/admin/materials/stats", [&material_controller](const HttpRequest& request) {
+      return material_controller.AdminStats(request);
+    });
+    router.AddRoute("GET", "/api/admin/materials/content", [&material_controller](const HttpRequest& request) {
+      return material_controller.AdminGetContent(request);
+    });
+    router.AddRoute("GET", "/api/admin/materials/file", [&material_controller](const HttpRequest& request) {
+      return material_controller.AdminGetFile(request);
+    });
+    router.AddRoute("POST", "/api/admin/materials/review", [&material_controller](const HttpRequest& request) {
+      return material_controller.AdminReview(request);
+    });
+    router.AddRoute("DELETE", "/api/admin/materials", [&material_controller](const HttpRequest& request) {
+      return material_controller.AdminDelete(request);
+    });
+    router.AddRoute("POST", "/api/admin/materials/batch_delete", [&material_controller](const HttpRequest& request) {
+      return material_controller.AdminBatchDelete(request);
+    });
+
     router.AddRoute("DELETE", "/api/ppt/history", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Delete(request);
+    });
+    router.AddRoute("POST", "/api/ppt/batch_delete", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.BatchDelete(request);
     });
     router.AddRoute("GET", "/api/ppt/file", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Download(request);
@@ -303,11 +336,39 @@ int main(int argc, char* argv[]) {
     router.AddRoute("DELETE", "/api/material", [&material_controller](const HttpRequest& request) {
       return material_controller.Delete(request);
     });
+    router.AddRoute("POST", "/api/material/batch_delete", [&material_controller](const HttpRequest& request) {
+      return material_controller.BatchDelete(request);
+    });
     router.AddRoute("POST", "/api/material/batch_upload", [&material_controller](const HttpRequest& request) {
       return material_controller.BatchUpload(request);
     });
     router.AddRoute("GET", "/api/material/batch_status", [&material_controller](const HttpRequest& request) {
       return material_controller.BatchStatus(request);
+    });
+    router.AddRoute("GET", "/api/material/notices", [&material_controller](const HttpRequest& request) {
+      return material_controller.GetDeletionNotices(request);
+    });
+    router.AddRoute("POST", "/api/material/notices/read", [&material_controller](const HttpRequest& request) {
+      return material_controller.MarkNoticesRead(request);
+    });
+
+    // ── 公告管理 ──────────────────────────────────────────────────────────────
+    // 公开接口（需登录）
+    router.AddRoute("GET", "/api/announcements", [&announcement_controller](const HttpRequest& request) {
+      return announcement_controller.ListActive(request);
+    });
+    // 管理员接口
+    router.AddRoute("GET", "/api/admin/announcements", [&announcement_controller](const HttpRequest& request) {
+      return announcement_controller.AdminList(request);
+    });
+    router.AddRoute("POST", "/api/admin/announcements", [&announcement_controller](const HttpRequest& request) {
+      return announcement_controller.AdminCreate(request);
+    });
+    router.AddRoute("PUT", "/api/admin/announcements", [&announcement_controller](const HttpRequest& request) {
+      return announcement_controller.AdminUpdate(request);
+    });
+    router.AddRoute("DELETE", "/api/admin/announcements", [&announcement_controller](const HttpRequest& request) {
+      return announcement_controller.AdminDelete(request);
     });
 
     router.AddRoute("POST", "/api/assistant/chat", [&assistant_controller](const HttpRequest& request) {

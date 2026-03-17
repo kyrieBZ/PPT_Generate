@@ -54,6 +54,88 @@ class MaterialService {
                          const std::string& extract_result_json,
                          std::string& error);
 
+  struct AdminMaterialFilter {
+    std::uint64_t user_id = 0;   // 0 表示不过滤
+    std::string status;          // "" 表示全部
+    std::string file_type;       // "" 表示全部
+    int page = 1;
+    int page_size = 20;
+  };
+
+  struct AdminMaterialStats {
+    int total = 0;
+    std::uint64_t total_size = 0;
+    int completed = 0;
+    int pending = 0;
+    int failed = 0;
+  };
+
+  /** 管理员查询全量素材列表（分页+筛选） */
+  std::vector<Material> AdminListMaterials(const AdminMaterialFilter& filter,
+                                           int& out_total,
+                                           std::string& error);
+
+  /** 管理员查询素材存储统计 */
+  AdminMaterialStats AdminGetStats(std::string& error);
+
+  /**
+   * 管理员强制删除任意素材（不限 user_id），并向素材所属用户写入删除通知。
+   * @param material_id   素材 ID
+   * @param delete_reason 管理员填写的删除原因
+   * @param deleted_by    操作管理员用户名
+   * @param error         错误信息
+   */
+  bool AdminDeleteMaterial(const std::string& material_id,
+                           const std::string& delete_reason,
+                           const std::string& deleted_by,
+                           std::string& error);
+
+  struct DeletionNotice {
+    std::uint64_t id = 0;
+    std::string filename;
+    std::string file_type;
+    std::uint64_t file_size = 0;
+    std::string delete_reason;
+    std::string deleted_by;
+    std::uint64_t created_at = 0;
+  };
+
+  /** 获取用户未读删除通知列表 */
+  std::vector<DeletionNotice> GetDeletionNotices(std::uint64_t user_id, std::string& error);
+
+  /** 标记通知已读（ids 为空则标记该用户全部未读） */
+  bool MarkNoticesRead(std::uint64_t user_id,
+                       const std::vector<std::uint64_t>& ids,
+                       std::string& error);
+
+  struct ReviewResult {
+    std::string result;    // "pass" / "violation" / "unknown"
+    std::string reason;    // 审核结论说明
+    std::uint64_t reviewed_at = 0;
+  };
+
+  /**
+   * 管理员触发 AI 内容审核：读取素材提取文本，调用 Qwen 判断是否违规，
+   * 将结论写入 materials.review_result 列，并返回审核结果。
+   * @param material_id  素材 ID
+   * @param api_key      通义千问 API Key
+   * @param timeout_sec  超时秒数
+   * @param out_review   审核结论（成功时填充）
+   * @param error        错误信息（失败时填充）
+   */
+  bool AdminReviewMaterial(const std::string& material_id,
+                           const std::string& api_key,
+                           std::uint32_t timeout_sec,
+                           ReviewResult& out_review,
+                           std::string& error);
+
+  /**
+   * 获取任意素材的提取内容（管理员专用，不限 user_id）
+   */
+  bool AdminGetMaterial(const std::string& material_id,
+                        Material& out_material,
+                        std::string& error);
+
   const MaterialConfig& config() const { return material_config_; }
 
  private:

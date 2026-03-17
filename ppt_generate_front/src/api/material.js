@@ -1,5 +1,7 @@
 import { apiClient } from './auth'
 
+const nc = () => ({ _t: Date.now() })
+
 export default {
   /**
    * 单文件上传（PDF / DOCX / TXT）
@@ -47,12 +49,12 @@ export default {
 
   /** 轮询单条提取状态 */
   getStatus(id) {
-    return apiClient.get('/material/status', { params: { id } })
+    return apiClient.get('/material/status', { params: { id, ...nc() } })
   },
 
   /** 获取提取结果（含 extractResult 字段） */
   getResult(id) {
-    return apiClient.get('/material/result', { params: { id } })
+    return apiClient.get('/material/result', { params: { id, ...nc() } })
   },
 
   /** 用户修改并保存提取结果 */
@@ -62,11 +64,26 @@ export default {
 
   /** 获取用户材料列表 */
   list() {
-    return apiClient.get('/material/list')
+    return apiClient.get('/material/list', { params: nc() })
   },
 
   /** 删除材料 */
   remove(id) {
     return apiClient.delete('/material', { params: { id } })
+  },
+
+  /** 批量删除材料，ids: string[] */
+  batchDelete(ids) {
+    return apiClient.post('/material/batch_delete', { ids })
+  },
+
+  /** 获取当前用户未读的管理员删除通知 */
+  getDeletionNotices() {
+    return apiClient.get('/material/notices', { params: nc() })
+  },
+
+  /** 标记通知已读，ids 为空数组则标记全部 */
+  markNoticesRead(ids = []) {
+    return apiClient.post('/material/notices/read', { ids })
   }
 }

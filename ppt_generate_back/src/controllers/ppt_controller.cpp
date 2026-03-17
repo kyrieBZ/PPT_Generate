@@ -2154,6 +2154,59 @@ HttpResponse PptController::AdminMetrics(const HttpRequest& request) {
   return HttpResponse::Json(200, payload);
 }
 
+HttpResponse PptController::AdminInsights(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+  if (!user->is_admin) {
+    return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", "Forbidden"));
+  }
+
+  PptService::InsightData data;
+  if (!ppt_service_->GetInsights(data, error)) {
+    Logger::Error(std::string("GetInsights failed: ") + error);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
+  }
+
+  nlohmann::json payload;
+
+  // 热门主题
+  payload["topTopics"] = nlohmann::json::array();
+  for (const auto& tk : data.top_topics) {
+    payload["topTopics"].push_back({{"keyword", tk.keyword}, {"count", tk.count}});
+  }
+
+  // 模型使用分布
+  payload["modelUsage"] = nlohmann::json::array();
+  for (const auto& mu : data.model_usage) {
+    payload["modelUsage"].push_back({{"model", mu.model}, {"count", mu.count}});
+  }
+
+  // 热力图
+  payload["hourlyHeatmap"] = nlohmann::json::array();
+  for (const auto& cell : data.hourly_heatmap) {
+    payload["hourlyHeatmap"].push_back({{"hour", cell.hour}, {"weekday", cell.weekday}, {"count", cell.count}});
+  }
+
+  // 用户漏斗
+  payload["userFunnel"] = {
+    {"registered",       data.funnel_registered},
+    {"generatedOnce",    data.funnel_generated_once},
+    {"generatedMulti",   data.funnel_generated_multi}
+  };
+
+  // 页数分布
+  payload["pagesDistribution"] = nlohmann::json::array();
+  for (size_t i = 0; i < data.pages_labels.size(); ++i) {
+    int v = i < data.pages_values.size() ? data.pages_values[i] : 0;
+    payload["pagesDistribution"].push_back({{"label", data.pages_labels[i]}, {"value", v}});
+  }
+
+  return HttpResponse::Json(200, payload);
+}
+
 HttpResponse PptController::Outline(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
@@ -2366,6 +2419,131 @@ HttpResponse PptController::Delete(const HttpRequest& request) {
   }
 
   return HttpResponse::Json(200, {{"message", "Request deleted successfully"}});
+}
+
+HttpResponse PptController::BatchDelete(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  // 解析 body: {"ids": [1, 2, 3]}
+  if (request.body.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Missing request body"));
+  }
+  nlohmann::json body;
+  try {
+    body = nlohmann::json::parse(request.body);
+  } catch (...) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON body"));
+  }
+  if (!body.contains("ids") || !body["ids"].is_array() || body["ids"].empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "ids must be a non-empty array"));
+  }
+
+  const auto& ids_json = body["ids"];
+  constexpr std::size_t kMaxBatch = 50;
+  if (ids_json.size() > kMaxBatch) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "单次最多批量删除 50 条"));
+  }
+
+  std::vector<std::uint64_t> ids;
+  ids.reserve(ids_json.size());
+  for (const auto& v : ids_json) {
+    std::uint64_t id = 0;
+    if (v.is_number_unsigned()) id = v.get<std::uint64_t>();
+    else if (v.is_number_integer()) id = static_cast<std::uint64_t>(v.get<std::int64_t>());
+    else if (v.is_string()) id = ParseId(v.get<std::string>());
+    if (id == 0) {
+      return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "ids contains invalid value"));
+    }
+    ids.push_back(id);
+  }
+
+  nlohmann::json results = nlohmann::json::array();
+  int success_count = 0;
+
+  for (const auto request_id : ids) {
+    nlohmann::json item;
+    item["id"] = request_id;
+
+    PptRequest ppt_request;
+    std::string item_error;
+    if (!ppt_service_->GetRequest(user->id, request_id, ppt_request, item_error)) {
+      item["status"] = "error";
+      item["message"] = item_error.empty() ? "记录不存在" : item_error;
+      results.push_back(item);
+      continue;
+    }
+
+    // 删除 S3 对象
+    if (s3_client_ && s3_client_->IsEnabled() && !ppt_request.output_path.empty()) {
+      const auto object_key = BuildObjectKey(generation_config_, ppt_request.output_path);
+      if (!object_key.empty()) {
+        std::string del_err;
+        if (!s3_client_->DeleteObject(object_key, del_err)) {
+          Logger::Warn("BatchDelete S3 pptx failed: key=" + object_key + " err=" + del_err);
+        }
+      }
+      const auto pdf_key = BuildObjectKeyPdf(generation_config_, ppt_request.output_path);
+      if (!pdf_key.empty()) {
+        std::string del_err;
+        s3_client_->DeleteObject(pdf_key, del_err);
+      }
+    }
+
+    // 删除数据库记录
+    if (!ppt_service_->DeleteRequest(user->id, request_id, item_error)) {
+      item["status"] = "error";
+      item["message"] = item_error.empty() ? "删除失败" : item_error;
+      results.push_back(item);
+      continue;
+    }
+
+    // 清理 Redis 缓存
+    if (redis_) {
+      redis_->Del("ppt:status:" + std::to_string(request_id));
+    }
+
+    // 删除本地文件
+    if (!ppt_request.output_path.empty()) {
+      const std::filesystem::path output_path(ppt_request.output_path);
+      const std::filesystem::path base_dir(generation_config_.output_dir);
+      if (IsUnderDirectory(base_dir, output_path)) {
+        RemoveFileQuietly(output_path);
+        std::filesystem::path template_copy(output_path);
+        template_copy.replace_extension(".template.pptx");
+        RemoveFileQuietly(template_copy);
+        std::filesystem::path payload_json(output_path);
+        payload_json.replace_extension(".json");
+        RemoveFileQuietly(payload_json);
+        std::filesystem::path pdf_path(output_path);
+        pdf_path.replace_extension(".pdf");
+        RemoveFileQuietly(pdf_path);
+      }
+    }
+
+    item["status"] = "ok";
+    item["message"] = "deleted";
+    results.push_back(item);
+    ++success_count;
+  }
+
+  // 批量清除历史缓存（一次）
+  if (redis_ && success_count > 0) {
+    redis_->Del("ppt:history:user:" + std::to_string(user->id));
+  }
+
+  const int total = static_cast<int>(ids.size());
+  const int failed = total - success_count;
+  const int status_code = (failed == 0) ? 200 : (success_count == 0 ? 400 : 207);
+  return HttpResponse::Json(status_code, {
+    {"success", success_count},
+    {"failed", failed},
+    {"total", total},
+    {"results", results}
+  });
 }
 
 HttpResponse PptController::Download(const HttpRequest& request) {

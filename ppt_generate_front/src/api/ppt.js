@@ -26,6 +26,11 @@ export default {
   remove(id) {
     return apiClient.delete(`/ppt/history?id=${encodeURIComponent(id)}`)
   },
+  /** 批量删除历史记录，ids: number[] */
+  batchDelete(ids) {
+    return apiClient.post('/ppt/batch_delete', { ids })
+  },
+
   // 在线编辑：获取 / 保存结构化 PPT JSON + 再生成
   getStructure(id) {
     return apiClient.get('/ppt/structure', { params: { id } })

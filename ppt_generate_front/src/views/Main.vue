@@ -55,6 +55,22 @@
     </aside>
 
     <main class="main-content">
+      <!-- ── 系统公告横幅 ─────────────────────────────────────────────────── -->
+      <transition name="ann-banner-slide">
+        <div
+          v-if="activeBanner"
+          class="announcement-banner"
+          :class="{ 'announcement-banner--pinned': activeBanner.is_pinned }"
+        >
+          <el-icon class="ann-icon"><BellFilled /></el-icon>
+          <div class="ann-body">
+            <span class="ann-title">{{ activeBanner.title }}</span>
+            <span class="ann-content">{{ activeBanner.content }}</span>
+          </div>
+          <button class="ann-close" @click="dismissBanner(activeBanner.id)" title="关闭">×</button>
+        </div>
+      </transition>
+
       <header class="main-header">
         <div class="header-left">
           <h1>{{ activeMenuItem?.text || 'PPT智能生成系统' }}</h1>
@@ -825,6 +841,15 @@
               <el-icon v-else><Download /></el-icon>
               {{ batchDownloading ? '打包中…' : '批量下载 ZIP' }}
             </button>
+            <button
+              class="batch-delete-btn"
+              :disabled="batchSelected.size === 0 || batchDeleting"
+              @click="handleBatchDelete"
+            >
+              <el-icon v-if="batchDeleting" class="spin"><Loading /></el-icon>
+              <el-icon v-else><Delete /></el-icon>
+              {{ batchDeleting ? '删除中…' : '批量删除' }}
+            </button>
           </div>
 
           <div v-if="historyBusy" class="history-empty">{{ historyBusyLabel }}</div>
@@ -864,6 +889,12 @@
                   <span class="btn-content">
                     <el-icon class="btn-icon"><EditPen /></el-icon>
                     <span>编辑</span>
+                  </span>
+                </el-button>
+                <el-button size="large" type="warning" :disabled="!item?.hasFile" @click="openHistoryPreview(item)">
+                  <span class="btn-content">
+                    <el-icon class="btn-icon"><Star /></el-icon>
+                    <span>在线预览</span>
                   </span>
                 </el-button>
                 <el-dropdown
@@ -1113,6 +1144,29 @@
             />
           </div>
 
+          <!-- 材料批量操作工具栏 -->
+          <div v-if="!materialsLoading && materialsList.length" class="batch-toolbar">
+            <label class="batch-select-all">
+              <input
+                type="checkbox"
+                :checked="matBatchSelectAll"
+                :indeterminate.prop="matBatchIndeterminate"
+                @change="toggleMatSelectAll"
+              />
+              <span>全选</span>
+            </label>
+            <span v-if="matBatchSelected.size > 0" class="batch-count">已选 {{ matBatchSelected.size }} 项</span>
+            <button
+              class="batch-delete-btn"
+              :disabled="matBatchSelected.size === 0 || matBatchDeleting"
+              @click="handleMatBatchDelete"
+            >
+              <el-icon v-if="matBatchDeleting" class="spin"><Loading /></el-icon>
+              <el-icon v-else><Delete /></el-icon>
+              {{ matBatchDeleting ? '删除中…' : '批量删除' }}
+            </button>
+          </div>
+
           <div v-if="materialsLoading" class="materials-loading">加载中...</div>
 
           <div v-else-if="!materialsList.length" class="materials-empty">
@@ -1124,7 +1178,20 @@
           </div>
 
           <div v-else class="materials-grid">
-            <div v-for="mat in materialsList" :key="mat.id" class="material-card">
+            <div
+              v-for="mat in materialsList"
+              :key="mat.id"
+              class="material-card"
+              :class="{ 'material-card--selected': matBatchSelected.has(mat.id) }"
+            >
+              <!-- 批量选择 checkbox -->
+              <div class="material-checkbox">
+                <input
+                  type="checkbox"
+                  :checked="matBatchSelected.has(mat.id)"
+                  @change="toggleMatBatchItem(mat.id)"
+                />
+              </div>
               <div class="material-card-header">
                 <div class="material-icon">
                   <el-icon style="font-size:1.5rem"><Document /></el-icon>
@@ -1266,6 +1333,62 @@
       </div>
     </main>
 
+    <!-- 历史记录在线预览 Dialog -->
+    <el-dialog
+      v-model="historyPreviewVisible"
+      :title="historyPreviewTitle"
+      width="90%"
+      top="3vh"
+      class="history-preview-dialog"
+      destroy-on-close
+      :close-on-click-modal="false"
+    >
+      <div class="history-preview-dialog-body">
+        <div v-if="historyPreviewLoading" class="history-preview-loading">
+          <el-icon class="spin" :size="36"><Loading /></el-icon>
+          <p>正在加载预览…</p>
+        </div>
+        <div v-else-if="historyPreviewEmbedUrl" class="history-preview-iframe-wrap">
+          <iframe
+            :src="historyPreviewEmbedUrl"
+            class="history-preview-iframe"
+            frameborder="0"
+            allowfullscreen
+            @load="historyPreviewLoading = false"
+          ></iframe>
+        </div>
+        <div v-else class="history-preview-unavailable">
+          <el-icon :size="48" style="color:#94a3b8"><Document /></el-icon>
+          <p>在线预览不可用，请下载后查看。</p>
+          <el-button type="primary" @click="downloadPPT(historyPreviewItem)">
+            <el-icon class="btn-icon"><Download /></el-icon>下载 PPTX
+          </el-button>
+        </div>
+      </div>
+      <template #footer>
+        <div class="history-preview-footer">
+          <el-button @click="historyPreviewVisible = false">关闭</el-button>
+          <el-dropdown
+            trigger="click"
+            :disabled="!historyPreviewItem?.hasFile"
+            @command="(cmd) => cmd === 'pptx' ? downloadPPT(historyPreviewItem) : downloadPDF(historyPreviewItem)"
+          >
+            <el-button type="success" :disabled="!historyPreviewItem?.hasFile">
+              <el-icon class="btn-icon"><Download /></el-icon>
+              <span>下载</span>
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="pptx">下载 PPTX</el-dropdown-item>
+                <el-dropdown-item command="pdf">下载 PDF</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
@@ -1273,8 +1396,9 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch , watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, Download, Delete, EditPen, Search, Setting, SwitchButton, Plus, DataAnalysis, Brush, Document, Timer, Star, RefreshRight, ArrowDown, User, Lock, ArrowLeft, ArrowRight, Loading } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
+import { MagicStick, Download, Delete, EditPen, Search, Setting, SwitchButton, Plus, DataAnalysis, Brush, Document, Timer, Star, RefreshRight, ArrowDown, User, Lock, ArrowLeft, ArrowRight, Loading, BellFilled } from '@element-plus/icons-vue'
+import { getActiveAnnouncements } from '@/api/announcement'
 import templatesAPI from '@/api/templates'
 import pptAPI from '@/api/ppt'
 import materialAPI from '@/api/material'
@@ -2475,6 +2599,43 @@ const handleBatchDownload = async () => {
 // 翻页时清空跨页选择（避免混淆）
 watch(() => historyPage.value, () => { batchSelected.value = new Set() })
 
+// ---- 历史记录批量删除 ----
+const batchDeleting = ref(false)
+
+const handleBatchDelete = async () => {
+  if (batchSelected.value.size === 0) return
+  if (batchSelected.value.size > 50) {
+    ElMessage.warning('单次最多批量删除 50 条')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${batchSelected.value.size} 条记录吗？此操作不可恢复。`,
+      '批量删除确认',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  batchDeleting.value = true
+  try {
+    const ids = Array.from(batchSelected.value)
+    const res = await pptAPI.batchDelete(ids)
+    const { success, failed } = res.data
+    if (failed === 0) {
+      ElMessage.success(`已成功删除 ${success} 条记录`)
+    } else {
+      ElMessage.warning(`成功 ${success} 条，失败 ${failed} 条`)
+    }
+    batchSelected.value = new Set()
+    await store.dispatch('fetchPptHistory')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || '批量删除失败，请稍后重试')
+  } finally {
+    batchDeleting.value = false
+  }
+}
+
 const downloadPPT = (item) => {
   if (!item?.hasFile) {
     ElMessage.warning('该记录暂无可下载的PPT文件')
@@ -2513,6 +2674,56 @@ const downloadPDF = (item) => {
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)
+}
+
+// ---- 历史记录在线预览 ----
+const historyPreviewVisible = ref(false)
+const historyPreviewItem = ref(null)
+const historyPreviewLoading = ref(false)
+
+const historyPreviewTitle = computed(() => {
+  const t = historyPreviewItem.value?.title || '在线预览'
+  return `在线预览 · ${t}`
+})
+
+const historyPreviewEmbedUrl = computed(() => {
+  const item = historyPreviewItem.value
+  if (!item?.hasFile) return ''
+  const raw = resolveDownloadUrl(item)
+  if (!raw) return ''
+  try {
+    let absUrl
+    // S3 预签名 URL：已含完整签名，禁止追加任何参数（会破坏签名），直接使用
+    const isPresigned = raw.startsWith('http') && raw.includes('X-Amz-Signature')
+    if (isPresigned) {
+      absUrl = raw
+    } else {
+      // 本地 /api/ppt/file 接口：需追加 token + inline
+      const apiBase = import.meta.env.VITE_API_URL || '/api'
+      const base = apiBase.startsWith('http') ? apiBase : window.location.origin
+      const url = new URL(raw, base)
+      const token = store.state.token
+      if (token) url.searchParams.set('token', token)
+      url.searchParams.set('inline', '1')
+      url.searchParams.set('ngrok-skip-browser-warning', '1')
+      absUrl = url.toString()
+    }
+    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(absUrl)}`
+  } catch {
+    return ''
+  }
+})
+
+const openHistoryPreview = (item) => {
+  if (!item?.hasFile) {
+    ElMessage.warning('该记录暂无可预览的PPT文件')
+    return
+  }
+  historyPreviewItem.value = item
+  historyPreviewLoading.value = true
+  historyPreviewVisible.value = true
+  // 若无法嵌入则 iframe onload 不会触发，500ms 后关闭 loading
+  setTimeout(() => { historyPreviewLoading.value = false }, 2000)
 }
 
 const deleteHistory = async (item) => {
@@ -2561,6 +2772,67 @@ const handleModelChange = (modelId) => {
 }
 
 // ---- 文档材料功能 ----
+
+// 材料批量选择
+const matBatchSelected = ref(new Set())
+const matBatchDeleting = ref(false)
+
+const matBatchSelectAll = computed(() =>
+  materialsList.value.length > 0 &&
+  materialsList.value.every(m => matBatchSelected.value.has(m.id))
+)
+const matBatchIndeterminate = computed(() =>
+  materialsList.value.some(m => matBatchSelected.value.has(m.id)) && !matBatchSelectAll.value
+)
+
+const toggleMatBatchItem = (id) => {
+  const s = new Set(matBatchSelected.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  matBatchSelected.value = s
+}
+
+const toggleMatSelectAll = () => {
+  if (matBatchSelectAll.value) {
+    matBatchSelected.value = new Set()
+  } else {
+    matBatchSelected.value = new Set(materialsList.value.map(m => m.id))
+  }
+}
+
+const handleMatBatchDelete = async () => {
+  if (matBatchSelected.value.size === 0) return
+  if (matBatchSelected.value.size > 50) {
+    ElMessage.warning('单次最多批量删除 50 条')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${matBatchSelected.value.size} 份材料吗？此操作不可恢复。`,
+      '批量删除确认',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  matBatchDeleting.value = true
+  try {
+    const ids = Array.from(matBatchSelected.value)
+    const res = await materialAPI.batchDelete(ids)
+    const { success, failed } = res.data
+    if (failed === 0) {
+      ElMessage.success(`已成功删除 ${success} 份材料`)
+    } else {
+      ElMessage.warning(`成功 ${success} 份，失败 ${failed} 份`)
+    }
+    matBatchSelected.value = new Set()
+    await loadMaterialsList()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || '批量删除失败，请稍后重试')
+  } finally {
+    matBatchDeleting.value = false
+  }
+}
 
 const stopMaterialPolling = () => {
   if (materialPollingTimer.value) {
@@ -2716,10 +2988,85 @@ const materialStatusType = (status) => {
   return map[status] || 'info'
 }
 
+// ── 管理员删除通知 ────────────────────────────────────────────────────────────
+const formatNoticeSize = (bytes) => {
+  if (!bytes) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+// ── 系统公告横幅 ─────────────────────────────────────────────────────────────
+const activeBanner = ref(null)  // 当前展示的公告（置顶优先）
+
+const loadActiveBanner = async () => {
+  try {
+    const res = await getActiveAnnouncements()
+    const items = res.data?.items || []
+    if (items.length === 0) { activeBanner.value = null; return }
+    // 已关闭的公告记在 localStorage 中，不再重复展示
+    const dismissed = JSON.parse(localStorage.getItem('ann_dismissed') || '[]')
+    const visible = items.find((a) => !dismissed.includes(a.id))
+    activeBanner.value = visible || null
+  } catch {
+    // 静默失败
+  }
+}
+
+const dismissBanner = (id) => {
+  activeBanner.value = null
+  try {
+    const dismissed = JSON.parse(localStorage.getItem('ann_dismissed') || '[]')
+    if (!dismissed.includes(id)) {
+      dismissed.push(id)
+      // 只保留最近 50 条，避免 localStorage 无限增长
+      localStorage.setItem('ann_dismissed', JSON.stringify(dismissed.slice(-50)))
+    }
+  } catch {}
+}
+
+const showDeletionNotices = async () => {
+  let notices = []
+  try {
+    const res = await materialAPI.getDeletionNotices()
+    notices = res.data?.notices || []
+  } catch (e) {
+    return // 静默失败，不干扰用户
+  }
+  if (notices.length === 0) return
+
+  // 逐条以气泡方式展示，间隔 600ms 错开
+  const ids = notices.map((n) => n.id)
+  notices.forEach((notice, idx) => {
+    setTimeout(() => {
+      const sizeStr = notice.fileSize ? ` (${formatNoticeSize(notice.fileSize)})` : ''
+      const typeStr = notice.fileType ? ` [${notice.fileType.toUpperCase()}]` : ''
+      ElNotification({
+        title: '素材被管理员删除',
+        message: `文件：${notice.filename}${typeStr}${sizeStr}\n原因：${notice.deleteReason || '管理员审核删除'}`,
+        type: 'warning',
+        duration: 0,       // 不自动消失，需手动关闭
+        position: 'bottom-right',
+        customClass: 'deletion-notice-popup',
+        showClose: true,
+        onClick() { /* noop */ }
+      })
+    }, idx * 700)
+  })
+
+  // 批量标记已读（延迟一点，保证用户已看到气泡）
+  setTimeout(() => {
+    materialAPI.markNoticesRead(ids).catch(() => {})
+  }, 1500)
+}
+
 watch(
   () => activeMenu.value,
   (val) => {
-    if (val === 'materials') loadMaterialsList()
+    if (val === 'materials') {
+      loadMaterialsList()
+      showDeletionNotices()
+    }
   }
 )
 
@@ -2817,6 +3164,8 @@ onMounted(() => {
   if (activeMenu.value === 'generate') {
     applyAssistantQueryParams()
   }
+  // 加载系统公告横幅
+  loadActiveBanner()
 })
 </script>
 
@@ -6355,5 +6704,183 @@ h4 {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+
+/* ===== 批量删除按钮 ===== */
+.batch-delete-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  background: #fee2e2;
+  color: #dc2626;
+  font-weight: 600;
+  font-size: 0.88rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.batch-delete-btn:hover:not(:disabled) {
+  background: #fecaca;
+}
+.batch-delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== 材料卡片批量选择 ===== */
+.material-checkbox {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 2;
+}
+.material-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #0EA5E9;
+}
+.material-card {
+  position: relative;
+}
+.material-card--selected {
+  outline: 2px solid #0EA5E9;
+  background: #f0f9ff !important;
+}
+
+/* ===== 历史记录在线预览 Dialog ===== */
+:deep(.history-preview-dialog .el-dialog__body) {
+  padding: 0;
+}
+
+.history-preview-dialog-body {
+  height: 72vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f8fafc;
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+}
+
+.history-preview-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  color: #64748b;
+  font-size: 0.95rem;
+}
+
+.history-preview-iframe-wrap {
+  width: 100%;
+  height: 100%;
+}
+
+.history-preview-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.history-preview-unavailable {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  color: #64748b;
+  font-size: 0.95rem;
+}
+
+.history-preview-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ── 管理员删除通知气泡 ──────────────────────────────────────────────────── */
+:global(.deletion-notice-popup) {
+  border-left: 4px solid #f59e0b !important;
+  background: #fffbeb !important;
+  max-width: 360px;
+}
+:global(.deletion-notice-popup .el-notification__title) {
+  color: #92400e;
+  font-weight: 700;
+}
+/* ── 系统公告横幅 ─────────────────────────────────────────────────────────── */
+.announcement-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 16px;
+  background: linear-gradient(90deg, #e8f4fd, #f0f9ff);
+  border-left: 4px solid #409eff;
+  border-radius: 8px;
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: #303133;
+  box-shadow: 0 1px 4px rgba(64, 158, 255, 0.12);
+  position: relative;
+}
+.announcement-banner--pinned {
+  background: linear-gradient(90deg, #fef9ec, #fffbf0);
+  border-left-color: #e6a23c;
+}
+.ann-icon {
+  font-size: 18px;
+  color: #409eff;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.announcement-banner--pinned .ann-icon {
+  color: #e6a23c;
+}
+.ann-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ann-title {
+  font-weight: 600;
+  color: #1a1a2e;
+}
+.ann-content {
+  color: #606266;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.ann-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  color: #909399;
+  padding: 0 4px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color 0.2s;
+}
+.ann-close:hover { color: #606266; }
+
+.ann-banner-slide-enter-active,
+.ann-banner-slide-leave-active {
+  transition: all 0.3s ease;
+}
+.ann-banner-slide-enter-from,
+.ann-banner-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+:global(.deletion-notice-popup .el-notification__content) {
+  color: #78350f;
+  white-space: pre-line;
+  line-height: 1.6;
+  font-size: 13px;
 }
 </style>
