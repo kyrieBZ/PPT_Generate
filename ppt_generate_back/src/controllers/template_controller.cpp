@@ -4,17 +4,39 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 #include "http/http_types.h"
 
-TemplateController::TemplateController(std::shared_ptr<TemplateService> service)
-    : service_(std::move(service)) {}
+TemplateController::TemplateController(std::shared_ptr<TemplateService>        service,
+                                       std::shared_ptr<TemplateManagerService> tmpl_mgr_service)
+    : service_(std::move(service)),
+      tmpl_mgr_service_(std::move(tmpl_mgr_service)) {}
 
 HttpResponse TemplateController::List(const HttpRequest& request) {
   const auto it = request.query_params.find("q");
   const auto query = (it != request.query_params.end()) ? it->second : std::string();
 
-  const auto results = service_->Search(query);
+  auto results = service_->Search(query);
+
+  // 若模板管理服务可用，则只返回已上架且在有效期内的模板
+  if (tmpl_mgr_service_) {
+    std::vector<std::string> active_ids;
+    std::string error;
+    if (tmpl_mgr_service_->ListActiveIds(active_ids, error)) {
+      std::unordered_set<std::string> active_set(active_ids.begin(), active_ids.end());
+      std::vector<RemoteTemplate> filtered;
+      filtered.reserve(results.size());
+      for (auto& r : results) {
+        if (active_set.count(r.id)) {
+          filtered.push_back(std::move(r));
+        }
+      }
+      results = std::move(filtered);
+    }
+    // 若查询失败（数据库问题），降级为返回全部模板，不影响可用性
+  }
+
   nlohmann::json payload;
   payload["items"] = nlohmann::json::array();
   for (const auto& item : results) {

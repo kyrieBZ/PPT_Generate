@@ -441,6 +441,44 @@ AppConfig AppConfig::Load(const std::string& path) {
   if (auto it = data.find("redis"); it != data.end()) {
     config.redis_ = ParseRedis(*it);
   }
+
+  if (auto it = data.find("ai_search"); it != data.end()) {
+    const auto& j = *it;
+    if (auto jt = j.find("enabled"); jt != j.end() && jt->is_boolean()) {
+      config.ai_search_.enabled = jt->get<bool>();
+    }
+    if (auto jt = j.find("qdrant_host"); jt != j.end() && jt->is_string()) {
+      config.ai_search_.qdrant_host = *jt;
+    }
+    if (auto jt = j.find("qdrant_port"); jt != j.end() && jt->is_number_unsigned()) {
+      config.ai_search_.qdrant_port = static_cast<std::uint16_t>(jt->get<std::uint32_t>());
+    }
+    if (auto jt = j.find("collection_name"); jt != j.end() && jt->is_string()) {
+      config.ai_search_.collection_name = *jt;
+    }
+    if (auto jt = j.find("embedding_model"); jt != j.end() && jt->is_string()) {
+      config.ai_search_.embedding_model = *jt;
+    }
+    if (auto jt = j.find("embedding_dimension"); jt != j.end() && jt->is_number_integer()) {
+      config.ai_search_.embedding_dimension = jt->get<int>();
+    }
+    if (auto jt = j.find("top_k_retrieve"); jt != j.end() && jt->is_number_integer()) {
+      config.ai_search_.top_k_retrieve = jt->get<int>();
+    }
+    if (auto jt = j.find("top_k_return"); jt != j.end() && jt->is_number_integer()) {
+      config.ai_search_.top_k_return = jt->get<int>();
+    }
+    if (auto jt = j.find("score_threshold"); jt != j.end() && jt->is_number()) {
+      config.ai_search_.score_threshold = jt->get<double>();
+    }
+    if (auto jt = j.find("enable_rerank"); jt != j.end() && jt->is_boolean()) {
+      config.ai_search_.enable_rerank = jt->get<bool>();
+    }
+    if (auto jt = j.find("rerank_model"); jt != j.end() && jt->is_string()) {
+      config.ai_search_.rerank_model = *jt;
+    }
+  }
+
   // auth.token_ttl_minutes 优先于 redis.ttl.auth_token（保持一致）
   if (config.redis_.ttl_auth_token <= 0) {
     config.redis_.ttl_auth_token =

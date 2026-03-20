@@ -2,6 +2,7 @@
 
 #include "http/http_types.h"
 #include "logger.h"
+#include "utils/settings_reader.h"
 
 namespace {
 nlohmann::json UserJson(const User& user) {
@@ -21,9 +22,20 @@ nlohmann::json UserJson(const User& user) {
 
 }
 
-AuthController::AuthController(std::shared_ptr<AuthService> service) : service_(std::move(service)) {}
+AuthController::AuthController(std::shared_ptr<AuthService>         service,
+                               std::shared_ptr<MySQLConnectionPool> pool)
+    : service_(std::move(service)), pool_(std::move(pool)) {}
 
 HttpResponse AuthController::Register(const HttpRequest& request) {
+  // 动态检查 registration_enabled 配置（热更新，无需重启）
+  if (pool_) {
+    const bool reg_enabled = SettingsReader::GetBool(*pool_, "registration_enabled", true);
+    if (!reg_enabled) {
+      Logger::Info("Registration attempt rejected: registration_enabled=false");
+      return HttpResponse::Json(403, ErrorJson("ERR_REGISTRATION_DISABLED", "当前系统已关闭新用户注册，请联系管理员"));
+    }
+  }
+
   try {
     auto body = nlohmann::json::parse(request.body);
     if (!body.contains("username") || !body.contains("email") || !body.contains("password")) {

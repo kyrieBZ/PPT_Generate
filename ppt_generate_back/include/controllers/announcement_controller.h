@@ -4,6 +4,7 @@
 
 #include "http/http_types.h"
 #include "services/auth_service.h"
+#include "services/audit_service.h"
 #include "database/mysql_connection_pool.h"
 
 /**
@@ -20,8 +21,9 @@
  */
 class AnnouncementController {
  public:
-  AnnouncementController(std::shared_ptr<AuthService> auth_service,
-                         std::shared_ptr<MySQLConnectionPool> pool);
+  AnnouncementController(std::shared_ptr<AuthService>         auth_service,
+                         std::shared_ptr<MySQLConnectionPool> pool,
+                         std::shared_ptr<AuditService>        audit_service = nullptr);
 
   /** GET /api/announcements — 公开，返回当前有效公告（starts_at<=now, expires_at IS NULL OR >now） */
   HttpResponse ListActive(const HttpRequest& request);
@@ -43,6 +45,7 @@ class AnnouncementController {
   std::shared_ptr<User> AuthenticateAdmin(const HttpRequest& request,
                                           HttpResponse& error_response) const;
 
-  std::shared_ptr<AuthService> auth_service_;
+  std::shared_ptr<AuthService>         auth_service_;
   std::shared_ptr<MySQLConnectionPool> pool_;
+  std::shared_ptr<AuditService>        audit_service_;
 };

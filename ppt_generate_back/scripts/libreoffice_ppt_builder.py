@@ -12,7 +12,7 @@ import tempfile
 import urllib.request
 
 try:
-from pptx import Presentation
+    from pptx import Presentation
     from pptx.enum.dml import MSO_COLOR_TYPE
     from pptx.enum.shapes import PP_PLACEHOLDER
     try:
@@ -32,6 +32,53 @@ EMU_PER_PT = 12700.0
 MIN_FONT_PT = 12.0
 FONT_STEP_PT = 2.0
 MAX_CONTINUATION_SLIDES = 10
+
+_TEMPLATE_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml"
+_PRESENTATION_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"
+
+
+def open_presentation(template_path):
+    """Open a PPTX or POTX file as a python-pptx Presentation.
+
+    Files saved as PowerPoint templates (.potx) have a different content-type
+    entry in [Content_Types].xml that python-pptx refuses to load.  This
+    function detects that case, rewrites the content-type in memory, and
+    returns the loaded Presentation so callers never see the error.
+    """
+    if not zipfile.is_zipfile(template_path):
+        return Presentation(template_path)
+
+    # Check if the content-type needs patching (read [Content_Types].xml from zip)
+    with zipfile.ZipFile(template_path, "r") as _zcheck:
+        try:
+            _ct_data = _zcheck.read("[Content_Types].xml")
+        except KeyError:
+            _ct_data = b""
+
+    if _TEMPLATE_CONTENT_TYPE.encode("utf-8") not in _ct_data:
+        return Presentation(template_path)
+
+    # Patch the content-type in-place within the zip so python-pptx accepts it
+    buf = tempfile.NamedTemporaryFile(delete=False, suffix=".pptx")
+    buf.close()
+    try:
+        with zipfile.ZipFile(template_path, "r") as zin:
+            with zipfile.ZipFile(buf.name, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    data = zin.read(item.filename)
+                    if item.filename == "[Content_Types].xml":
+                        data = data.replace(
+                            _TEMPLATE_CONTENT_TYPE.encode("utf-8"),
+                            _PRESENTATION_CONTENT_TYPE.encode("utf-8"),
+                        )
+                    zout.writestr(item, data)
+        pres = Presentation(buf.name)
+    finally:
+        try:
+            os.remove(buf.name)
+        except Exception:
+            pass
+    return pres
 
 
 def shape_token(shape):
@@ -814,7 +861,7 @@ def run_placeholder_qa(output_path, strict_qa=False):
 def build_presentation(template_path, output_path, payload, strict_qa=False):
     _log(f"build_presentation template={template_path} output={output_path}")
     strict_qa = strict_qa or bool(payload.get("strictQa", False))
-    pres = Presentation(template_path)
+    pres = open_presentation(template_path)
 
     slides = payload.get("slides", [])
     layout_mode = payload.get("layoutMode", "template")
@@ -955,49 +1002,11 @@ def build_presentation(template_path, output_path, payload, strict_qa=False):
             except Exception:
                 pass
 
-        # If still overflow, create continuation slide(s) instead of dumping into notes.
-        remaining = overflow
-        cont = 0
-        last_remaining_size = None
-        while remaining and cont < MAX_CONTINUATION_SLIDES:
-            cont += 1
-            suffix = "（续）" if cont == 1 else f"（续{cont}）"
-            cont_title = f"{title}{suffix}" if title else f"续页{cont}"
-            cont_slide_data = {"title": cont_title, "bullets": remaining}
-            cont_layout_index = layout_index
-            try:
-                cont_layout_index = pick_layout_index(
-                    cont_slide_data,
-                    layout_profiles,
-                    layout_profiles[min(1, len(layout_profiles) - 1)]["index"]
-                    if layout_profiles
-                    else cont_layout_index,
-                )
-            except Exception:
-                cont_layout_index = layout_index
-
-            cont_slide = pres.slides.add_slide(layouts[cont_layout_index])
-            new_remaining, cont_title_shape, cont_used_tokens = fill_slide_text(
-                cont_slide, cont_title, remaining, []
-            )
-            cleared_p, cleared_t = cleanup_unused_text(
-                cont_slide, cont_title_shape, cont_used_tokens, clean_template_text
-            )
-            if cleared_p or cleared_t:
-                _log(
-                    f"slide[{idx}] continuation[{cont}] cleared_placeholders={cleared_p} "
-                    f"cleared_textboxes={cleared_t}"
-                )
-
-            # Safety: if we couldn't place anything, stop to avoid infinite loop.
-            if last_remaining_size is not None and len(new_remaining) >= last_remaining_size:
-                break
-            last_remaining_size = len(new_remaining)
-            remaining = new_remaining
-
-        if remaining:
+        # Overflow content is placed in notes only; continuation slides are not created
+        # so that the final slide count strictly matches the requested page count.
+        if overflow:
             notes = slide_data.get("notes", "")
-            overflow_text = "溢出内容：" + "；".join([str(item) for item in remaining if str(item).strip()])
+            overflow_text = "溢出内容：" + "；".join([str(item) for item in overflow if str(item).strip()])
             slide_data["notes"] = (notes + "\n" + overflow_text).strip() if notes else overflow_text
             try:
                 slide.notes_slide.notes_text_frame.text = slide_data.get("notes", "")

@@ -61,9 +61,12 @@ std::string EscapeStr(MYSQL* conn, const std::string& s) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 AnnouncementController::AnnouncementController(
-    std::shared_ptr<AuthService> auth_service,
-    std::shared_ptr<MySQLConnectionPool> pool)
-    : auth_service_(std::move(auth_service)), pool_(std::move(pool)) {}
+    std::shared_ptr<AuthService>         auth_service,
+    std::shared_ptr<MySQLConnectionPool> pool,
+    std::shared_ptr<AuditService>        audit_service)
+    : auth_service_(std::move(auth_service)),
+      pool_(std::move(pool)),
+      audit_service_(std::move(audit_service)) {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -281,6 +284,16 @@ HttpResponse AnnouncementController::AdminCreate(const HttpRequest& request) {
   std::uint64_t new_id = static_cast<std::uint64_t>(mysql_insert_id(conn));
   Logger::Info("Announcement created: id=" + std::to_string(new_id) + " by=" + admin->username);
 
+  if (audit_service_) {
+    audit_service_->Write(admin->id, admin->username,
+                          "create_announcement", "announcement",
+                          std::to_string(new_id),
+                          "{\"title\":\"" + title + "\"}",
+                          request.Header("x-forwarded-for").empty()
+                              ? request.Header("x-real-ip")
+                              : request.Header("x-forwarded-for"));
+  }
+
   return HttpResponse::Json(200, {{"id", new_id}, {"message", "公告创建成功"}});
 }
 
@@ -363,6 +376,16 @@ HttpResponse AnnouncementController::AdminUpdate(const HttpRequest& request) {
   }
 
   Logger::Info("Announcement updated: id=" + std::to_string(ann_id) + " by=" + admin->username);
+
+  if (audit_service_) {
+    audit_service_->Write(admin->id, admin->username,
+                          "update_announcement", "announcement",
+                          std::to_string(ann_id), "{}",
+                          request.Header("x-forwarded-for").empty()
+                              ? request.Header("x-real-ip")
+                              : request.Header("x-forwarded-for"));
+  }
+
   return HttpResponse::Json(200, {{"message", "公告已更新"}});
 }
 
@@ -399,5 +422,15 @@ HttpResponse AnnouncementController::AdminDelete(const HttpRequest& request) {
   }
 
   Logger::Info("Announcement deleted: id=" + std::to_string(ann_id) + " by=" + admin->username);
+
+  if (audit_service_) {
+    audit_service_->Write(admin->id, admin->username,
+                          "delete_announcement", "announcement",
+                          std::to_string(ann_id), "{}",
+                          request.Header("x-forwarded-for").empty()
+                              ? request.Header("x-real-ip")
+                              : request.Header("x-forwarded-for"));
+  }
+
   return HttpResponse::Json(200, {{"message", "公告已删除"}});
 }

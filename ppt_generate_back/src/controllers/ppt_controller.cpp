@@ -1,4 +1,5 @@
 #include "controllers/ppt_controller.h"
+#include "services/ai_search_service.h"
 
 #include <algorithm>
 #include <cctype>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include <curl/curl.h>
+#include <mysql/mysql.h>
 
 #include "http/http_types.h"
 #include "logger.h"
@@ -24,6 +26,7 @@
 #include "services/ai_native_ppt_service.h"
 #include "services/material_service.h"
 #include "utils/ppt_metrics.h"
+#include "utils/settings_reader.h"
 
 #include <chrono>
 
@@ -915,19 +918,27 @@ bool RunPptxGenFromPreset(const std::vector<SlideContent>& slides,
   payload["slides"] = nlohmann::json::array();
   for (const auto& slide : slides) {
     nlohmann::json item;
-    item["title"] = slide.title;
+    item["title"] = ToSafeJsonString(slide.title);
     if (!slide.bullets.empty()) {
-      item["bullets"] = slide.bullets;
+      nlohmann::json bullets_arr = nlohmann::json::array();
+      for (const auto& b : slide.bullets) bullets_arr.push_back(ToSafeJsonString(b));
+      item["bullets"] = std::move(bullets_arr);
     } else if (!slide.raw_text.empty()) {
-      item["bullets"] = nlohmann::json::array({slide.raw_text});
+      item["bullets"] = nlohmann::json::array({ToSafeJsonString(slide.raw_text)});
     } else {
       item["bullets"] = nlohmann::json::array();
     }
     if (!slide.bullet_groups.empty()) {
-      item["bulletGroups"] = slide.bullet_groups;
+      nlohmann::json groups_arr = nlohmann::json::array();
+      for (const auto& group : slide.bullet_groups) {
+        nlohmann::json grp = nlohmann::json::array();
+        for (const auto& b : group) grp.push_back(ToSafeJsonString(b));
+        groups_arr.push_back(std::move(grp));
+      }
+      item["bulletGroups"] = std::move(groups_arr);
     }
     if (!slide.notes.empty()) {
-      item["notes"] = slide.notes;
+      item["notes"] = ToSafeJsonString(slide.notes);
     }
     if (!slide.image_paths.empty()) {
       item["imagePaths"] = slide.image_paths;
@@ -936,16 +947,16 @@ bool RunPptxGenFromPreset(const std::vector<SlideContent>& slides,
       item["imageUrls"] = slide.image_urls;
     }
     if (!slide.layout_hint.empty()) {
-      item["layoutHint"] = slide.layout_hint;
+      item["layoutHint"] = ToSafeJsonString(slide.layout_hint);
     }
     if (slide.chart_data.has_value()) {
       const auto& cd = slide.chart_data.value();
       nlohmann::json chart_json;
-      chart_json["type"] = cd.type;
-      chart_json["title"] = cd.title;
+      chart_json["type"] = ToSafeJsonString(cd.type);
+      chart_json["title"] = ToSafeJsonString(cd.title);
       nlohmann::json items_arr = nlohmann::json::array();
       for (const auto& cdi : cd.items) {
-        items_arr.push_back({{"label", cdi.label}, {"value", cdi.value}});
+        items_arr.push_back({{"label", ToSafeJsonString(cdi.label)}, {"value", cdi.value}});
       }
       chart_json["items"] = std::move(items_arr);
       item["chartData"] = std::move(chart_json);
@@ -1286,7 +1297,9 @@ void DoActualGeneration(
     std::shared_ptr<WanxiangImageClient> wanx_client,
     GenerationConfig generation_config,
     std::shared_ptr<RedisClient> redis,
-    int redis_ttl_ppt_status) {
+    int redis_ttl_ppt_status,
+    std::shared_ptr<AiSearchService> ai_search_svc = nullptr,
+    std::shared_ptr<ThreadPool> thread_pool = nullptr) {
   using namespace std::chrono;
   const auto start_time = steady_clock::now();
   const std::uint64_t request_id = job.ppt_request.id;
@@ -1481,13 +1494,14 @@ void DoActualGeneration(
     if (!outline.empty()) {
       if (qwen_client->GenerateSlidesFromOutlineWithLayout(enriched_topic, outline, input.include_images,
                                                            layout_guide_json, slides, qwen_error,
-                                                           input.include_charts)) {
+                                                           input.include_charts, input.include_notes)) {
         generated = true;
       } else {
         // 带版式的大纲生成失败时，再尝试一次不带版式的大纲生成
         std::string slides_error;
         if (qwen_client->GenerateSlidesFromOutline(enriched_topic, outline, input.include_images,
-                                                   slides, slides_error, input.include_charts)) {
+                                                   slides, slides_error, input.include_charts,
+                                                   input.include_notes)) {
           generated = true;
         } else {
           Logger::Warn("Qwen slides-from-outline fallback failed: " + slides_error);
@@ -1497,7 +1511,8 @@ void DoActualGeneration(
     if (!generated) {
       if (qwen_client->GenerateSlidesWithLayout(enriched_topic, input.pages, template_prompt,
                                                 input.include_images, layout_guide_json,
-                                                slides, qwen_error, input.include_charts)) {
+                                                slides, qwen_error, input.include_charts,
+                                                input.include_notes)) {
         generated = true;
       }
     }
@@ -1726,6 +1741,18 @@ void DoActualGeneration(
       redis->Expire(redis_status_key, redis_ttl_ppt_status);
       redis->Del("ppt:history:user:" + std::to_string(job.user_id));
     }
+    // AI 检索：异步索引新生成的 PPT
+    if (ai_search_svc && thread_pool) {
+      const std::uint64_t index_ppt_id  = ppt_request.id;
+      const std::uint64_t index_user_id = job.user_id;
+      thread_pool->EnqueueDetached([ai_search_svc, index_ppt_id, index_user_id]() {
+        std::string idx_err;
+        if (!ai_search_svc->IndexPptRequest(index_ppt_id, index_user_id, idx_err)) {
+          Logger::Warn("AiSearch: index failed for ppt_id=" +
+                       std::to_string(index_ppt_id) + ": " + idx_err);
+        }
+      });
+    }
     // 生成完成，删除进度文件和错误文件
     std::error_code ec;
     std::filesystem::remove(progress_path, ec);
@@ -1769,7 +1796,9 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
                            std::shared_ptr<MaterialService> material_service,
                            std::shared_ptr<RedisClient> redis,
                            int redis_ttl_ppt_status,
-                           int redis_ttl_ppt_history)
+                           int redis_ttl_ppt_history,
+                           std::shared_ptr<MySQLConnectionPool> pool,
+                           std::shared_ptr<AiSearchService> ai_search_service)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
@@ -1782,13 +1811,45 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
       material_service_(std::move(material_service)),
       redis_(std::move(redis)),
       redis_ttl_ppt_status_(redis_ttl_ppt_status),
-      redis_ttl_ppt_history_(redis_ttl_ppt_history) {}
+      redis_ttl_ppt_history_(redis_ttl_ppt_history),
+      pool_(std::move(pool)),
+      ai_search_service_(std::move(ai_search_service)) {}
 
 HttpResponse PptController::Generate(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
   if (!user) {
     return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  // 动态检查生成限制（来自 system_settings，热更新无需重启）
+  if (pool_) {
+    // 每日生成上限（0 = 不限制）
+    const int daily_limit = SettingsReader::GetInt(*pool_, "daily_generation_limit", 0);
+    if (daily_limit > 0) {
+      // 查询用户今日已生成次数
+      auto conn_guard = pool_->GetConnection();
+      MYSQL* conn = conn_guard.Get();
+      if (conn) {
+        std::ostringstream cnt_sql;
+        cnt_sql << "SELECT COUNT(*) FROM ppt_requests WHERE user_id=" << user->id
+                << " AND DATE(created_at)=CURDATE() AND status IN ('completed','processing','pending','queued')";
+        if (mysql_query(conn, cnt_sql.str().c_str()) == 0) {
+          MYSQL_RES* res = mysql_store_result(conn);
+          if (res) {
+            MYSQL_ROW row = mysql_fetch_row(res);
+            int today_count = (row && row[0]) ? std::stoi(row[0]) : 0;
+            mysql_free_result(res);
+            if (today_count >= daily_limit) {
+              Logger::Info("User " + user->username + " hit daily_generation_limit=" +
+                           std::to_string(daily_limit));
+              return HttpResponse::Json(429, ErrorJson("ERR_DAILY_LIMIT_EXCEEDED",
+                  "您今日已达到每日生成上限（" + std::to_string(daily_limit) + " 次），请明天再试"));
+            }
+          }
+        }
+      }
+    }
   }
 
   auto model = model_service_->FindById("qwen-turbo");
@@ -1806,6 +1867,23 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
       input.pages = 1;
     } else if (input.pages > 50) {
       input.pages = 50;
+    }
+    // 动态最大页数限制（来自 system_settings）
+    if (pool_) {
+      const int max_pages = SettingsReader::GetInt(*pool_, "max_pages_per_request", 50);
+      if (max_pages > 0 && input.pages > max_pages) {
+        input.pages = max_pages;
+        Logger::Info("Pages clamped to max_pages_per_request=" + std::to_string(max_pages));
+      }
+
+      // 管理员可关闭 AI 配图 / 演讲备注功能
+      if (!SettingsReader::GetBool(*pool_, "enable_image_generation", true)) {
+        input.include_images = false;
+        input.include_charts = false;
+      }
+      if (!SettingsReader::GetBool(*pool_, "enable_speaker_notes", true)) {
+        input.include_notes = false;
+      }
     }
 
     if (input.title.empty() || input.topic.empty()) {
@@ -1878,18 +1956,59 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
       redis_->Del("ppt:history:user:" + std::to_string(user->id));
     }
 
+    // 动态并发任务上限（来自 system_settings，0=不限）
+    if (pool_) {
+      const int max_jobs = SettingsReader::GetInt(*pool_, "max_concurrent_jobs", 0);
+      if (max_jobs > 0 && active_jobs_.load(std::memory_order_relaxed) >= max_jobs) {
+        Logger::Info("max_concurrent_jobs=" + std::to_string(max_jobs) +
+                     " reached, rejecting generate request for user=" + user->username);
+        return HttpResponse::Json(503, ErrorJson("ERR_BUSY",
+            "系统当前并发生成任务已满（上限 " + std::to_string(max_jobs) +
+            " 个），请稍后再试"));
+      }
+    }
+
     auto ppt_svc = ppt_service_;
     auto template_svc = template_service_;
     auto qwen = qwen_client_;
     auto s3 = s3_client_;
     auto wanx = wanx_client_;
     auto redis = redis_;
+    auto ai_search_svc = ai_search_service_;
+    auto tp = thread_pool_;
     int ttl_status = redis_ttl_ppt_status_;
     GenerationConfig config = generation_config_;
+    active_jobs_.fetch_add(1, std::memory_order_relaxed);
     thread_pool_->EnqueueDetached([job, ppt_svc, template_svc, qwen, s3, wanx, config,
-                                   redis, ttl_status]() {
-      DoActualGeneration(job, ppt_svc, template_svc, qwen, s3, wanx, config,
-                         redis, ttl_status);
+                                   redis, ttl_status, ai_search_svc, tp, this]() {
+      try {
+        DoActualGeneration(job, ppt_svc, template_svc, qwen, s3, wanx, config,
+                           redis, ttl_status, ai_search_svc, tp);
+      } catch (const std::exception& ex) {
+        Logger::Error(std::string("DoActualGeneration unhandled exception: ") + ex.what());
+        // 确保前端能感知：将状态写为 failed
+        if (ppt_svc) {
+          std::string upd_err;
+          ppt_svc->UpdateRequestOutput(job.ppt_request.id, job.user_id, "", "failed", upd_err);
+        }
+        if (redis) {
+          const std::string sk = "ppt:status:" + std::to_string(job.ppt_request.id);
+          redis->HMSet(sk, {{"status", "failed"}, {"progress", "0"}, {"stage", "error"}});
+          redis->Expire(sk, ttl_status);
+        }
+      } catch (...) {
+        Logger::Error("DoActualGeneration unhandled unknown exception");
+        if (ppt_svc) {
+          std::string upd_err;
+          ppt_svc->UpdateRequestOutput(job.ppt_request.id, job.user_id, "", "failed", upd_err);
+        }
+        if (redis) {
+          const std::string sk = "ppt:status:" + std::to_string(job.ppt_request.id);
+          redis->HMSet(sk, {{"status", "failed"}, {"progress", "0"}, {"stage", "error"}});
+          redis->Expire(sk, ttl_status);
+        }
+      }
+      active_jobs_.fetch_sub(1, std::memory_order_relaxed);
     });
 
     nlohmann::json payload{{"request", RequestToJson(ppt_request)}};
@@ -1993,6 +2112,33 @@ HttpResponse PptController::GetRequestStatus(const HttpRequest& request) {
           if (prog_json.contains("step"))     req_json["step"]     = prog_json["step"];
         }
       } catch (...) {}
+    }
+  }
+
+  // 超时检测：若任务长时间停留在 processing/pending，自动标记为 failed
+  if (pool_ && (ppt_request.status == "processing" || ppt_request.status == "pending")) {
+    const int timeout_min = SettingsReader::GetInt(*pool_, "generation_timeout_minutes", 0);
+    if (timeout_min > 0 && ppt_request.created_at > 0) {
+      using namespace std::chrono;
+      const auto now_sec = static_cast<std::uint64_t>(
+          duration_cast<seconds>(system_clock::now().time_since_epoch()).count());
+      const int elapsed_min = static_cast<int>((now_sec - ppt_request.created_at) / 60);
+      if (elapsed_min >= timeout_min) {
+        std::string upd_err;
+        ppt_service_->UpdateRequestOutput(ppt_request.id, ppt_request.user_id,
+                                         "", "failed", upd_err);
+        if (redis_) {
+          const std::string sk = "ppt:status:" + std::to_string(request_id);
+          redis_->HMSet(sk, {{"status","failed"},{"progress","0"},{"stage","error"}});
+          redis_->Expire(sk, redis_ttl_ppt_status_);
+        }
+        ppt_request.status = "failed";
+        req_json["status"] = "failed";
+        req_json["errorReason"] = "PPT 生成超时（超过 " +
+                                  std::to_string(timeout_min) + " 分钟），请重试";
+        Logger::Warn("Request " + std::to_string(ppt_request.id) +
+                     " timed out after " + std::to_string(elapsed_min) + " min");
+      }
     }
   }
 
@@ -2172,10 +2318,32 @@ HttpResponse PptController::AdminInsights(const HttpRequest& request) {
 
   nlohmann::json payload;
 
-  // 热门主题
+  // 热门关键词词云：先尝试大模型提取，失败则回退到简单截取方案
   payload["topTopics"] = nlohmann::json::array();
-  for (const auto& tk : data.top_topics) {
-    payload["topTopics"].push_back({{"keyword", tk.keyword}, {"count", tk.count}});
+  bool keyword_extracted = false;
+  if (qwen_client_ && qwen_client_->IsEnabled()) {
+    std::vector<std::string> raw_topics;
+    std::string topics_error;
+    if (ppt_service_->GetAllTopics(raw_topics, 200, topics_error) && !raw_topics.empty()) {
+      std::vector<QwenClient::KeywordFreq> kw_list;
+      std::string kw_error;
+      if (qwen_client_->ExtractKeywords(raw_topics, kw_list, kw_error)) {
+        for (const auto& kf : kw_list) {
+          payload["topTopics"].push_back({{"keyword", kf.keyword}, {"count", kf.count}});
+        }
+        keyword_extracted = true;
+      } else {
+        Logger::Warn(std::string("LLM keyword extraction failed, falling back: ") + kw_error);
+      }
+    } else if (!topics_error.empty()) {
+      Logger::Warn(std::string("GetAllTopics failed: ") + topics_error);
+    }
+  }
+  // 回退：使用原有简单截取策略
+  if (!keyword_extracted) {
+    for (const auto& tk : data.top_topics) {
+      payload["topTopics"].push_back({{"keyword", tk.keyword}, {"count", tk.count}});
+    }
   }
 
   // 模型使用分布
@@ -2205,6 +2373,74 @@ HttpResponse PptController::AdminInsights(const HttpRequest& request) {
   }
 
   return HttpResponse::Json(200, payload);
+}
+
+HttpResponse PptController::AdminExportPptHistory(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+  if (!user->is_admin) {
+    return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", "Forbidden"));
+  }
+
+  std::string query;
+  if (auto it = request.query_params.find("q"); it != request.query_params.end()) {
+    query = Trim(it->second);
+  }
+
+  auto list = ppt_service_->GetAdminHistory(query, error);
+  if (!error.empty()) {
+    Logger::Error(std::string("AdminExportPptHistory failed: ") + error);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
+  }
+
+  // CSV 字段转义
+  auto csvField = [](const std::string& s) -> std::string {
+    bool need = s.find(',') != std::string::npos ||
+                s.find('"') != std::string::npos ||
+                s.find('\n') != std::string::npos;
+    if (!need) return s;
+    std::string out = "\"";
+    for (char c : s) { if (c == '"') out += "\"\""; else out += c; }
+    return out + '"';
+  };
+
+  // 时间戳转可读字符串
+  auto fmtTs = [](std::uint64_t ts) -> std::string {
+    if (ts == 0) return "";
+    time_t t = static_cast<time_t>(ts);
+    char buf[32];
+    struct tm tm_info;
+    localtime_r(&t, &tm_info);
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_info);
+    return buf;
+  };
+
+  std::ostringstream csv;
+  csv << "ID,用户ID,用户名,邮箱,标题,主题,页数,风格,模型,状态,创建时间\n";
+  for (const auto& item : list) {
+    csv << csvField(std::to_string(item.id))      << ","
+        << csvField(std::to_string(item.user_id)) << ","
+        << csvField(item.user_name)               << ","
+        << csvField(item.user_email)              << ","
+        << csvField(item.title)                   << ","
+        << csvField(item.topic)                   << ","
+        << item.pages                             << ","
+        << csvField(item.style)                   << ","
+        << csvField(item.model_name.empty() ? item.model_id : item.model_name) << ","
+        << csvField(item.status)                  << ","
+        << csvField(fmtTs(item.created_at))       << "\n";
+  }
+
+  HttpResponse resp;
+  resp.status_code    = 200;
+  resp.status_message = "OK";
+  resp.headers["content-type"]        = "text/csv; charset=utf-8";
+  resp.headers["content-disposition"] = "attachment; filename=\"ppt_history.csv\"";
+  resp.body = csv.str();
+  return resp;
 }
 
 HttpResponse PptController::Outline(const HttpRequest& request) {

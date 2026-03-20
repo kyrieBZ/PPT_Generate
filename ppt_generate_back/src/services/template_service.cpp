@@ -182,8 +182,38 @@ std::optional<std::string> ResolveTemplateFallback(const RemoteTemplate& tpl,
 }
 
 TemplateService::TemplateService(const std::string& catalog_path) {
+  catalog_path_str_ = catalog_path;
   catalog_dir_ = std::filesystem::absolute(std::filesystem::path(catalog_path)).parent_path();
   LoadCatalog(catalog_path);
+}
+
+int TemplateService::Reload(std::string& error) {
+  try {
+    std::vector<RemoteTemplate> new_templates;
+    {
+      // 临时用无锁方式加载（LoadCatalog 写 templates_，加锁保护）
+      std::ifstream file(catalog_path_str_);
+      if (!file.is_open()) {
+        error = "Unable to open catalog: " + catalog_path_str_;
+        return -1;
+      }
+      nlohmann::json data;
+      file >> data;
+      if (!data.is_array()) {
+        error = "Catalog must be an array";
+        return -1;
+      }
+      for (const auto& item : data) {
+        new_templates.push_back(JsonToTemplate(item, catalog_dir_));
+      }
+    }
+    std::lock_guard<std::mutex> lock(mu_);
+    templates_ = std::move(new_templates);
+    return static_cast<int>(templates_.size());
+  } catch (const std::exception& ex) {
+    error = ex.what();
+    return -1;
+  }
 }
 
 void TemplateService::LoadCatalog(const std::string& path) {
@@ -205,6 +235,7 @@ void TemplateService::LoadCatalog(const std::string& path) {
 }
 
 std::vector<RemoteTemplate> TemplateService::Search(const std::string& query) const {
+  std::lock_guard<std::mutex> lock(mu_);
   if (query.empty()) {
     return templates_;
   }
@@ -231,6 +262,7 @@ std::vector<RemoteTemplate> TemplateService::Search(const std::string& query) co
 }
 
 std::optional<RemoteTemplate> TemplateService::FindById(const std::string& id) const {
+  std::lock_guard<std::mutex> lock(mu_);
   if (id.empty()) {
     return std::nullopt;
   }
@@ -246,6 +278,7 @@ std::optional<RemoteTemplate> TemplateService::FindById(const std::string& id) c
 }
 
 std::optional<std::string> TemplateService::GetLocalFile(const std::string& id) const {
+  std::lock_guard<std::mutex> lock(mu_);
   if (id.empty()) {
     return std::nullopt;
   }
@@ -271,6 +304,7 @@ std::optional<std::string> TemplateService::GetLocalFile(const std::string& id) 
 }
 
 std::optional<std::string> TemplateService::GetPreviewPath(const std::string& id) const {
+  std::lock_guard<std::mutex> lock(mu_);
   if (id.empty()) {
     return std::nullopt;
   }

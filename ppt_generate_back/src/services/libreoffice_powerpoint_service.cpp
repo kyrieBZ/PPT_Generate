@@ -91,20 +91,52 @@ bool LibreOfficePowerPointService::Save(const std::string&, const std::string& l
       /* ignore */
     }
   }
+  // Sanitize strings to avoid nlohmann::json::dump() throwing on invalid UTF-8
+  auto safe = [](const std::string& s) -> std::string {
+    std::string out;
+    out.reserve(s.size());
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(s.data());
+    const unsigned char* end = p + s.size();
+    while (p < end) {
+      unsigned char b = *p++;
+      if (b == 0) continue;
+      if (b <= 0x7F) { out.push_back(static_cast<char>(b)); continue; }
+      if (b >= 0xC2 && b <= 0xDF && p < end && (p[0] & 0xC0) == 0x80) {
+        out.push_back(static_cast<char>(b)); out.push_back(static_cast<char>(*p++)); continue;
+      }
+      if (b >= 0xE0 && b <= 0xEF && p + 1 < end && (p[0] & 0xC0) == 0x80 && (p[1] & 0xC0) == 0x80) {
+        out.push_back(static_cast<char>(b)); out.push_back(static_cast<char>(*p++)); out.push_back(static_cast<char>(*p++)); continue;
+      }
+      if (b >= 0xF0 && b <= 0xF4 && p + 2 < end && (p[0] & 0xC0) == 0x80 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+        out.push_back(static_cast<char>(b)); out.push_back(static_cast<char>(*p++)); out.push_back(static_cast<char>(*p++)); out.push_back(static_cast<char>(*p++)); continue;
+      }
+      out.append("\xEF\xBF\xBD");  // U+FFFD replacement character
+    }
+    return out;
+  };
+
   payload["slides"] = nlohmann::json::array();
   for (const auto& slide : slides_) {
     nlohmann::json item;
-    item["title"] = slide.title;
+    item["title"] = safe(slide.title);
     if (!slide.bullets.empty()) {
-      item["bullets"] = slide.bullets;
+      nlohmann::json bullets_arr = nlohmann::json::array();
+      for (const auto& b : slide.bullets) bullets_arr.push_back(safe(b));
+      item["bullets"] = std::move(bullets_arr);
     } else if (!slide.raw_text.empty()) {
-      item["bullets"] = nlohmann::json::array({slide.raw_text});
+      item["bullets"] = nlohmann::json::array({safe(slide.raw_text)});
     }
     if (!slide.bullet_groups.empty()) {
-      item["bulletGroups"] = slide.bullet_groups;
+      nlohmann::json groups_arr = nlohmann::json::array();
+      for (const auto& group : slide.bullet_groups) {
+        nlohmann::json grp = nlohmann::json::array();
+        for (const auto& b : group) grp.push_back(safe(b));
+        groups_arr.push_back(std::move(grp));
+      }
+      item["bulletGroups"] = std::move(groups_arr);
     }
     if (!slide.notes.empty()) {
-      item["notes"] = slide.notes;
+      item["notes"] = safe(slide.notes);
     }
     if (!slide.image_paths.empty()) {
       item["imagePaths"] = slide.image_paths;
@@ -113,24 +145,23 @@ bool LibreOfficePowerPointService::Save(const std::string&, const std::string& l
       item["imageUrls"] = slide.image_urls;
     }
     if (!slide.image_prompts.empty()) {
-      item["imagePrompts"] = slide.image_prompts;
+      nlohmann::json prompts_arr = nlohmann::json::array();
+      for (const auto& p : slide.image_prompts) prompts_arr.push_back(safe(p));
+      item["imagePrompts"] = std::move(prompts_arr);
     }
     if (!slide.layout_hint.empty()) {
-      item["layoutHint"] = slide.layout_hint;
+      item["layoutHint"] = safe(slide.layout_hint);
     }
     if (slide.chart_data.has_value()) {
       const auto& cd = slide.chart_data.value();
       nlohmann::json chart_json;
-      chart_json["type"] = cd.type;
+      chart_json["type"] = safe(cd.type);
       if (!cd.title.empty()) {
-        chart_json["title"] = cd.title;
+        chart_json["title"] = safe(cd.title);
       }
       nlohmann::json items_json = nlohmann::json::array();
       for (const auto& cdi : cd.items) {
-        nlohmann::json cdi_json;
-        cdi_json["label"] = cdi.label;
-        cdi_json["value"] = cdi.value;
-        items_json.push_back(std::move(cdi_json));
+        items_json.push_back({{"label", safe(cdi.label)}, {"value", cdi.value}});
       }
       chart_json["items"] = std::move(items_json);
       item["chartData"] = std::move(chart_json);

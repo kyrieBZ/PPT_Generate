@@ -88,6 +88,9 @@ class PptService {
   // Get insights data for admin (不需要 range，覆盖全量历史)
   bool GetInsights(InsightData& out, std::string& error);
 
+  // Get all raw topic strings for LLM keyword extraction (at most max_count rows)
+  bool GetAllTopics(std::vector<std::string>& out_topics, int max_count, std::string& error);
+
   // Delete a PPT generation request record
   bool DeleteRequest(std::uint64_t user_id, std::uint64_t request_id, std::string& error);
 

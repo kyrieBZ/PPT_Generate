@@ -5,12 +5,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include "database/mysql_connection_pool.h"
 #include "http/http_types.h"
 #include "services/auth_service.h"
 
 class AuthController {
  public:
-  explicit AuthController(std::shared_ptr<AuthService> service);
+  AuthController(std::shared_ptr<AuthService>         service,
+                 std::shared_ptr<MySQLConnectionPool> pool = nullptr);
 
   HttpResponse Register(const HttpRequest& request);
   HttpResponse Login(const HttpRequest& request);
@@ -23,5 +25,6 @@ class AuthController {
  private:
   std::string ExtractToken(const HttpRequest& request) const;
 
-  std::shared_ptr<AuthService> service_;
+  std::shared_ptr<AuthService>         service_;
+  std::shared_ptr<MySQLConnectionPool> pool_;
 };

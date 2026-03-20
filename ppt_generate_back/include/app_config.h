@@ -116,6 +116,20 @@ struct RedisConfig {
   int ttl_ppt_history          = 300;     // 用户历史列表快照
 };
 
+struct AiSearchConfig {
+  bool enabled                  = false;
+  std::string qdrant_host       = "localhost";
+  std::uint16_t qdrant_port     = 6333;
+  std::string collection_name   = "ppt_index";
+  std::string embedding_model   = "text-embedding-v3";
+  int embedding_dimension       = 1024;
+  int top_k_retrieve            = 20;
+  int top_k_return              = 10;
+  double score_threshold        = 0.35;
+  bool enable_rerank            = true;
+  std::string rerank_model      = "qwen-plus";
+};
+
 struct S3Config {
   std::string endpoint;
   std::string public_endpoint;
@@ -151,6 +165,7 @@ class AppConfig {
   const MaterialConfig& material() const { return material_; }
   const MongoConfig& mongodb() const { return mongodb_; }
   const RedisConfig& redis() const { return redis_; }
+  const AiSearchConfig& ai_search() const { return ai_search_; }
 
  private:
   ServerConfig server_{};
@@ -166,4 +181,5 @@ class AppConfig {
   MaterialConfig material_{};
   MongoConfig mongodb_{};
   RedisConfig redis_{};
+  AiSearchConfig ai_search_{};
 };

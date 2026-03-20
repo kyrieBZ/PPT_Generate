@@ -671,7 +671,7 @@
 
               <!-- 生成进度展示 -->
               <!-- 生成进度/失败面板（生成中 或 失败后保留展示） -->
-              <div v-if="generating || generationFailed" class="generation-progress-panel" :class="{ 'is-failed': generationFailed }">
+              <div v-if="generating || generationFailed || generationTimedOut" class="generation-progress-panel" :class="{ 'is-failed': generationFailed, 'is-timed-out': generationTimedOut }">
 
                 <!-- 失败状态头部 -->
                 <div v-if="generationFailed" class="gp-fail-banner">
@@ -681,6 +681,15 @@
                     <span class="gp-fail-reason">{{ generationFailReason }}</span>
                   </div>
                   <button class="gp-fail-close" @click="generationFailed = false">关闭</button>
+                </div>
+
+                <!-- 超时等待状态头部 -->
+                <div v-else-if="generationTimedOut" class="gp-timeout-banner">
+                  <span class="gp-timeout-icon">⏳</span>
+                  <div class="gp-timeout-info">
+                    <span class="gp-timeout-title">后台生成中</span>
+                    <span class="gp-timeout-reason">生成时间较长，正在后台继续等待，完成后将自动更新</span>
+                  </div>
                 </div>
 
                 <!-- 正常进度头部 -->
@@ -693,13 +702,13 @@
                   <span class="gp-percent">{{ generationProgress }}%</span>
                 </div>
 
-                <!-- 进度条（失败时显示为红色） -->
+                <!-- 进度条（失败时红色，超时时橙色） -->
                 <div class="gp-bar-wrap">
                   <div class="gp-bar-track">
                     <div
                       class="gp-bar-fill"
-                      :class="{ 'is-failed': generationFailed }"
-                      :style="{ width: (generationFailed ? generationProgress || 30 : generationProgress) + '%' }"
+                      :class="{ 'is-failed': generationFailed, 'is-timed-out': generationTimedOut }"
+                      :style="{ width: (generationFailed || generationTimedOut ? generationProgress || 30 : generationProgress) + '%' }"
                     ></div>
                   </div>
                 </div>
@@ -711,16 +720,18 @@
                     :key="s.key"
                     class="gp-stage-item"
                     :class="{
-                      'is-done': !generationFailed && generationProgress > s.endAt,
-                      'is-active': !generationFailed && generationProgress >= s.startAt && generationProgress <= s.endAt,
+                      'is-done': !generationFailed && !generationTimedOut && generationProgress > s.endAt,
+                      'is-active': !generationFailed && !generationTimedOut && generationProgress >= s.startAt && generationProgress <= s.endAt,
                       'is-failed-active': generationFailed && generationProgress >= s.startAt && generationProgress <= s.endAt,
+                      'is-timed-out-active': generationTimedOut && generationProgress >= s.startAt && generationProgress <= s.endAt,
                       'is-pending': generationProgress < s.startAt
                     }"
                   >
                     <div class="gp-stage-dot">
-                      <span v-if="!generationFailed && generationProgress > s.endAt">✓</span>
+                      <span v-if="!generationFailed && !generationTimedOut && generationProgress > s.endAt">✓</span>
                       <span v-else-if="generationFailed && generationProgress >= s.startAt && generationProgress <= s.endAt">✕</span>
-                      <span v-else-if="!generationFailed && generationProgress >= s.startAt" class="dot-pulse"></span>
+                      <span v-else-if="generationTimedOut && generationProgress >= s.startAt && generationProgress <= s.endAt">⏳</span>
+                      <span v-else-if="!generationFailed && !generationTimedOut && generationProgress >= s.startAt" class="dot-pulse"></span>
                       <span v-else>{{ idx + 1 }}</span>
                     </div>
                     <span class="gp-stage-label">{{ s.label }}</span>
@@ -787,7 +798,27 @@
                   <div v-else class="preview-placeholder">在线预览不可用，请下载后查看。</div>
                 </div>
               </div>
-              <div v-else class="preview-empty">暂无PPT预览，请先生成PPT。</div>
+              <div v-else class="preview-empty">
+                <div class="preview-empty__visual">
+                  <svg class="preview-empty__icon" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <rect x="16" y="12" width="64" height="52" rx="4" stroke="currentColor" stroke-width="2" fill="none" opacity="0.4"/>
+                    <line x1="24" y1="28" x2="72" y2="28" stroke="currentColor" stroke-width="1.5" opacity="0.6"/>
+                    <line x1="24" y1="38" x2="56" y2="38" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+                    <line x1="24" y1="48" x2="60" y2="48" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+                    <line x1="24" y1="58" x2="48" y2="58" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+                    <circle cx="72" cy="56" r="12" stroke="currentColor" stroke-width="2" fill="none" opacity="0.5"/>
+                    <path d="M68 56l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.8"/>
+                  </svg>
+                  <div class="preview-empty__dots" aria-hidden="true">
+                    <span class="preview-empty__dot"></span>
+                    <span class="preview-empty__dot"></span>
+                    <span class="preview-empty__dot"></span>
+                  </div>
+                </div>
+                <h3 class="preview-empty__title">暂无预览</h3>
+                <p class="preview-empty__desc">完成大纲后点击「开始生成」，生成完成将自动在此展示并可下载。</p>
+                <p class="preview-empty__hint">上一步 → 大纲设计 · 确认后开始生成</p>
+              </div>
             </div>
 
             <div class="generate-nav">
@@ -798,145 +829,316 @@
         </section>
 
         <section v-if="activeMenu === 'history'" class="history-section">
-          <div class="section-header">
-            <h2>生成历史</h2>
-            <div class="search-box history-search-box">
-              <el-input
-                v-model="historyQuery"
-                placeholder="搜索标题或主题..."
-                clearable
-                @keyup.enter="triggerHistorySearch"
-              >
-                <template #prefix>
-                  <el-icon><Search /></el-icon>
-                </template>
-              </el-input>
-              <el-button
-                class="search-icon-btn"
-                circle
-                :icon="Search"
-                @click="triggerHistorySearch"
-              />
+          <!-- 页面头部 -->
+          <div class="history-header">
+            <div class="history-header-left">
+              <div class="history-title-row">
+                <div class="history-icon-wrap">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                </div>
+                <h2 class="history-title">生成历史</h2>
+              </div>
+              <p class="history-subtitle">管理您的 PPT 生成记录，支持预览、下载和编辑</p>
+            </div>
+            <div class="history-search-wrap">
+              <!-- AI 检索 / 普通搜索 切换 -->
+              <div class="history-search-mode-toggle">
+                <button
+                  class="hsmt-btn"
+                  :class="{ 'hsmt-btn--active': !aiSearchMode }"
+                  @click="switchSearchMode(false)"
+                  title="普通关键词搜索"
+                >普通搜索</button>
+                <button
+                  class="hsmt-btn hsmt-btn--ai"
+                  :class="{ 'hsmt-btn--active': aiSearchMode }"
+                  @click="switchSearchMode(true)"
+                  title="AI 语义检索"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                  AI 检索
+                </button>
+              </div>
+              <div class="history-search-inner">
+                <svg class="history-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                <input
+                  v-if="!aiSearchMode"
+                  v-model="historyQuery"
+                  class="history-search-input"
+                  placeholder="搜索标题或主题..."
+                  @keyup.enter="triggerHistorySearch"
+                />
+                <input
+                  v-else
+                  v-model="aiSearchQuery"
+                  class="history-search-input history-search-input--ai"
+                  :placeholder="'用自然语言描述，例如：蓝色风格的年终报告'"
+                  @keyup.enter="triggerAiSearch"
+                />
+                <button v-if="!aiSearchMode && historyQuery" class="history-search-clear" @click="historyQuery = ''; triggerHistorySearch()">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+                <button v-if="aiSearchMode && aiSearchQuery" class="history-search-clear" @click="aiSearchQuery = ''; aiSearchResults = []">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+                <button v-if="aiSearchMode" class="history-search-btn" :disabled="aiSearchLoading || !aiSearchQuery.trim()" @click="triggerAiSearch">
+                  <el-icon v-if="aiSearchLoading" class="spin"><Loading /></el-icon>
+                  <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                </button>
+              </div>
             </div>
           </div>
 
           <!-- 批量操作工具栏 -->
-          <div v-if="!historyBusy && filteredHistory.length" class="batch-toolbar">
-            <label class="batch-select-all">
-              <input
-                type="checkbox"
-                :checked="batchSelectAll"
-                :indeterminate.prop="batchIndeterminate"
-                @change="toggleSelectAll"
-              />
-              <span>全选已完成</span>
+          <div v-if="!historyBusy && filteredHistory.length" class="history-toolbar">
+            <label class="history-select-all" :class="{ 'is-checked': batchSelectAll, 'is-indeterminate': batchIndeterminate }">
+              <span class="hsa-box">
+                <svg v-if="batchSelectAll" width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5 6 4.5 9 10.5 3"/></svg>
+                <svg v-else-if="batchIndeterminate" width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="2" y1="6" x2="10" y2="6"/></svg>
+              </span>
+              <input type="checkbox" :checked="batchSelectAll" :indeterminate.prop="batchIndeterminate" @change="toggleSelectAll" class="hsa-input" />
+              <span class="hsa-text">全选已完成</span>
             </label>
-            <span v-if="batchSelected.size > 0" class="batch-count">已选 {{ batchSelected.size }} 项</span>
-            <button
-              class="batch-download-btn"
-              :disabled="batchSelected.size === 0 || batchDownloading"
-              @click="handleBatchDownload"
-            >
-              <el-icon v-if="batchDownloading" class="spin"><Loading /></el-icon>
-              <el-icon v-else><Download /></el-icon>
-              {{ batchDownloading ? '打包中…' : '批量下载 ZIP' }}
-            </button>
-            <button
-              class="batch-delete-btn"
-              :disabled="batchSelected.size === 0 || batchDeleting"
-              @click="handleBatchDelete"
-            >
-              <el-icon v-if="batchDeleting" class="spin"><Loading /></el-icon>
-              <el-icon v-else><Delete /></el-icon>
-              {{ batchDeleting ? '删除中…' : '批量删除' }}
-            </button>
+
+            <transition name="badge-fade">
+              <span v-if="batchSelected.size > 0" class="history-selected-badge">{{ batchSelected.size }} 项已选</span>
+            </transition>
+
+            <div class="history-toolbar-actions">
+              <button
+                class="htb-btn htb-btn--download"
+                :disabled="batchSelected.size === 0 || batchDownloading"
+                @click="handleBatchDownload"
+              >
+                <svg v-if="!batchDownloading" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <el-icon v-else class="spin"><Loading /></el-icon>
+                {{ batchDownloading ? '打包中…' : '批量下载 ZIP' }}
+              </button>
+              <button
+                class="htb-btn htb-btn--delete"
+                :disabled="batchSelected.size === 0 || batchDeleting"
+                @click="handleBatchDelete"
+              >
+                <svg v-if="!batchDeleting" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                <el-icon v-else class="spin"><Loading /></el-icon>
+                {{ batchDeleting ? '删除中…' : '批量删除' }}
+              </button>
+            </div>
           </div>
 
-          <div v-if="historyBusy" class="history-empty">{{ historyBusyLabel }}</div>
-          <div v-else-if="!filteredHistory.length" class="history-empty">暂无记录，立即生成第一份PPT吧！</div>
-          <div v-else class="history-list">
-            <div
-              v-for="item in pagedHistory"
-              :key="item.id"
-              class="history-item"
-              :class="{ 'history-item--selected': batchSelected.has(item.id) }"
-            >
-              <!-- 多选 checkbox（仅 completed 可选） -->
-              <div class="history-checkbox">
-                <input
-                  v-if="item.status === 'completed' && item.hasFile"
-                  type="checkbox"
-                  :checked="batchSelected.has(item.id)"
-                  @change="toggleBatchItem(item.id)"
-                />
-                <div v-else class="checkbox-placeholder"></div>
+          <!-- AI 检索结果区域 -->
+          <div v-if="aiSearchMode">
+            <div v-if="aiSearchLoading" class="history-state-box">
+              <div class="hsb-spinner">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
               </div>
-              <div class="history-preview">
-                <div class="preview-icon">📄</div>
-                <div class="preview-content">
-                  <h4>{{ item.title }}</h4>
-                  <p>{{ item.topic }}</p>
-                  <div class="history-meta">
-                    <span class="meta-item">生成时间: {{ formatDate(item.createdAt) }}</span>
-                    <span class="meta-item">页数: {{ item.pages }}</span>
-                    <span class="meta-item">状态: {{ item.status }}</span>
-                    <span class="meta-item">{{ historySourceDisplay(item) }}</span>
+              <p class="hsb-text">AI 正在检索中，请稍候...</p>
+            </div>
+            <div v-else-if="aiSearchResults.length === 0 && aiSearchQuery" class="history-state-box history-state-box--empty">
+              <div class="hsb-art">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.35"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              </div>
+              <p class="hsb-title">未找到匹配的 PPT</p>
+              <p class="hsb-text">请尝试其他描述，或切换到普通搜索</p>
+            </div>
+            <div v-else-if="aiSearchResults.length === 0" class="history-state-box history-state-box--empty">
+              <div class="hsb-art">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.35"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              </div>
+              <p class="hsb-title">AI 语义检索</p>
+              <p class="hsb-text">输入自然语言描述，例如「蓝色风格的季度汇报」，按回车或点击搜索按钮</p>
+            </div>
+            <template v-else>
+              <div v-if="aiSearchFallback" class="ai-search-fallback-tip">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                向量检索服务暂时不可用，已自动切换为关键词匹配模式
+              </div>
+              <div class="history-grid">
+                <div
+                  v-for="(item, idx) in aiSearchResults"
+                  :key="item.ppt_id"
+                  class="hcard hcard--completed ai-result-card"
+                  :style="{ animationDelay: (idx * 60) + 'ms' }"
+                >
+                  <div class="hcard-status-bar"></div>
+                  <div class="hcard-top">
+                    <span class="ai-score-badge">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                      {{ Math.round(item.score * 100) }}%
+                    </span>
+                    <span class="hcard-status-tag hcard-status-tag--completed">
+                      <span class="hcard-status-dot"></span>已完成
+                    </span>
+                  </div>
+                  <div class="hcard-body">
+                    <div class="hcard-thumb">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+                    </div>
+                    <h3 class="hcard-title" :title="item.title">{{ item.title || '无标题' }}</h3>
+                    <p class="hcard-topic" :title="item.topic">{{ item.topic || '—' }}</p>
+                  </div>
+                  <div v-if="item.reason" class="ai-match-reason">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    {{ item.reason }}
+                  </div>
+                  <div class="hcard-meta">
+                    <div class="hcard-meta-item">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      <span>{{ formatDate(item.created_at) }}</span>
+                    </div>
+                    <div class="hcard-meta-item" v-if="item.template_name">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+                      <span>{{ item.template_name }}</span>
+                    </div>
+                  </div>
+                  <div class="hcard-actions">
+                    <button class="hcard-btn hcard-btn--preview" @click="openAiResultPreview(item)">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      预览
+                    </button>
+                    <a class="hcard-btn hcard-btn--download" :href="`/api/ppt/file?id=${item.ppt_id}`" download>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      下载
+                    </a>
                   </div>
                 </div>
               </div>
-              <div class="history-actions">
-                <el-button size="large" type="primary" @click="editPPT(item)">
-                  <span class="btn-content">
-                    <el-icon class="btn-icon"><EditPen /></el-icon>
-                    <span>编辑</span>
-                  </span>
-                </el-button>
-                <el-button size="large" type="warning" :disabled="!item?.hasFile" @click="openHistoryPreview(item)">
-                  <span class="btn-content">
-                    <el-icon class="btn-icon"><Star /></el-icon>
-                    <span>在线预览</span>
-                  </span>
-                </el-button>
+            </template>
+          </div>
+
+          <!-- 加载/空状态（普通模式） -->
+          <template v-else>
+          <div v-if="historyBusy" class="history-state-box">
+            <div class="hsb-spinner">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+            </div>
+            <p class="hsb-text">{{ historyBusyLabel }}</p>
+          </div>
+          <div v-else-if="!filteredHistory.length" class="history-state-box history-state-box--empty">
+            <div class="hsb-art">
+              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.35"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="m8 21 4-4 4 4"/><path d="M12 17V11"/></svg>
+            </div>
+            <p class="hsb-title">暂无生成记录</p>
+            <p class="hsb-text">{{ historyQuery ? '未找到匹配的记录，请更换关键词' : '立即生成第一份 PPT 吧！' }}</p>
+          </div>
+
+          <!-- 卡片网格 -->
+          <div v-else class="history-grid">
+            <div
+              v-for="(item, idx) in pagedHistory"
+              :key="item.id"
+              class="hcard"
+              :class="{
+                'hcard--selected': batchSelected.has(item.id),
+                'hcard--completed': item.status === 'completed',
+                'hcard--failed': item.status === 'failed',
+                'hcard--pending': item.status !== 'completed' && item.status !== 'failed'
+              }"
+              :style="{ animationDelay: (idx * 60) + 'ms' }"
+            >
+              <!-- 顶部状态条 -->
+              <div class="hcard-status-bar"></div>
+
+              <!-- 卡片顶部行：checkbox + 状态标签 -->
+              <div class="hcard-top">
+                <div class="hcard-check">
+                  <label v-if="item.status === 'completed' && item.hasFile" class="hcard-checkbox-label" :class="{ 'is-checked': batchSelected.has(item.id) }">
+                    <input type="checkbox" :checked="batchSelected.has(item.id)" @change="toggleBatchItem(item.id)" class="hcard-checkbox-input" />
+                    <span class="hcard-checkbox-box">
+                      <svg v-if="batchSelected.has(item.id)" width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5 6 4.5 9 10.5 3"/></svg>
+                    </span>
+                  </label>
+                  <span v-else class="hcard-checkbox-placeholder"></span>
+                </div>
+                <span class="hcard-status-tag" :class="'hcard-status-tag--' + item.status">
+                  <span class="hcard-status-dot"></span>
+                  {{ pptStatusLabel(item.status) }}
+                </span>
+              </div>
+
+              <!-- 卡片主体 -->
+              <div class="hcard-body">
+                <div class="hcard-thumb">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+                </div>
+                <h3 class="hcard-title" :title="item.title">{{ item.title || '无标题' }}</h3>
+                <p class="hcard-topic" :title="item.topic">{{ item.topic || '—' }}</p>
+              </div>
+
+              <!-- 卡片元信息 -->
+              <div class="hcard-meta">
+                <div class="hcard-meta-item">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                  <span>{{ formatDate(item.createdAt) }}</span>
+                </div>
+                <div class="hcard-meta-item" v-if="item.pages">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  <span>{{ item.pages }} 页</span>
+                </div>
+                <div class="hcard-meta-item hcard-meta-template" v-if="historySourceDisplay(item) !== '模板: 未选择'">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                  <span class="hcard-template-text">{{ historySourceDisplay(item) }}</span>
+                </div>
+              </div>
+
+              <!-- 操作按钮区 -->
+              <div class="hcard-actions">
+                <button class="hcard-btn hcard-btn--edit" @click="editPPT(item)" title="编辑">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  编辑
+                </button>
+                <button class="hcard-btn hcard-btn--preview" :disabled="!item?.hasFile" @click="openHistoryPreview(item)" title="在线预览">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                  预览
+                </button>
                 <el-dropdown
                   trigger="click"
                   :disabled="!item?.hasFile"
                   @command="(cmd) => cmd === 'pptx' ? downloadPPT(item) : downloadPDF(item)"
                 >
-                  <el-button size="large" type="success" :disabled="!item?.hasFile">
-                    <span class="btn-content">
-                      <el-icon class="btn-icon"><Download /></el-icon>
-                      <span>下载</span>
-                      <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-                    </span>
-                  </el-button>
+                  <button class="hcard-btn hcard-btn--download" :disabled="!item?.hasFile" title="下载">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    下载
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-left:1px"><polyline points="6 9 12 15 18 9"/></svg>
+                  </button>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item command="pptx">下载 PPTX</el-dropdown-item>
-                      <el-dropdown-item command="pdf">下载 PDF</el-dropdown-item>
+                      <el-dropdown-item command="pptx">
+                        <span style="display:flex;align-items:center;gap:8px">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                          下载 PPTX
+                        </span>
+                      </el-dropdown-item>
+                      <el-dropdown-item command="pdf">
+                        <span style="display:flex;align-items:center;gap:8px">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                          下载 PDF
+                        </span>
+                      </el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
-                <el-button size="large" type="danger" @click="deleteHistory(item)">
-                  <span class="btn-content">
-                    <el-icon class="btn-icon"><Delete /></el-icon>
-                    <span>删除</span>
-                  </span>
-                </el-button>
+                <button class="hcard-btn hcard-btn--delete" @click="deleteHistory(item)" title="删除">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                </button>
               </div>
             </div>
           </div>
-          <div v-if="showHistoryPagination && !historyBusy" class="history-pagination">
+
+          <!-- 分页 -->
+          <div v-if="showHistoryPagination && !historyBusy" class="history-pager">
             <el-pagination
               background
               layout="total, sizes, prev, pager, next"
               :total="historyTotal"
               :page-size="historyPageSize"
-              :page-sizes="[6, 10, 15, 20]"
+              :page-sizes="[6, 9, 12, 18]"
               :current-page="historyPage"
               @current-change="handleHistoryPageChange"
               @size-change="handleHistorySizeChange"
             />
           </div>
+          </template>
         </section>
 
         <section v-if="activeMenu === 'templates'" class="templates-section">
@@ -1417,6 +1619,7 @@ const selectedModel = computed(() => store.getters.selectedModel)
 const generating = ref(false)
 const generationFailed = ref(false)
 const generationFailReason = ref('')
+const generationTimedOut = ref(false)  // 超时但仍在后台轮询中
 const generationProgress = ref(0)   // 当前显示进度（平滑值）
 const generationStage = ref('')
 const generationStep = ref('')
@@ -1424,6 +1627,7 @@ const generationStep = ref('')
 // 内部：后端上报的"真实目标进度"，显示值向此靠近但不超越
 let _targetProgress = 0
 let _smoothTimer = null
+let _postTimeoutPollTimer = null  // 超时后的后台轮询定时器
 
 /**
  * 启动平滑推进定时器
@@ -1508,7 +1712,56 @@ const historySearchLoading = ref(false)
 let historySearchTimer = null
 let historySearchVersion = 0
 const historyPage = ref(1)
-const historyPageSize = ref(6)
+const historyPageSize = ref(9)
+
+// AI 检索
+const aiSearchMode = ref(false)
+const aiSearchQuery = ref('')
+const aiSearchLoading = ref(false)
+const aiSearchResults = ref([])
+const aiSearchFallback = ref(false)
+
+const switchSearchMode = (mode) => {
+  aiSearchMode.value = mode
+  if (!mode) {
+    aiSearchResults.value = []
+    aiSearchQuery.value = ''
+    aiSearchFallback.value = false
+  } else {
+    historyQuery.value = ''
+    historySearchResults.value = []
+  }
+}
+
+const triggerAiSearch = async () => {
+  const query = aiSearchQuery.value.trim()
+  if (!query) return
+  aiSearchLoading.value = true
+  aiSearchResults.value = []
+  aiSearchFallback.value = false
+  try {
+    const results = await store.dispatch('aiSearchPpt', { query, topK: 10, enableRerank: true })
+    aiSearchResults.value = results
+    aiSearchFallback.value = store.getters.aiSearch.fallback
+  } catch (e) {
+    ElMessage.error('AI 检索失败，请稍后重试')
+  } finally {
+    aiSearchLoading.value = false
+  }
+}
+
+const openAiResultPreview = (item) => {
+  // Reuse existing history preview by constructing a minimal item object
+  const pptItem = {
+    id: item.ppt_id,
+    title: item.title,
+    hasFile: true,
+    downloadUrl: `/api/ppt/file?id=${item.ppt_id}`,
+    downloadUrlPdf: `/api/ppt/file?id=${item.ppt_id}&format=pdf`,
+    status: 'completed'
+  }
+  openHistoryPreview(pptItem)
+}
 const futurePlan = reactive({
   dataset: localStorage.getItem('futureDataset') || '',
   notes: localStorage.getItem('futureNotes') || ''
@@ -1806,10 +2059,8 @@ const hydratePreviewFromRequest = async (request, { force = false } = {}) => {
   previewTitle.value = request.title || ''
   previewFileUrl.value = buildPreviewFileUrl(resolveDownloadUrl(request))
   try {
-    const response = await pptAPI.preview(request.id)
-    if (!outlineReady.value && Array.isArray(response.data?.outline)) {
-      outlineItems.value = response.data.outline.map(normalizeOutlineItem)
-    }
+    await pptAPI.preview(request.id)
+    // 不再用预览接口返回的 outline 填充大纲面板，大纲仅在用户点击「AI 生成大纲」后显示
   } catch (_error) {
     // 仅在线预览，不再使用预览 JSON 的 slides
   }
@@ -2045,13 +2296,7 @@ watch(
   }
 )
 
-watch(
-  pptHistory,
-  (items) => {
-    applyLatestPreview(items)
-  },
-  { immediate: true }
-)
+// 不再根据历史列表自动展示预览，仅当用户本次会话内新生成 PPT 后再显示并跳转预览
 
 const statCards = computed(() => {
   const total = pptHistory.value.length
@@ -2413,9 +2658,15 @@ const handleGenerate = async () => {
     return
   }
 
+  // 如有正在进行的超时后台轮询，先取消
+  if (_postTimeoutPollTimer) {
+    clearInterval(_postTimeoutPollTimer)
+    _postTimeoutPollTimer = null
+  }
   generating.value = true
   generationFailed.value = false
   generationFailReason.value = ''
+  generationTimedOut.value = false
   generationProgress.value = 0
   _targetProgress = 5
   generationStage.value = '初始化'
@@ -2449,6 +2700,75 @@ const handleGenerate = async () => {
       }
     }
     const result = await store.dispatch('createPptRequest', payload)
+
+    // 超时：后端仍在处理，启动后台轮询等待最终结果
+    if (result?.timedOut && result?.requestId) {
+      generationTimedOut.value = true
+      generationStage.value = '等待中'
+      generationStep.value = '生成时间较长，仍在后台继续等待结果...'
+      ElMessage({
+        type: 'warning',
+        message: '生成时间超出预期，正在后台继续等待结果，请勿关闭页面...',
+        duration: 6000,
+        showClose: true
+      })
+      const reqId = result.requestId
+      const pollInterval = 5000
+      const maxExtraWait = 600000  // 超时后最多再等 10 分钟
+      const extraStart = Date.now()
+      _postTimeoutPollTimer = setInterval(async () => {
+        if (Date.now() - extraStart > maxExtraWait) {
+          clearInterval(_postTimeoutPollTimer)
+          _postTimeoutPollTimer = null
+          generationTimedOut.value = false
+          generationFailed.value = true
+          generationFailReason.value = '生成超时，请稍后在历史记录中查看结果'
+          generationStage.value = '生成超时'
+          return
+        }
+        try {
+          const res = await pptAPI.getRequest(reqId)
+          const req = res?.data?.request
+          if (!req) return
+          const status = req.status
+          if (status === 'completed') {
+            clearInterval(_postTimeoutPollTimer)
+            _postTimeoutPollTimer = null
+            generationTimedOut.value = false
+            await store.dispatch('fetchPptHistory')
+            // 填充预览信息
+            const normalized = req
+            previewDownloadUrl.value = normalized.downloadUrl || normalized.download_url || ''
+            previewDownloadUrlPdf.value = normalized.downloadUrlPdf || normalized.download_url_pdf || ''
+            previewTitle.value = normalized.title || ''
+            previewFileUrl.value = buildPreviewFileUrl(resolveDownloadUrl(normalized))
+            previewRequestId.value = normalized.id || 0
+            if (normalized.id) {
+              await hydratePreviewFromRequest(normalized, { force: true })
+            }
+            activeMenu.value = 'generate'
+            activeGeneratePanel.value = 'preview'
+            applyRealProgress(100, '生成完成', 'PPT 已成功生成！')
+            ElMessage.success({ message: 'PPT 生成成功！', duration: 5000, showClose: true })
+          } else if (status === 'failed' || (status && status !== 'pending' && status !== 'processing')) {
+            clearInterval(_postTimeoutPollTimer)
+            _postTimeoutPollTimer = null
+            generationTimedOut.value = false
+            await store.dispatch('fetchPptHistory')
+            const statusLabel = status === 'failed' ? '失败' : status
+            const failMsg = `生成超时，当前状态：${statusLabel}`
+            generationFailed.value = true
+            generationFailReason.value = failMsg
+            generationStage.value = '生成失败'
+            ElMessage.error({ message: failMsg, duration: 0, showClose: true })
+          }
+        } catch (_) {
+          // 网络抖动，继续轮询
+        }
+      }, pollInterval)
+      return  // 进入后台等待，finally 里正常清理 generating
+    }
+
     if (!result?.request) {
       throw new Error('生成请求失败')
     }
@@ -2978,6 +3298,17 @@ const useMaterialFromList = (mat) => {
   ElMessage.success('已填充提取内容，请确认后继续生成')
 }
 
+const pptStatusLabel = (status) => {
+  const map = {
+    pending: '生成中',
+    queued: '排队中',
+    processing: '生成中',
+    completed: '已完成',
+    failed: '生成失败'
+  }
+  return map[(status || '').toLowerCase()] || status || '-'
+}
+
 const materialStatusLabel = (status) => {
   const map = { pending: '等待提取', extracting: '提取中...', completed: '提取完成', failed: '提取失败' }
   return map[status] || status
@@ -3125,10 +3456,7 @@ const ensureSession = async () => {
       }
     }
   })
-  const historyResult = results[0]
-  if (historyResult?.status === 'fulfilled') {
-    await applyLatestPreview(historyResult.value, { force: true })
-  }
+  // 不再根据历史自动展示预览，预览仅在用户本次新生成 PPT 后显示
 }
 
 // 从 AI 助手跳转时读取 query params 预填生成表单
@@ -3646,12 +3974,724 @@ h4 {
   background: rgba(14, 165, 233, 0.12);
 }
 
+/* =========================================================
+   历史记录 — 全新设计
+   ========================================================= */
 .history-section {
   background: var(--color-bg-card);
   border-radius: var(--radius-card);
-  padding: var(--space-lg);
+  padding: 28px 28px 24px;
   box-shadow: var(--shadow-card);
   border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* --- 页头 --- */
+.history-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.history-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.history-icon-wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.history-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0;
+}
+
+.history-subtitle {
+  font-size: 0.875rem;
+  color: #94a3b8;
+  margin: 0;
+  padding-left: 46px;
+}
+
+/* --- 搜索框 --- */
+.history-search-wrap {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* AI 检索模式切换 */
+.history-search-mode-toggle {
+  display: flex;
+  gap: 4px;
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.hsmt-btn {
+  display: flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: none;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: #64748b;
+  background: transparent;
+  transition: all 0.18s;
+}
+.hsmt-btn:hover { color: #1e293b; background: #e2e8f0; }
+.hsmt-btn--active { background: #fff !important; color: #1e293b !important; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+.hsmt-btn--ai.hsmt-btn--active { color: #6366f1 !important; }
+
+.history-search-inner {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.history-search-icon {
+  position: absolute;
+  left: 12px;
+  color: #94a3b8;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+.history-search-input {
+  width: 280px;
+  height: 40px;
+  padding: 0 36px 0 36px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  color: #1e293b;
+  background: #f8fafc;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+}
+
+.history-search-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  background: #fff;
+}
+
+.history-search-input::placeholder {
+  color: #b0bec5;
+}
+
+.history-search-clear {
+  position: absolute;
+  right: 10px;
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.history-search-clear:hover { color: #475569; }
+
+/* AI 检索专用输入框 */
+.history-search-input--ai {
+  width: 340px;
+  border-color: #a5b4fc;
+  background: #faf9ff;
+}
+.history-search-input--ai:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+
+/* AI 搜索触发按钮 */
+.history-search-btn {
+  position: absolute;
+  right: 10px;
+  background: #6366f1;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  transition: background 0.15s;
+  font-size: 0.8rem;
+}
+.history-search-btn:hover:not(:disabled) { background: #4f46e5; }
+.history-search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* AI 检索结果：降级提示 */
+.ai-search-fallback-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  margin-bottom: 14px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: #92400e;
+}
+
+/* AI 检索结果卡片增强 */
+.ai-result-card {
+  animation: fadeInUp 0.4s ease both;
+}
+
+.ai-score-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  background: linear-gradient(135deg, #eef2ff, #e0e7ff);
+  border: 1px solid #c7d2fe;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #4338ca;
+}
+
+.ai-match-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 10px 0;
+  padding: 8px 10px;
+  background: #f8faff;
+  border-left: 3px solid #818cf8;
+  border-radius: 0 6px 6px 0;
+  font-size: 0.8rem;
+  color: #475569;
+  line-height: 1.5;
+}
+.ai-match-reason svg { flex-shrink: 0; margin-top: 2px; color: #818cf8; }
+
+/* --- 工具栏 --- */
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  background: linear-gradient(to right, #f8fafc, #f1f5f9);
+  border: 1px solid #e9eef5;
+  border-radius: 12px;
+  flex-wrap: wrap;
+}
+
+.history-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+}
+
+.hsa-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.hsa-box {
+  width: 17px;
+  height: 17px;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  transition: border-color 0.15s, background 0.15s;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.history-select-all.is-checked .hsa-box,
+.history-select-all.is-indeterminate .hsa-box {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+
+.hsa-text {
+  font-size: 0.875rem;
+  color: #475569;
+  font-weight: 500;
+}
+
+.history-selected-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: #ede9fe;
+  color: #6366f1;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.badge-fade-enter-active,
+.badge-fade-leave-active {
+  transition: opacity 0.2s, transform 0.2s;
+}
+.badge-fade-enter-from,
+.badge-fade-leave-to {
+  opacity: 0;
+  transform: scale(0.8);
+}
+
+.history-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.htb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+
+.htb-btn--download {
+  background: linear-gradient(135deg, #6366f1, #818cf8);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(99,102,241,0.25);
+}
+
+.htb-btn--download:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99,102,241,0.35);
+}
+
+.htb-btn--delete {
+  background: #fff;
+  color: #ef4444;
+  border: 1.5px solid #fca5a5;
+}
+
+.htb-btn--delete:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #ef4444;
+}
+
+.htb-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* --- 空/加载状态 --- */
+.history-state-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 20px;
+  gap: 12px;
+}
+
+.hsb-spinner svg {
+  animation: spin 1s linear infinite;
+  color: #6366f1;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.history-state-box--empty .hsb-art {
+  opacity: 0.5;
+}
+
+.hsb-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #475569;
+  margin: 4px 0 0;
+}
+
+.hsb-text {
+  font-size: 0.9rem;
+  color: #94a3b8;
+  margin: 0;
+  text-align: center;
+}
+
+/* --- 卡片网格 --- */
+.history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hcard {
+  position: relative;
+  background: #fff;
+  border: 1.5px solid #e8edf5;
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.2s, box-shadow 0.25s, transform 0.2s;
+  animation: cardIn 0.35s ease both;
+  cursor: default;
+}
+
+.hcard:hover {
+  border-color: #c7d2fe;
+  box-shadow: 0 8px 28px rgba(99, 102, 241, 0.1);
+  transform: translateY(-2px);
+}
+
+.hcard--selected {
+  border-color: #6366f1 !important;
+  background: #faf9ff;
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
+}
+
+/* 顶部状态条 */
+.hcard-status-bar {
+  height: 3px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.hcard--completed .hcard-status-bar {
+  background: linear-gradient(to right, #34d399, #6ee7b7);
+}
+
+.hcard--failed .hcard-status-bar {
+  background: linear-gradient(to right, #f87171, #fca5a5);
+}
+
+.hcard--pending .hcard-status-bar {
+  background: linear-gradient(to right, #fbbf24, #fde68a);
+}
+
+/* 卡片顶部行 */
+.hcard-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 0;
+}
+
+.hcard-check {
+  display: flex;
+  align-items: center;
+}
+
+.hcard-checkbox-label {
+  position: relative;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+
+.hcard-checkbox-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.hcard-checkbox-box {
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  color: #fff;
+  transition: all 0.15s;
+}
+
+.hcard-checkbox-label.is-checked .hcard-checkbox-box {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+
+.hcard-checkbox-label:hover .hcard-checkbox-box {
+  border-color: #6366f1;
+}
+
+.hcard-checkbox-placeholder {
+  width: 18px;
+  height: 18px;
+}
+
+/* 状态标签 */
+.hcard-status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.hcard-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.hcard-status-tag--completed {
+  background: #d1fae5;
+  color: #065f46;
+}
+.hcard-status-tag--completed .hcard-status-dot {
+  background: #10b981;
+}
+
+.hcard-status-tag--failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.hcard-status-tag--failed .hcard-status-dot {
+  background: #ef4444;
+}
+
+.hcard-status-tag--pending,
+.hcard-status-tag--processing,
+.hcard-status-tag--queued {
+  background: #fef3c7;
+  color: #92400e;
+}
+.hcard-status-tag--pending .hcard-status-dot,
+.hcard-status-tag--processing .hcard-status-dot,
+.hcard-status-tag--queued .hcard-status-dot {
+  background: #f59e0b;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.7); }
+}
+
+/* 卡片主体 */
+.hcard-body {
+  padding: 14px 14px 8px;
+  flex: 1;
+}
+
+.hcard-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #ede9fe 0%, #e0e7ff 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6366f1;
+  margin-bottom: 12px;
+}
+
+.hcard-title {
+  font-size: 0.975rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0 0 6px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hcard-topic {
+  font-size: 0.82rem;
+  color: #64748b;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.4;
+}
+
+/* 元信息 */
+.hcard-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 8px 14px 10px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.hcard-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+.hcard-meta-item svg {
+  flex-shrink: 0;
+}
+
+.hcard-meta-template {
+  width: 100%;
+}
+
+.hcard-template-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+/* 操作按钮区 */
+.hcard-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px 14px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.hcard-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  border-radius: 8px;
+  border: 1.5px solid transparent;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s;
+  white-space: nowrap;
+}
+
+.hcard-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.hcard-btn--edit {
+  background: #eff6ff;
+  color: #3b82f6;
+  border-color: #bfdbfe;
+  flex: 1;
+  justify-content: center;
+}
+
+.hcard-btn--edit:hover:not(:disabled) {
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
+.hcard-btn--preview {
+  background: #fff7ed;
+  color: #f59e0b;
+  border-color: #fed7aa;
+  flex: 1;
+  justify-content: center;
+}
+
+.hcard-btn--preview:hover:not(:disabled) {
+  background: #ffedd5;
+  border-color: #fdba74;
+}
+
+.hcard-btn--download {
+  background: #f0fdf4;
+  color: #16a34a;
+  border-color: #bbf7d0;
+  flex: 1;
+  justify-content: center;
+}
+
+.hcard-btn--download:hover:not(:disabled) {
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.hcard-btn--delete {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  background: #fff;
+  color: #94a3b8;
+  border-color: #e2e8f0;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.hcard-btn--delete:hover:not(:disabled) {
+  background: #fef2f2;
+  color: #ef4444;
+  border-color: #fca5a5;
+}
+
+/* --- 分页 --- */
+.history-pager {
+  display: flex;
+  justify-content: center;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #f1f5f9;
 }
 
 
@@ -3757,152 +4797,6 @@ h4 {
   height: 18px;
 }
 
-.history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-}
-
-.history-pagination {
-  display: flex;
-  justify-content: center;
-  margin-top: 20px;
-}
-
-
-/* 批量操作工具栏 */
-.batch-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.6rem 1rem;
-  margin-bottom: 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  flex-wrap: wrap;
-}
-
-.batch-select-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.875rem;
-  color: #475569;
-  cursor: pointer;
-  user-select: none;
-}
-
-.batch-count {
-  font-size: 0.82rem;
-  color: #6366f1;
-  font-weight: 600;
-}
-
-.batch-download-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin-left: auto;
-  padding: 0.45rem 1.1rem;
-  background: linear-gradient(135deg, #6366f1, #818cf8);
-  color: #fff;
-  border: none;
-  border-radius: 8px;
-  font-size: 0.875rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: opacity 0.2s, transform 0.1s;
-}
-.batch-download-btn:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
-.batch-download-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-/* 历史条目 checkbox */
-.history-checkbox {
-  flex-shrink: 0;
-  width: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-right: 4px;
-}
-.history-checkbox input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: #6366f1;
-}
-.checkbox-placeholder {
-  width: 16px;
-  height: 16px;
-}
-
-.history-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  transition: all 0.3s;
-}
-
-.history-item--selected {
-  border-color: #6366f1;
-  background: #f5f3ff;
-}
-
-.history-item:hover {
-  border-color: #0EA5E9;
-  box-shadow: 0 5px 15px rgba(14, 165, 233, 0.1);
-}
-.history-item--selected:hover {
-  border-color: #6366f1;
-  box-shadow: 0 5px 15px rgba(99, 102, 241, 0.12);
-}
-
-.history-preview {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-}
-
-.preview-icon {
-  font-size: 2rem;
-}
-
-.preview-content h4 {
-  font-size: 1.1rem;
-  margin-bottom: 5px;
-  color: #1e293b;
-}
-
-.preview-content p {
-  color: #64748b;
-  margin-bottom: 10px;
-}
-
-.history-meta {
-  display: flex;
-  gap: 20px;
-  font-size: 0.875rem;
-  color: #94a3b8;
-  flex-wrap: wrap;
-}
-
-.history-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.history-empty {
-  padding: 40px 20px;
-  text-align: center;
-  border: 2px dashed #e2e8f0;
-  border-radius: 12px;
-  color: #94a3b8;
-  font-size: 1rem;
-}
 
 .templates-empty {
   padding: 40px 20px;
@@ -3949,14 +4843,128 @@ h4 {
   --preview-accent: #38BDF8;
 }
 
+/* ----- 预览空状态：仅在新生成后显示，此处为占位引导 ----- */
 .preview-empty {
   margin-top: 16px;
-  padding: 24px;
+  padding: 48px 32px 40px;
   text-align: center;
-  border: 2px dashed #e2e8f0;
-  border-radius: 12px;
+  border: 2px dashed rgba(14, 165, 233, 0.35);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(241, 245, 249, 0.9) 0%, rgba(248, 250, 252, 0.95) 100%);
+  color: #475569;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.preview-empty:hover {
+  border-color: rgba(14, 165, 233, 0.5);
+  box-shadow: 0 8px 24px rgba(14, 165, 233, 0.08);
+}
+.preview-empty:focus-within {
+  outline: 2px solid rgba(14, 165, 233, 0.5);
+  outline-offset: 2px;
+}
+.preview-empty::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.08), transparent 50%, rgba(56, 189, 248, 0.06));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+.preview-empty__visual {
+  position: relative;
+  margin-bottom: 24px;
+}
+.preview-empty__icon {
+  width: 80px;
+  height: 80px;
+  color: #0EA5E9;
+  opacity: 0.85;
+  animation: previewEmptyIcon 0.6s ease-out backwards;
+  transition: transform 0.25s ease, color 0.2s ease;
+}
+.preview-empty:hover .preview-empty__icon {
+  transform: scale(1.05);
+  color: #0284c7;
+}
+.preview-empty__dots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+.preview-empty__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+  opacity: 0.6;
+  animation: previewEmptyDot 1.4s ease-in-out infinite both;
+}
+.preview-empty__dot:nth-child(1) { animation-delay: 0s; }
+.preview-empty__dot:nth-child(2) { animation-delay: 0.2s; }
+.preview-empty__dot:nth-child(3) { animation-delay: 0.4s; }
+.preview-empty__title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0 0 8px;
+  letter-spacing: 0.02em;
+  animation: previewEmptyText 0.5s ease-out 0.1s backwards;
+}
+.preview-empty__desc {
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  color: #64748b;
+  margin: 0 0 12px;
+  max-width: 320px;
+  margin-left: auto;
+  margin-right: auto;
+  animation: previewEmptyText 0.5s ease-out 0.18s backwards;
+}
+.preview-empty__hint {
+  font-size: 0.8125rem;
   color: #94a3b8;
-  background: #f8fafc;
+  margin: 0;
+  animation: previewEmptyText 0.5s ease-out 0.26s backwards;
+}
+@keyframes previewEmptyIcon {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(4px);
+  }
+  to {
+    opacity: 0.85;
+    transform: scale(1) translateY(0);
+  }
+}
+@keyframes previewEmptyDot {
+  0%, 80%, 100% { transform: scale(0.85); opacity: 0.5; }
+  40% { transform: scale(1.15); opacity: 0.9; }
+}
+@keyframes previewEmptyText {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .preview-empty__icon,
+  .preview-empty__dot,
+  .preview-empty__title,
+  .preview-empty__desc,
+  .preview-empty__hint { animation: none; }
+  .preview-empty:hover .preview-empty__icon { transform: none; }
 }
 
 .preview-card.preview-has-bg {
@@ -5285,6 +6293,11 @@ h4 {
   border-color: #fecaca;
 }
 
+.generation-progress-panel.is-timed-out {
+  background: linear-gradient(135deg, #fffbeb 0%, #fefce8 100%);
+  border-color: #fde68a;
+}
+
 /* 失败横幅 */
 .gp-fail-banner {
   display: flex;
@@ -5355,6 +6368,16 @@ h4 {
   display: none;
 }
 
+/* 进度条超时等待态 */
+.gp-bar-fill.is-timed-out {
+  background: linear-gradient(90deg, #fcd34d, #f59e0b);
+  animation: none;
+}
+
+.gp-bar-fill.is-timed-out::after {
+  display: none;
+}
+
 /* 阶段失败激活态 */
 .gp-stage-item.is-failed-active .gp-stage-dot {
   background: #ef4444;
@@ -5366,6 +6389,61 @@ h4 {
 .gp-stage-item.is-failed-active .gp-stage-label {
   color: #dc2626;
   font-weight: 600;
+}
+
+/* 阶段超时等待激活态 */
+.gp-stage-item.is-timed-out-active .gp-stage-dot {
+  background: #f59e0b;
+  color: #fff;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245,158,11,0.2);
+}
+
+.gp-stage-item.is-timed-out-active .gp-stage-label {
+  color: #b45309;
+  font-weight: 600;
+}
+
+/* 超时等待横幅 */
+.gp-timeout-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.gp-timeout-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #f59e0b;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  flex-shrink: 0;
+  line-height: 32px;
+  text-align: center;
+}
+
+.gp-timeout-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.gp-timeout-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #b45309;
+}
+
+.gp-timeout-reason {
+  font-size: 0.8rem;
+  color: #6b7280;
+  line-height: 1.5;
 }
 
 .gp-header {

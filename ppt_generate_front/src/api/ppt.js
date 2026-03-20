@@ -40,5 +40,14 @@ export default {
   },
   regenerateFromStructure(id, payload) {
     return apiClient.post('/ppt/structure/regenerate', payload, { params: { id } })
+  },
+
+  // AI 语义检索
+  aiSearch(query, topK = 10, enableRerank = true) {
+    return apiClient.post('/ppt/ai_search', {
+      query,
+      top_k: topK,
+      enable_rerank: enableRerank
+    })
   }
 }

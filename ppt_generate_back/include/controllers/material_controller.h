@@ -4,6 +4,7 @@
 
 #include "http/http_types.h"
 #include "services/auth_service.h"
+#include "services/audit_service.h"
 #include "services/material_service.h"
 #include "utils/thread_pool.h"
 
@@ -13,7 +14,8 @@ class MaterialController {
                      std::shared_ptr<MaterialService> material_service,
                      std::shared_ptr<ThreadPool> thread_pool,
                      std::string qwen_api_key = {},
-                     std::uint32_t qwen_timeout_sec = 60);
+                     std::uint32_t qwen_timeout_sec = 60,
+                     std::shared_ptr<AuditService> audit_service = nullptr);
 
   /** POST /api/material/upload  — multipart/form-data */
   HttpResponse Upload(const HttpRequest& request);
@@ -72,9 +74,10 @@ class MaterialController {
  private:
   std::shared_ptr<User> Authenticate(const HttpRequest& request, std::string& error) const;
 
-  std::shared_ptr<AuthService> auth_service_;
+  std::shared_ptr<AuthService>    auth_service_;
   std::shared_ptr<MaterialService> material_service_;
-  std::shared_ptr<ThreadPool> thread_pool_;
-  std::string qwen_api_key_;
-  std::uint32_t qwen_timeout_sec_ = 60;
+  std::shared_ptr<ThreadPool>     thread_pool_;
+  std::string                     qwen_api_key_;
+  std::uint32_t                   qwen_timeout_sec_ = 60;
+  std::shared_ptr<AuditService>   audit_service_;
 };

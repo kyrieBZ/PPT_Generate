@@ -17,7 +17,7 @@
 #include "utils/string_utils.h"
 
 namespace {
-constexpr std::size_t kMaxRequestSize = 25 * 1024 * 1024;  // 25 MB (supports file uploads)
+constexpr std::size_t kMaxRequestSize = 200 * 1024 * 1024;  // 200 MB (supports large pptx batch uploads)
 }
 
 HttpServer::HttpServer(const ServerConfig& config, Router& router)
@@ -146,6 +146,9 @@ bool HttpServer::ParseRequest(int client_fd, HttpRequest& request) {
       return false;
     }
     if (bytes_read == 0) {
+      // #region agent log
+      {auto f=std::fopen("/home/bz/LinuxProject/ppt_generate/.cursor/debug.log","a");if(f){std::fprintf(f,"{\"hypothesisId\":\"F\",\"location\":\"http_server.cpp:149\",\"message\":\"recv returned 0 (connection closed)\",\"data\":{\"raw_data_size\":%zu,\"header_end\":%zu,\"content_length\":%zu},\"timestamp\":%ld}\n",raw_data.size(),header_end,content_length,(long)std::time(nullptr));std::fclose(f);}}
+      // #endregion
       break;
     }
 

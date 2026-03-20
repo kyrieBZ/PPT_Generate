@@ -32,7 +32,8 @@ class QwenClient {
                                  bool include_images,
                                  std::vector<SlideContent>& out_slides,
                                  std::string& error_message,
-                                 bool include_charts = false) const;
+                                 bool include_charts = false,
+                                 bool include_notes = false) const;
 
   bool GenerateLayoutGuide(const std::string& template_summary_json,
                            int slide_count,
@@ -46,7 +47,8 @@ class QwenClient {
                                            const std::string& layout_guide_json,
                                            std::vector<SlideContent>& out_slides,
                                            std::string& error_message,
-                                           bool include_charts = false) const;
+                                           bool include_charts = false,
+                                           bool include_notes = false) const;
 
   bool GenerateSlidesWithLayout(const std::string& topic,
                                 int slide_count,
@@ -55,7 +57,40 @@ class QwenClient {
                                 const std::string& layout_guide_json,
                                 std::vector<SlideContent>& out_slides,
                                 std::string& error_message,
-                                bool include_charts = false) const;
+                                bool include_charts = false,
+                                bool include_notes = false) const;
+
+  struct KeywordFreq {
+    std::string keyword;
+    int count = 0;
+  };
+
+  // Extract high-frequency keywords from a list of PPT topics using LLM
+  // topics: raw topic strings from ppt_requests
+  // out_keywords: deduplicated keywords sorted by descending frequency
+  bool ExtractKeywords(const std::vector<std::string>& topics,
+                       std::vector<KeywordFreq>& out_keywords,
+                       std::string& error_message) const;
+
+  // Generate embedding vector for the given text using DashScope text-embedding API
+  // model: e.g. "text-embedding-v3"
+  // Returns empty vector on failure
+  std::vector<float> GetEmbedding(const std::string& text,
+                                  const std::string& model = "text-embedding-v3") const;
+
+  // Rerank candidates and generate a one-sentence match reason for each
+  // Returns reranked list of (ppt_id, reason) pairs, at most top_k items
+  struct RerankResult {
+    std::uint64_t ppt_id = 0;
+    std::string reason;
+    double score = 0.0;
+  };
+  std::vector<RerankResult> RerankWithReason(
+      const std::string& query,
+      const std::vector<std::uint64_t>& candidate_ids,
+      const std::vector<std::string>& candidate_summaries,
+      int top_k,
+      const std::string& model = "qwen-plus") const;
 
  private:
   std::string api_key_;

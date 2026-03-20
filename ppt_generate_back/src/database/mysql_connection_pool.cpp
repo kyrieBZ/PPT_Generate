@@ -70,12 +70,47 @@ MYSQL* MySQLConnectionPool::Acquire() {
   condition_.wait(lock, [this]() { return !connections_.empty(); });
   MYSQL* connection = connections_.front();
   connections_.pop();
+  lock.unlock();
+
+  // Validate connection liveness; reconnect if the server closed it due to inactivity
+  // or if this slot holds a null placeholder from a previous failed reconnect.
+  if (connection == nullptr || mysql_ping(connection) != 0) {
+    if (connection != nullptr) {
+      Logger::Warn("MySQL connection lost, reconnecting...");
+      mysql_close(connection);
+    } else {
+      Logger::Warn("MySQL null slot detected, creating fresh connection...");
+    }
+    try {
+      connection = CreateConnection();
+    } catch (...) {
+      // Reconnect failed: put a null placeholder back so other threads are not
+      // permanently blocked, then re-throw so the caller can report the failure.
+      {
+        std::lock_guard<std::mutex> relock(mutex_);
+        connections_.push(nullptr);
+      }
+      condition_.notify_one();
+      throw;
+    }
+  }
+
   return connection;
 }
 
 void MySQLConnectionPool::Release(MYSQL* connection) {
   if (!connection) {
-    return;
+    // Null slot: try to refill with a fresh connection to keep pool size stable.
+    try {
+      connection = CreateConnection();
+    } catch (const std::exception& ex) {
+      Logger::Error(std::string("MySQL pool slot refill failed: ") + ex.what());
+      // Keep null placeholder so the slot is returned and waiters are not deadlocked.
+      std::lock_guard<std::mutex> lock(mutex_);
+      connections_.push(nullptr);
+      condition_.notify_one();
+      return;
+    }
   }
   std::lock_guard<std::mutex> lock(mutex_);
   connections_.push(connection);

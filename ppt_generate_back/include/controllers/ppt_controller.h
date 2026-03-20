@@ -1,12 +1,15 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <nlohmann/json.hpp>
 
 #include "app_config.h"
+#include "database/mysql_connection_pool.h"
 #include "database/redis_client.h"
 #include "http/http_types.h"
+#include "services/ai_search_service.h"
 #include "services/auth_service.h"
 #include "services/material_service.h"
 #include "services/model_service.h"
@@ -31,7 +34,9 @@ class PptController {
                 std::shared_ptr<MaterialService> material_service = nullptr,
                 std::shared_ptr<RedisClient> redis = nullptr,
                 int redis_ttl_ppt_status = 7200,
-                int redis_ttl_ppt_history = 300);
+                int redis_ttl_ppt_history = 300,
+                std::shared_ptr<MySQLConnectionPool> pool = nullptr,
+                std::shared_ptr<AiSearchService> ai_search_service = nullptr);
 
   HttpResponse Generate(const HttpRequest& request);
   /** 轮询单条请求状态，用于异步生成后查询 completed/failed */
@@ -40,6 +45,8 @@ class PptController {
   HttpResponse AdminHistory(const HttpRequest& request);
   HttpResponse AdminMetrics(const HttpRequest& request);
   HttpResponse AdminInsights(const HttpRequest& request);
+  /** GET /api/admin/export/ppt_history — 导出生成记录 CSV（支持 ?q= 筛选）*/
+  HttpResponse AdminExportPptHistory(const HttpRequest& request);
   HttpResponse Delete(const HttpRequest& request);
   /** POST /api/ppt/batch_delete  — body: {"ids":[...]}，批量删除（最多 50 条） */
   HttpResponse BatchDelete(const HttpRequest& request);
@@ -70,7 +77,12 @@ class PptController {
   std::shared_ptr<WanxiangImageClient> wanx_client_;
   std::shared_ptr<ThreadPool> thread_pool_;
   std::shared_ptr<MaterialService> material_service_;
-  std::shared_ptr<RedisClient> redis_;
+  std::shared_ptr<RedisClient>         redis_;
   int redis_ttl_ppt_status_  = 7200;
   int redis_ttl_ppt_history_ = 300;
+  std::shared_ptr<MySQLConnectionPool> pool_;
+  std::shared_ptr<AiSearchService>     ai_search_service_;
+
+  /** 当前正在执行（已提交到线程池）的生成任务数 */
+  mutable std::atomic<int> active_jobs_{0};
 };

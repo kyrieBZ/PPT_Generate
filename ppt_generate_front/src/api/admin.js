@@ -19,6 +19,10 @@ export default {
   updateUserStatus(data = {}) {
     return apiClient.post('/admin/users/status', data)
   },
+  /** 批量禁用/启用用户，ids: number[], disabled: bool */
+  batchUpdateUserStatus(ids = [], disabled = false) {
+    return apiClient.post('/admin/users/batch_status', { ids, disabled })
+  },
 
   // ── 素材全局管理 ──────────────────────────────────────────────────────────
   /** 获取全量素材列表，支持 { user_id, status, file_type, page, page_size } */
@@ -74,5 +78,134 @@ export default {
   /** 获取偏好洞察数据（全量历史） */
   insights() {
     return apiClient.get('/admin/insights', { params: nc() })
+  },
+
+  // ── 操作审计日志 ──────────────────────────────────────────────────────────
+  /**
+   * 分页查询审计日志
+   * params: { action?, start?, end?, q?, page?, page_size? }
+   */
+  auditLogs(params = {}) {
+    return apiClient.get('/admin/audit_logs', { params: { ...params, ...nc() } })
+  },
+  /**
+   * 导出审计日志 CSV（返回可直接用于 window.open 的 URL）
+   * params: { action?, start?, end?, q? }
+   */
+  exportAuditLogs(params = {}) {
+    const token = localStorage.getItem('token') || sessionStorage.getItem('token') || ''
+    const base = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
+    const qs = new URLSearchParams({ ...params, token, _t: Date.now() }).toString()
+    return `${base}/admin/export/audit_logs?${qs}`
+  },
+
+  // ── 数据导出（模块七）────────────────────────────────────────────────────
+  /**
+   * 导出 PPT 生成记录 CSV
+   * params: { q? }
+   */
+  exportPptHistory(params = {}) {
+    const token = localStorage.getItem('token') || sessionStorage.getItem('token') || ''
+    const base = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
+    const qs = new URLSearchParams({ ...params, token, _t: Date.now() }).toString()
+    return `${base}/admin/export/ppt_history?${qs}`
+  },
+  /**
+   * 导出用户列表 CSV
+   * params: { q? }
+   */
+  exportUsers(params = {}) {
+    const token = localStorage.getItem('token') || sessionStorage.getItem('token') || ''
+    const base = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
+    const qs = new URLSearchParams({ ...params, token, _t: Date.now() }).toString()
+    return `${base}/admin/export/users?${qs}`
+  },
+
+  // ── 系统配置中心 ──────────────────────────────────────────────────────────
+  /** 获取所有系统配置项（含元数据） */
+  getSettings() {
+    return apiClient.get('/admin/settings', { params: nc() })
+  },
+  /**
+   * 批量更新系统配置项
+   * data: { key: value, ... }（值统一以字符串/bool/int 形式传入）
+   */
+  updateSettings(data = {}) {
+    return apiClient.put('/admin/settings', data)
+  },
+
+  // ── OfficePLUS 模板导入 ───────────────────────────────────────────────────
+  /**
+   * 搜索 OfficePLUS 模板列表（后端代理抓取）
+   * params: { keyword?, tag?, page?, page_size?, cookie? }
+   */
+  officeplusSearch(params = {}) {
+    return apiClient.get('/admin/officeplus/search', { params: { ...params, ...nc() } })
+  },
+  /**
+   * 获取单个模板详情（用于预览确认）
+   * params: { url?, id?, cookie? }
+   */
+  officeplusInfo(params = {}) {
+    return apiClient.get('/admin/officeplus/info', { params: { ...params, ...nc() } })
+  },
+  /**
+   * 导入模板（下载 pptx 并写入 catalog）
+   * data: { url?, id?, customId?, cookie? }
+   */
+  officeplusImport(data = {}) {
+    return apiClient.post('/admin/officeplus/import', data)
+  },
+  /**
+   * 热重载模板 catalog（导入后调用，无需重启服务）
+   */
+  officeplusReload() {
+    return apiClient.post('/admin/officeplus/reload', {})
+  },
+  /**
+   * 上传本地 pptx 文件到指定 template_id
+   * data: { template_id, file_base64 }
+   */
+  officeplusUpload(data = {}) {
+    return apiClient.post('/admin/officeplus/upload', data)
+  },
+  /**
+   * 批量上传本地 pptx，自动写入 catalog
+   * data: { files: [ { filename, file_base64 }, ... ] }
+   */
+  officeplusBatchUpload(data = {}) {
+    return apiClient.post('/admin/officeplus/batch_upload', data)
+  },
+
+  // ── 模板管理 ──────────────────────────────────────────────────────────────
+  /**
+   * 获取全部模板列表（含上架状态）
+   * 返回 { items: [ { id, name, provider, description, previewImage, tags, hasLocalFile, isListed, listing? } ] }
+   */
+  templateList() {
+    return apiClient.get('/admin/templates', { params: nc() })
+  },
+  /**
+   * 上架/更新模板
+   * data: { templateId, availableFrom?, availableTo? }
+   *   availableFrom: ISO 8601 字符串，默认 NOW()
+   *   availableTo:   ISO 8601 字符串，空/不传 = 永久
+   */
+  activateTemplate(data = {}) {
+    return apiClient.post('/admin/templates/activate', data)
+  },
+  /**
+   * 下架模板
+   * data: { templateId }
+   */
+  deactivateTemplate(data = {}) {
+    return apiClient.post('/admin/templates/deactivate', data)
+  },
+  /**
+   * 删除模板记录（从数据库中彻底移除上架信息）
+   * templateId: string
+   */
+  removeTemplateRecord(templateId) {
+    return apiClient.delete('/admin/templates', { params: { templateId } })
   }
 }

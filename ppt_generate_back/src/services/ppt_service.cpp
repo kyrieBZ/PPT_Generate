@@ -998,8 +998,6 @@ bool PptService::GetAdminMetrics(const std::string& range, AdminMetrics& out, st
 
   const std::string where_clause =
       " WHERE created_at >= FROM_UNIXTIME(" + std::to_string(start_ts) + ")";
-  const std::string failure_list = "('failed','error','rejected','canceled')";
-
   auto query_count = [&](const std::string& sql, long long& value) -> bool {
     if (mysql_query(conn, sql.c_str()) != 0) {
       error = "查询统计失败: " + std::string(mysql_error(conn));
@@ -1025,15 +1023,15 @@ bool PptService::GetAdminMetrics(const std::string& range, AdminMetrics& out, st
   long long chart_requests = 0;
   long long note_requests = 0;
 
+  // total：所有请求，pending/queued/processing 均计入（非 completed 即视为失败）
   if (!query_count("SELECT COUNT(*) FROM ppt_requests" + where_clause, total)) return false;
+  // success：仅 completed 才是真正成功
   if (!query_count("SELECT COUNT(*) FROM ppt_requests" + where_clause +
-                       " AND status IN " + failure_list,
-                   failed))
-    return false;
-  if (!query_count("SELECT COUNT(*) FROM ppt_requests" + where_clause +
-                       " AND status NOT IN " + failure_list,
+                       " AND status = 'completed'",
                    success))
     return false;
+  // failed：total - success（pending/queued/processing/failed 均算失败）
+  failed = total - success;
   if (!query_count("SELECT COUNT(DISTINCT user_id) FROM ppt_requests" + where_clause,
                    unique_users))
     return false;
@@ -1437,3 +1435,27 @@ bool PptService::GetInsights(InsightData& out, std::string& error) {
 
   return true;
 }
+
+bool PptService::GetAllTopics(std::vector<std::string>& out_topics, int max_count, std::string& error) {
+  auto connection = pool_->GetConnection();
+  MYSQL* conn = connection.Get();
+  if (!conn) { error = "无法获取数据库连接"; return false; }
+
+  std::string sql = "SELECT TRIM(topic) FROM ppt_requests WHERE topic <> '' "
+                    "ORDER BY created_at DESC LIMIT " + std::to_string(max_count);
+  if (mysql_query(conn, sql.c_str()) != 0) {
+    error = std::string("GetAllTopics查询失败: ") + mysql_error(conn);
+    return false;
+  }
+  MYSQL_RES* res = mysql_store_result(conn);
+  if (!res) return true;
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(res))) {
+    if (row[0] && row[0][0] != '\0') {
+      out_topics.emplace_back(row[0]);
+    }
+  }
+  mysql_free_result(res);
+  return true;
+}
+

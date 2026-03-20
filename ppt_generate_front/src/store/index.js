@@ -59,6 +59,13 @@ export default createStore({
       adminHistory: false,
       templates: false,
       models: false
+    },
+    aiSearch: {
+      mode: false,       // 是否处于 AI 检索模式
+      loading: false,
+      results: [],
+      query: '',
+      fallback: false
     }
   },
   mutations: {
@@ -123,6 +130,22 @@ export default createStore({
       if (Object.prototype.hasOwnProperty.call(state.loading, key)) {
         state.loading[key] = value
       }
+    },
+    setAiSearchMode(state, mode) {
+      state.aiSearch.mode = mode
+      if (!mode) {
+        state.aiSearch.results = []
+        state.aiSearch.query = ''
+        state.aiSearch.fallback = false
+      }
+    },
+    setAiSearchLoading(state, loading) {
+      state.aiSearch.loading = loading
+    },
+    setAiSearchResults(state, { results, query, fallback }) {
+      state.aiSearch.results = results
+      state.aiSearch.query = query
+      state.aiSearch.fallback = fallback
     }
   },
   actions: {
@@ -209,6 +232,19 @@ export default createStore({
         return title.includes(lower) || topic.includes(lower)
       })
     },
+    async aiSearchPpt({ commit, state }, { query, topK = 10, enableRerank = true }) {
+      if (!state.token || !query.trim()) return []
+      commit('setAiSearchLoading', true)
+      try {
+        const response = await pptAPI.aiSearch(query.trim(), topK, enableRerank)
+        const results = response.data?.results || []
+        const fallback = response.data?.fallback || false
+        commit('setAiSearchResults', { results, query: query.trim(), fallback })
+        return results
+      } finally {
+        commit('setAiSearchLoading', false)
+      }
+    },
     async searchAdminHistory({ state }, query) {
       if (!state.token || !state.user?.isAdmin) {
         return []
@@ -262,11 +298,19 @@ export default createStore({
           if (!req) continue
           const status = req.status
 
-          // 上报进度
+          // 上报进度（progress 从后端来的是字符串，需转数字；stage 是英文 key，需映射中文）
+          const STAGE_LABELS = {
+            init: '初始化', outline: '生成大纲', layout: '分析版式',
+            slides: '生成内容', images: '配图生成', rendering: '渲染文件',
+            finishing: '收尾处理', done: '生成完成', error: '生成失败',
+            brief: 'AI 创意分析', content: '生成内容', render: '渲染文件', finish: '收尾处理'
+          }
           if (onProgress && (req.progress !== undefined || req.stage)) {
+            const numProgress = req.progress !== undefined ? Number(req.progress) : 50
+            const stageLabel = STAGE_LABELS[req.stage] || req.stage || '生成中'
             onProgress({
-              progress: req.progress ?? 50,
-              stage: req.stage || '生成中',
+              progress: isNaN(numProgress) ? 50 : numProgress,
+              stage: stageLabel,
               step: req.step || ''
             })
           }
@@ -288,7 +332,7 @@ export default createStore({
         }
       }
       await dispatch('fetchPptHistory')
-      throw new Error('生成超时，请稍后在历史记录中查看')
+      return { timedOut: true, requestId: request.id }
     },
     async fetchModels({ commit, state }) {
       if (state.models.length) {
@@ -394,6 +438,7 @@ export default createStore({
     templatesLoading: state => state.loading.templates,
     models: state => state.models,
     modelsLoading: state => state.loading.models,
-    selectedModel: state => state.selectedModel
+    selectedModel: state => state.selectedModel,
+    aiSearch: state => state.aiSearch
   }
 })

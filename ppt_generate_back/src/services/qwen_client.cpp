@@ -216,7 +216,8 @@ std::string BuildLayoutGuidePrompt(const std::string& template_summary_json,
 std::string BuildSlidesPromptFromOutline(const std::string& topic,
                                          const std::vector<OutlineItem>& outline,
                                          bool include_images,
-                                         bool include_charts = false) {
+                                         bool include_charts = false,
+                                         bool include_notes = false) {
   std::ostringstream outline_text;
   for (std::size_t i = 0; i < outline.size(); ++i) {
     outline_text << (i + 1) << ". " << outline[i].title;
@@ -267,12 +268,19 @@ std::string BuildSlidesPromptFromOutline(const std::string& topic,
       prompt << "若该页无适合的量化数据则省略chart_data字段。";
     }
   }
+  if (include_notes) {
+    prompt << "每页需要为演讲者生成一段简洁流畅的演讲备注（speaker_notes字段，字符串），"
+           << "内容为该页核心要点的口语化展开与过渡语，字数控制在80-150字，禁止照搬正文要点原文。";
+  }
   prompt << "输出严格的JSON数组，数组中每个元素包含字段："
          << "title（字符串，需与大纲对应），"
          << "bullets（长度3-5的字符串数组，单条<=40字），"
          << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）";
   if (include_charts) {
     prompt << "，chart_data（可选，图表数据对象，格式见上）";
+  }
+  if (include_notes) {
+    prompt << "，speaker_notes（字符串，演讲者备注，80-150字）";
   }
   prompt << "。禁止输出除JSON以外的任何字符。";
   return prompt.str();
@@ -282,7 +290,8 @@ std::string BuildSlidesPromptFromOutlineWithLayout(const std::string& topic,
                                                    const std::vector<OutlineItem>& outline,
                                                    bool include_images,
                                                    const std::string& layout_guide_json,
-                                                   bool include_charts = false) {
+                                                   bool include_charts = false,
+                                                   bool include_notes = false) {
   std::ostringstream outline_text;
   for (std::size_t i = 0; i < outline.size(); ++i) {
     outline_text << (i + 1) << ". " << outline[i].title;
@@ -335,6 +344,10 @@ std::string BuildSlidesPromptFromOutlineWithLayout(const std::string& topic,
       prompt << "若该页无适合的量化数据则省略chart_data字段。";
     }
   }
+  if (include_notes) {
+    prompt << "每页需要为演讲者生成一段简洁流畅的演讲备注（speaker_notes字段，字符串），"
+           << "内容为该页核心要点的口语化展开与过渡语，字数控制在80-150字，禁止照搬正文要点原文。";
+  }
   prompt << "输出严格的JSON数组，数组中每个元素包含字段："
          << "title（字符串，需与大纲对应），"
          << "bullet_groups（数组，长度需与layout_guide中groups长度一致；"
@@ -343,6 +356,9 @@ std::string BuildSlidesPromptFromOutlineWithLayout(const std::string& topic,
          << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）";
   if (include_charts) {
     prompt << "，chart_data（可选，图表数据对象，格式见上）";
+  }
+  if (include_notes) {
+    prompt << "，speaker_notes（字符串，演讲者备注，80-150字）";
   }
   prompt << "。禁止输出除JSON以外的任何字符。";
   return prompt.str();
@@ -353,7 +369,8 @@ std::string BuildSlidesPromptWithLayout(const std::string& topic,
                                         const std::string& template_hint,
                                         bool include_images,
                                         const std::string& layout_guide_json,
-                                        bool include_charts = false) {
+                                        bool include_charts = false,
+                                        bool include_notes = false) {
   std::ostringstream prompt;
   prompt << "你是一名资深中文PPT设计专家，请围绕主题【" << topic << "】"
          << "策划" << slide_count << "页结构化PPT。";
@@ -383,6 +400,10 @@ std::string BuildSlidesPromptWithLayout(const std::string& topic,
       prompt << "若该页无适合的量化数据则省略chart_data字段。";
     }
   }
+  if (include_notes) {
+    prompt << "每页需要为演讲者生成一段简洁流畅的演讲备注（speaker_notes字段，字符串），"
+           << "内容为该页核心要点的口语化展开与过渡语，字数控制在80-150字，禁止照搬正文要点原文。";
+  }
   prompt << "输出严格的JSON数组，数组中每个元素包含字段："
          << "title（字符串，<=18个汉字），"
          << "bullet_groups（数组，长度需与layout_guide中groups长度一致；"
@@ -391,6 +412,9 @@ std::string BuildSlidesPromptWithLayout(const std::string& topic,
          << "image_prompts（字符串数组，描述建议配图主题，若无图片需求则给空数组）";
   if (include_charts) {
     prompt << "，chart_data（可选，图表数据对象，格式见上）";
+  }
+  if (include_notes) {
+    prompt << "，speaker_notes（字符串，演讲者备注，80-150字）";
   }
   prompt << "。禁止输出除JSON以外的任何字符。";
   return prompt.str();
@@ -824,6 +848,27 @@ bool ParseSlidesText(const std::string& slides_text,
         }
       }
 
+      // 解析 speaker_notes 字段（演讲者备注，可选）
+      if (auto it = slide_json.find("speaker_notes"); it != slide_json.end() && it->is_string()) {
+        const auto notes_val = it->get<std::string>();
+        if (!notes_val.empty()) {
+          if (slide.notes.empty()) {
+            slide.notes = notes_val;
+          } else {
+            slide.notes = notes_val + "\n" + slide.notes;
+          }
+        }
+      } else if (auto it = slide_json.find("speakerNotes"); it != slide_json.end() && it->is_string()) {
+        const auto notes_val = it->get<std::string>();
+        if (!notes_val.empty()) {
+          if (slide.notes.empty()) {
+            slide.notes = notes_val;
+          } else {
+            slide.notes = notes_val + "\n" + slide.notes;
+          }
+        }
+      }
+
       out_slides.push_back(std::move(slide));
     }
     if (out_slides.empty()) {
@@ -1029,12 +1074,14 @@ bool QwenClient::GenerateSlidesFromOutline(const std::string& topic,
                                            bool include_images,
                                            std::vector<SlideContent>& out_slides,
                                            std::string& error_message,
-                                           bool include_charts) const {
+                                           bool include_charts,
+                                           bool include_notes) const {
   if (outline.empty()) {
     error_message = "大纲为空";
     return false;
   }
-  const auto prompt = BuildSlidesPromptFromOutline(topic, outline, include_images, include_charts);
+  const auto prompt = BuildSlidesPromptFromOutline(topic, outline, include_images, include_charts,
+                                                   include_notes);
   std::string slides_text;
   if (!CallQwen(api_key_, prompt, slides_text, error_message, timeout_seconds_)) {
     return false;
@@ -1048,17 +1095,19 @@ bool QwenClient::GenerateSlidesFromOutlineWithLayout(const std::string& topic,
                                                      const std::string& layout_guide_json,
                                                      std::vector<SlideContent>& out_slides,
                                                      std::string& error_message,
-                                                     bool include_charts) const {
+                                                     bool include_charts,
+                                                     bool include_notes) const {
   if (layout_guide_json.empty()) {
     return GenerateSlidesFromOutline(topic, outline, include_images, out_slides, error_message,
-                                     include_charts);
+                                     include_charts, include_notes);
   }
   if (outline.empty()) {
     error_message = "大纲为空";
     return false;
   }
   const auto prompt = BuildSlidesPromptFromOutlineWithLayout(topic, outline, include_images,
-                                                             layout_guide_json, include_charts);
+                                                             layout_guide_json, include_charts,
+                                                             include_notes);
   std::string slides_text;
   if (!CallQwen(api_key_, prompt, slides_text, error_message, timeout_seconds_)) {
     return false;
@@ -1130,7 +1179,8 @@ bool QwenClient::GenerateSlidesWithLayout(const std::string& topic,
                                           const std::string& layout_guide_json,
                                           std::vector<SlideContent>& out_slides,
                                           std::string& error_message,
-                                          bool include_charts) const {
+                                          bool include_charts,
+                                          bool include_notes) const {
   if (layout_guide_json.empty()) {
     return GenerateSlides(topic, slide_count, template_hint, include_images, out_slides, error_message);
   }
@@ -1138,7 +1188,7 @@ bool QwenClient::GenerateSlidesWithLayout(const std::string& topic,
 
   std::ostringstream prompt;
   prompt << BuildSlidesPromptWithLayout(topic, slide_count, template_hint, include_images,
-                                        layout_guide_json, include_charts);
+                                        layout_guide_json, include_charts, include_notes);
   std::string slides_text;
   if (!CallQwen(api_key_, prompt.str(), slides_text, error_message, timeout_seconds_)) {
     return false;
@@ -1158,4 +1208,207 @@ bool QwenClient::GenerateSlidesWithLayout(const std::string& topic,
     Logger::Warn("layout_guide约束应用失败，将保留原始模型输出: " + layout_warning);
   }
   return true;
+}
+bool QwenClient::ExtractKeywords(const std::vector<std::string>& topics,
+                                 std::vector<KeywordFreq>& out_keywords,
+                                 std::string& error_message) const {
+  if (topics.empty()) {
+    return true;
+  }
+
+  // Build a condensed topic list (at most 200 entries to stay within context limits)
+  std::ostringstream topic_list;
+  const std::size_t max_topics = std::min(topics.size(), static_cast<std::size_t>(200));
+  for (std::size_t i = 0; i < max_topics; ++i) {
+    if (!topics[i].empty()) {
+      topic_list << topics[i] << "\n";
+    }
+  }
+
+  std::ostringstream prompt;
+  prompt << "你是一名数据分析专家。以下是用户生成PPT时填写的主题列表（每行一条）：\n"
+         << topic_list.str()
+         << "\n请从这些主题中提取高频关键词（名词、短语或概念，2-8字），"
+         << "统计每个关键词在所有主题中出现或相关的频次，输出前40个高频关键词。"
+         << "要求：1）合并同义词（如\"人工智能\"和\"AI\"算同一词）；"
+         << "2）忽略虚词、助词、连词等无意义词汇；"
+         << "3）输出严格的JSON数组，每个元素包含keyword（字符串）和count（整数）两个字段；"
+         << "4）按count从大到小排序；5）禁止输出除JSON以外的任何字符。";
+
+  std::string response_text;
+  if (!CallQwen(api_key_, prompt.str(), response_text, error_message, timeout_seconds_)) {
+    return false;
+  }
+
+  // Extract JSON array from response
+  const std::string json_text = ExtractJsonArray(response_text);
+  try {
+    auto arr = nlohmann::json::parse(json_text);
+    if (!arr.is_array()) {
+      error_message = "关键词提取：返回格式不是数组";
+      return false;
+    }
+    out_keywords.clear();
+    for (const auto& item : arr) {
+      if (!item.is_object()) continue;
+      KeywordFreq kf;
+      kf.keyword = item.value("keyword", "");
+      kf.count   = item.value("count", 0);
+      if (!kf.keyword.empty() && kf.count > 0) {
+        out_keywords.push_back(std::move(kf));
+      }
+    }
+    return true;
+  } catch (const std::exception& ex) {
+    error_message = std::string("关键词提取JSON解析失败: ") + ex.what();
+    return false;
+  }
+}
+
+std::vector<float> QwenClient::GetEmbedding(const std::string& text,
+                                             const std::string& model) const {
+  if (api_key_.empty() || text.empty()) {
+    return {};
+  }
+
+  constexpr const char* kEmbeddingEndpoint =
+      "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding";
+
+  nlohmann::json body;
+  body["model"] = model;
+  body["input"]["texts"] = nlohmann::json::array({text});
+  body["parameters"]["text_type"] = "query";
+
+  const std::string body_str = body.dump();
+
+  struct curl_slist* headers = nullptr;
+  headers = curl_slist_append(headers, ("Authorization: Bearer " + api_key_).c_str());
+  headers = curl_slist_append(headers, "Content-Type: application/json");
+
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    curl_slist_free_all(headers);
+    return {};
+  }
+
+  std::string response_buffer;
+  curl_easy_setopt(curl, CURLOPT_URL, kEmbeddingEndpoint);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str.c_str());
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body_str.size()));
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buffer);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds_ > 0 ? timeout_seconds_ : 30));
+  curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+
+  CURLcode res = curl_easy_perform(curl);
+  curl_easy_cleanup(curl);
+  curl_slist_free_all(headers);
+
+  if (res != CURLE_OK) {
+    Logger::Warn(std::string("GetEmbedding curl error: ") + curl_easy_strerror(res));
+    return {};
+  }
+
+  try {
+    auto resp = nlohmann::json::parse(response_buffer);
+    // DashScope response: { "output": { "embeddings": [{ "embedding": [...] }] } }
+    const auto& embeddings = resp.at("output").at("embeddings");
+    if (embeddings.is_array() && !embeddings.empty()) {
+      const auto& vec = embeddings[0].at("embedding");
+      std::vector<float> result;
+      result.reserve(vec.size());
+      for (const auto& v : vec) {
+        result.push_back(v.get<float>());
+      }
+      return result;
+    }
+  } catch (const std::exception& ex) {
+    Logger::Warn(std::string("GetEmbedding parse error: ") + ex.what() +
+                 " body=" + response_buffer.substr(0, 200));
+  }
+  return {};
+}
+
+std::vector<QwenClient::RerankResult> QwenClient::RerankWithReason(
+    const std::string& query,
+    const std::vector<std::uint64_t>& candidate_ids,
+    const std::vector<std::string>& candidate_summaries,
+    int top_k,
+    const std::string& model) const {
+  if (api_key_.empty() || candidate_ids.empty() || query.empty()) {
+    return {};
+  }
+
+  std::ostringstream prompt;
+  prompt << "你是一名智能PPT检索助手。用户的搜索描述是：「" << query << "」\n\n"
+         << "以下是候选PPT列表（每条包含ID和内容摘要）：\n";
+  const std::size_t n = std::min(candidate_ids.size(), candidate_summaries.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    prompt << "ID=" << candidate_ids[i] << "：" << candidate_summaries[i] << "\n";
+  }
+  prompt << "\n请按与用户描述的相关性从高到低排序，选出最多" << top_k << "个最相关的PPT。"
+         << "对于每个选中的PPT，用一句话（不超过30字）说明它为什么符合用户的描述。"
+         << "输出严格的JSON数组，每个元素包含：id（整数，PPT的ID）、reason（字符串，匹配原因）、score（0.0-1.0的浮点数，相关性评分）。"
+         << "禁止输出除JSON以外的任何字符。";
+
+  // Use inline HTTP call to allow custom model parameter
+  CURL* rerank_curl = curl_easy_init();
+  if (!rerank_curl) {
+    return {};
+  }
+  nlohmann::json rerank_body;
+  rerank_body["model"] = model;
+  rerank_body["parameters"]["result_format"] = "json";
+  rerank_body["input"]["prompt"] = prompt.str();
+  const std::string rerank_payload = rerank_body.dump();
+
+  struct curl_slist* rerank_headers = nullptr;
+  rerank_headers = curl_slist_append(rerank_headers, "Content-Type: application/json");
+  rerank_headers = curl_slist_append(rerank_headers,
+                                     ("Authorization: Bearer " + api_key_).c_str());
+
+  std::string response_text;
+  curl_easy_setopt(rerank_curl, CURLOPT_URL, kQwenEndpoint);
+  curl_easy_setopt(rerank_curl, CURLOPT_HTTPHEADER, rerank_headers);
+  curl_easy_setopt(rerank_curl, CURLOPT_POSTFIELDS, rerank_payload.c_str());
+  curl_easy_setopt(rerank_curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(rerank_payload.size()));
+  curl_easy_setopt(rerank_curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+  curl_easy_setopt(rerank_curl, CURLOPT_WRITEDATA, &response_text);
+  curl_easy_setopt(rerank_curl, CURLOPT_TIMEOUT,
+                   static_cast<long>(timeout_seconds_ > 0 ? timeout_seconds_ : 60));
+  curl_easy_setopt(rerank_curl, CURLOPT_SSL_VERIFYPEER, 1L);
+  CURLcode rerank_res = curl_easy_perform(rerank_curl);
+  curl_easy_cleanup(rerank_curl);
+  curl_slist_free_all(rerank_headers);
+
+  if (rerank_res != CURLE_OK) {
+    Logger::Warn(std::string("RerankWithReason curl error: ") + curl_easy_strerror(rerank_res));
+    return {};
+  }
+  response_text = ExtractTextFromResponse(nlohmann::json::parse(response_text, nullptr, false));
+
+  const std::string json_text = ExtractJsonArray(response_text);
+  try {
+    auto arr = nlohmann::json::parse(json_text);
+    if (!arr.is_array()) {
+      return {};
+    }
+    std::vector<RerankResult> results;
+    results.reserve(arr.size());
+    for (const auto& item : arr) {
+      if (!item.is_object()) continue;
+      RerankResult r;
+      r.ppt_id = item.value("id", static_cast<std::uint64_t>(0));
+      r.reason = item.value("reason", "");
+      r.score  = item.value("score", 0.0);
+      if (r.ppt_id > 0) {
+        results.push_back(std::move(r));
+      }
+    }
+    return results;
+  } catch (const std::exception& ex) {
+    Logger::Warn(std::string("RerankWithReason parse error: ") + ex.what());
+    return {};
+  }
 }

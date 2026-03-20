@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <utility>
 
+void Router::SetGlobalMiddleware(Middleware mw) {
+  global_middleware_ = std::move(mw);
+}
+
 void Router::AddRoute(const std::string& method, const std::string& path, Handler handler) {
   routes_[BuildKey(method, path)] = std::move(handler);
 }
@@ -25,6 +29,14 @@ HttpResponse Router::Handle(const HttpRequest& request) const {
     response.body.clear();
     response.headers["content-length"] = "0";
     return response;
+  }
+
+  // 全局中间件（如 maintenance_mode 拦截）
+  if (global_middleware_) {
+    auto intercept = global_middleware_(request);
+    if (intercept.has_value()) {
+      return std::move(*intercept);
+    }
   }
 
   // 1. 精确匹配

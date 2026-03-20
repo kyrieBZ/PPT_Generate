@@ -1,6 +1,7 @@
 #include <atomic>
 #include <csignal>
 #include <chrono>
+#include <filesystem>
 #include <iostream>
 #include <thread>
 
@@ -15,6 +16,11 @@
 #include "controllers/material_controller.h"
 #include "controllers/model_controller.h"
 #include "controllers/announcement_controller.h"
+#include "controllers/audit_controller.h"
+#include "controllers/settings_controller.h"
+#include "controllers/template_manager_controller.h"
+#include "controllers/ai_search_controller.h"
+#include "controllers/officeplus_controller.h"
 #include "database/mongo_client.h"
 #include "database/mysql_connection_pool.h"
 #include "database/redis_client.h"
@@ -28,12 +34,17 @@
 #include "services/qwen_client.h"
 #include "services/material_service.h"
 #include "services/template_service.h"
+#include "services/ai_search_service.h"
+#include "services/audit_service.h"
+#include "services/qdrant_client.h"
+#include "services/template_manager_service.h"
 #include "services/ppt_service_interface.h"
 #include "services/libreoffice_powerpoint_service.h"
 #include "services/s3_client.h"
 #include "services/wanxiang_image_client.h"
 #include "utils/thread_pool.h"
 #include "utils/ppt_metrics.h"
+#include "utils/settings_reader.h"
 
 namespace {
 std::atomic<bool> g_should_stop{false};
@@ -51,6 +62,12 @@ int main(int argc, char* argv[]) {
       config_path = argv[++i];
     }
   }
+
+  // 推导项目根目录（ppt_generate_back/）：config 文件所在目录的上一级
+  // 例如 config_path = "../config/config.json" → base_dir = ".."
+  // 例如 config_path = "config/config.json"   → base_dir = "."
+  const std::filesystem::path base_dir =
+      std::filesystem::path(config_path).parent_path().parent_path();
 
   std::signal(SIGINT, SignalHandler);
   std::signal(SIGTERM, SignalHandler);
@@ -106,8 +123,14 @@ int main(int argc, char* argv[]) {
         ppt_service->SetPowerPointServiceFactory(factory);
     }
 
-    auto template_service = std::make_shared<TemplateService>(config.templates().catalog_path);
-    auto model_service = std::make_shared<ModelService>(config.models().catalog_path);
+    const std::string tmpl_catalog_path = std::filesystem::weakly_canonical(
+        base_dir / config.templates().catalog_path).string();
+    auto template_service = std::make_shared<TemplateService>(tmpl_catalog_path);
+    auto tmpl_mgr_service = std::make_shared<TemplateManagerService>(pool);
+    tmpl_mgr_service->EnsureTable();
+    const std::string model_catalog_path = std::filesystem::weakly_canonical(
+        base_dir / config.models().catalog_path).string();
+    auto model_service = std::make_shared<ModelService>(model_catalog_path);
     std::shared_ptr<S3Client> s3_client;
     if (config.s3().enabled()) {
       s3_client = std::make_shared<S3Client>(config.s3());
@@ -124,6 +147,30 @@ int main(int argc, char* argv[]) {
     }
 
     auto thread_pool = std::make_shared<ThreadPool>(4);
+
+    // ── AI 检索（可选）──────────────────────────────────────────────────────
+    std::shared_ptr<QdrantClient> qdrant_client;
+    std::shared_ptr<AiSearchService> ai_search_service;
+    if (config.ai_search().enabled && !config.providers().qwen_api_key.empty()) {
+      try {
+        qdrant_client = std::make_shared<QdrantClient>(
+            config.ai_search().qdrant_host,
+            config.ai_search().qdrant_port,
+            config.ai_search().collection_name,
+            config.ai_search().embedding_dimension);
+        ai_search_service = std::make_shared<AiSearchService>(
+            qwen_client, qdrant_client, pool, config.ai_search());
+        Logger::Info("AI search service initialized (qdrant=" +
+                     config.ai_search().qdrant_host + ":" +
+                     std::to_string(config.ai_search().qdrant_port) + ")");
+      } catch (const std::exception& e) {
+        Logger::Warn(std::string("AI search init failed, disabled: ") + e.what());
+        qdrant_client.reset();
+        ai_search_service.reset();
+      }
+    }
+
+    auto audit_service = std::make_shared<AuditService>(pool);
 
     std::string qwen_key = config.providers().qwen_api_key;
     auto material_service = std::make_shared<MaterialService>(
@@ -156,12 +203,13 @@ int main(int argc, char* argv[]) {
     gen_config.qwen_timeout_seconds = config.providers().qwen_timeout_seconds;
 
     Router router;
-    AuthController auth_controller(auth_service);
-    AdminController admin_controller(auth_service);
+    AuthController auth_controller(auth_service, pool);
+    AdminController admin_controller(auth_service, audit_service);
     AssistantController assistant_controller(auth_service, assistant_service);
     MaterialController material_controller(auth_service, material_service, thread_pool,
                                            config.providers().qwen_api_key,
-                                           config.providers().qwen_timeout_seconds);
+                                           config.providers().qwen_timeout_seconds,
+                                           audit_service);
     PptController ppt_controller(auth_service,
                                  ppt_service,
                                  model_service,
@@ -174,10 +222,32 @@ int main(int argc, char* argv[]) {
                                  material_service,
                                  redis_client,
                                  config.redis().ttl_ppt_status,
-                                 config.redis().ttl_ppt_history);
-    TemplateController template_controller(template_service);
+                                 config.redis().ttl_ppt_history,
+                                 pool,
+                                 ai_search_service);
+    TemplateController template_controller(template_service, tmpl_mgr_service);
     ModelController model_controller(model_service);
-    AnnouncementController announcement_controller(auth_service, pool);
+    AnnouncementController announcement_controller(auth_service, pool, audit_service);
+    AuditController audit_controller(auth_service, audit_service);
+    SettingsController settings_controller(auth_service, pool, audit_service);
+    TemplateManagerController tmpl_mgr_controller(auth_service, audit_service,
+                                                   tmpl_mgr_service, template_service);
+
+    // OfficePLUS 导入控制器（路径均基于 base_dir，支持从任意目录启动）
+    const std::string op_fetcher_script  = (base_dir / "scripts/officeplus_fetcher.py").string();
+    const std::string op_templates_dir   = (base_dir / "assets/templates").string();
+    const std::string op_thumbnails_dir  = (base_dir / "assets/template_thumbnails").string();
+    // catalog_path 来自 config，可能是相对路径，需要以 base_dir 为基准解析
+    const std::string op_catalog_path = std::filesystem::weakly_canonical(
+        base_dir / config.templates().catalog_path).string();
+    OfficePlusController officeplus_controller(
+        auth_service, template_service,
+        config.generation().python_binary,
+        op_catalog_path,
+        op_templates_dir, op_thumbnails_dir,
+        op_fetcher_script);
+
+    AiSearchController ai_search_controller(auth_service, ai_search_service, thread_pool);
 
     Logger::Info("PPT output directory: " + config.generation().output_dir);
 
@@ -245,6 +315,9 @@ int main(int argc, char* argv[]) {
     });
     router.AddRoute("POST", "/api/admin/users/status", [&admin_controller](const HttpRequest& request) {
       return admin_controller.UpdateUserStatus(request);
+    });
+    router.AddRoute("POST", "/api/admin/users/batch_status", [&admin_controller](const HttpRequest& request) {
+      return admin_controller.BatchUpdateUserStatus(request);
     });
 
     // ── 管理员素材管理 ──────────────────────────────────────────────────────
@@ -371,6 +444,75 @@ int main(int argc, char* argv[]) {
       return announcement_controller.AdminDelete(request);
     });
 
+    // ── 操作审计日志 ──────────────────────────────────────────────────────────
+    router.AddRoute("GET", "/api/admin/audit_logs", [&audit_controller](const HttpRequest& request) {
+      return audit_controller.AdminList(request);
+    });
+    router.AddRoute("GET", "/api/admin/audit_logs/export", [&audit_controller](const HttpRequest& request) {
+      return audit_controller.AdminExport(request);
+    });
+
+    // ── 系统配置中心 ──────────────────────────────────────────────────────────
+    router.AddRoute("GET", "/api/admin/settings", [&settings_controller](const HttpRequest& request) {
+      return settings_controller.GetSettings(request);
+    });
+    router.AddRoute("PUT", "/api/admin/settings", [&settings_controller](const HttpRequest& request) {
+      return settings_controller.UpdateSettings(request);
+    });
+    // 公共配置接口（无需认证）：供前端读取 site_name、default_model_key 等展示类配置
+    router.AddRoute("GET", "/api/settings/public", [&pool](const HttpRequest&) {
+      nlohmann::json data;
+      data["siteName"]        = SettingsReader::GetString(*pool, "site_name", "PPT智能生成系统");
+      data["defaultModelKey"] = SettingsReader::GetString(*pool, "default_model_key", "qwen-plus");
+      return HttpResponse::Json(200, data);
+    });
+
+    // ── OfficePLUS 模板导入（管理员端）──────────────────────────────────────
+    router.AddRoute("GET", "/api/admin/officeplus/search", [&officeplus_controller](const HttpRequest& request) {
+      return officeplus_controller.Search(request);
+    });
+    router.AddRoute("GET", "/api/admin/officeplus/info", [&officeplus_controller](const HttpRequest& request) {
+      return officeplus_controller.Info(request);
+    });
+    router.AddRoute("POST", "/api/admin/officeplus/import", [&officeplus_controller](const HttpRequest& request) {
+      return officeplus_controller.Import(request);
+    });
+    router.AddRoute("POST", "/api/admin/officeplus/upload", [&officeplus_controller](const HttpRequest& request) {
+      return officeplus_controller.UploadFile(request);
+    });
+    router.AddRoute("POST", "/api/admin/officeplus/batch_upload", [&officeplus_controller](const HttpRequest& request) {
+      return officeplus_controller.BatchUpload(request);
+    });
+    router.AddRoute("POST", "/api/admin/officeplus/reload", [&officeplus_controller](const HttpRequest& request) {
+      return officeplus_controller.Reload(request);
+    });
+
+    // ── 模板管理（管理员端）──────────────────────────────────────────────────
+    router.AddRoute("GET", "/api/admin/templates", [&tmpl_mgr_controller](const HttpRequest& request) {
+      return tmpl_mgr_controller.AdminList(request);
+    });
+    router.AddRoute("POST", "/api/admin/templates/activate", [&tmpl_mgr_controller](const HttpRequest& request) {
+      return tmpl_mgr_controller.Activate(request);
+    });
+    router.AddRoute("POST", "/api/admin/templates/deactivate", [&tmpl_mgr_controller](const HttpRequest& request) {
+      return tmpl_mgr_controller.Deactivate(request);
+    });
+    router.AddRoute("DELETE", "/api/admin/templates", [&tmpl_mgr_controller](const HttpRequest& request) {
+      return tmpl_mgr_controller.Remove(request);
+    });
+
+    // ── 数据导出（模块七）─────────────────────────────────────────────────────
+    router.AddRoute("GET", "/api/admin/export/ppt_history", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.AdminExportPptHistory(request);
+    });
+    router.AddRoute("GET", "/api/admin/export/users", [&admin_controller](const HttpRequest& request) {
+      return admin_controller.ExportUsers(request);
+    });
+    // /api/admin/export/audit_logs — 直接复用审计日志已有导出端点
+    router.AddRoute("GET", "/api/admin/export/audit_logs", [&audit_controller](const HttpRequest& request) {
+      return audit_controller.AdminExport(request);
+    });
+
     router.AddRoute("POST", "/api/assistant/chat", [&assistant_controller](const HttpRequest& request) {
       return assistant_controller.Chat(request);
     });
@@ -414,6 +556,41 @@ int main(int argc, char* argv[]) {
         [&assistant_controller](const HttpRequest& request) {
           return assistant_controller.DeleteSession(request);
         });
+
+    // ── AI 检索 ──────────────────────────────────────────────────────────────
+    router.AddRoute("POST", "/api/ppt/ai_search", [&ai_search_controller](const HttpRequest& request) {
+      return ai_search_controller.Search(request);
+    });
+    router.AddRoute("POST", "/api/admin/ppt/reindex", [&ai_search_controller](const HttpRequest& request) {
+      return ai_search_controller.AdminReindex(request);
+    });
+    router.AddRoute("GET", "/api/admin/ppt/index_status", [&ai_search_controller](const HttpRequest& request) {
+      return ai_search_controller.AdminIndexStatus(request);
+    });
+
+    // ── 全局中间件：维护模式拦截 ─────────────────────────────────────────────
+    // 放行：OPTIONS、/api/health、/api/auth/login、所有 /api/admin/* 端点
+    router.SetGlobalMiddleware([&pool](const HttpRequest& req) -> std::optional<HttpResponse> {
+      const bool is_admin_path  = req.path.size() >= 11 &&
+                                  req.path.substr(0, 11) == "/api/admin/";
+      const bool is_passthrough = req.path == "/api/health"                       ||
+                                  req.path == "/api/auth/login"                  ||
+                                  req.path == "/api/auth/password/reset/request" ||
+                                  req.path == "/api/auth/password/reset/confirm" ||
+                                  req.path == "/api/settings/public"             ||
+                                  req.path == "/api/templates/preview"           ||
+                                  req.path == "/api/templates/file"              ||
+                                  is_admin_path;
+      if (is_passthrough) return std::nullopt;
+
+      const bool in_maintenance = SettingsReader::GetBool(*pool, "maintenance_mode", false);
+      if (in_maintenance) {
+        return HttpResponse::Json(503, nlohmann::json{
+            {"code",    "ERR_MAINTENANCE"},
+            {"message", "系统正在维护中，请稍后再试。如有疑问请联系管理员。"}});
+      }
+      return std::nullopt;
+    });
 
     HttpServer server(config.server(), router);
     server.Start();

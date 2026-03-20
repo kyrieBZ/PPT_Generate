@@ -164,16 +164,18 @@ nlohmann::json MaterialToJson(const Material& m) {
 
 }  // namespace
 
-MaterialController::MaterialController(std::shared_ptr<AuthService> auth_service,
+MaterialController::MaterialController(std::shared_ptr<AuthService>    auth_service,
                                        std::shared_ptr<MaterialService> material_service,
-                                       std::shared_ptr<ThreadPool> thread_pool,
-                                       std::string qwen_api_key,
-                                       std::uint32_t qwen_timeout_sec)
+                                       std::shared_ptr<ThreadPool>      thread_pool,
+                                       std::string                      qwen_api_key,
+                                       std::uint32_t                    qwen_timeout_sec,
+                                       std::shared_ptr<AuditService>    audit_service)
     : auth_service_(std::move(auth_service)),
       material_service_(std::move(material_service)),
       thread_pool_(std::move(thread_pool)),
       qwen_api_key_(std::move(qwen_api_key)),
-      qwen_timeout_sec_(qwen_timeout_sec > 0 ? qwen_timeout_sec : 60) {}
+      qwen_timeout_sec_(qwen_timeout_sec > 0 ? qwen_timeout_sec : 60),
+      audit_service_(std::move(audit_service)) {}
 
 std::shared_ptr<User> MaterialController::Authenticate(const HttpRequest& request,
                                                         std::string& error) const {
@@ -993,6 +995,15 @@ HttpResponse MaterialController::AdminDelete(const HttpRequest& request) {
     return HttpResponse::Json(404, ErrorJson("ERR_MATERIAL_NOT_FOUND", error.empty() ? "材料不存在" : error));
   }
 
+  if (audit_service_) {
+    std::string detail = "{\"reason\":\"" + delete_reason + "\"}";
+    audit_service_->Write(admin->id, admin->username,
+                          "delete_material", "material", material_id,
+                          detail, request.Header("x-forwarded-for").empty()
+                                      ? request.Header("x-real-ip")
+                                      : request.Header("x-forwarded-for"));
+  }
+
   return HttpResponse::Json(200, {{"message", "删除成功"}, {"id", material_id}});
 }
 
@@ -1055,6 +1066,17 @@ HttpResponse MaterialController::AdminBatchDelete(const HttpRequest& request) {
   const int total = static_cast<int>(ids_json.size());
   const int failed = total - success_count;
   const int sc = (failed == 0) ? 200 : (success_count == 0 ? 400 : 207);
+
+  if (audit_service_ && success_count > 0) {
+    std::string detail = std::string("{\"reason\":\"") + delete_reason +
+                         "\",\"success\":" + std::to_string(success_count) + "}";
+    audit_service_->Write(admin->id, admin->username,
+                          "batch_delete_material", "material", "batch",
+                          detail, request.Header("x-forwarded-for").empty()
+                                      ? request.Header("x-real-ip")
+                                      : request.Header("x-forwarded-for"));
+  }
+
   return HttpResponse::Json(sc, {
     {"success", success_count}, {"failed", failed}, {"total", total}, {"results", results}
   });
