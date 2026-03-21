@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "logger.h"
+#include "services/fastdfs_client.h"
 
 namespace {
 
@@ -40,24 +41,28 @@ std::uint64_t NowSeconds() {
           .count());
 }
 
-// 标准列顺序（11 列）：
+// 标准列顺序（15 列）：
 //   0:id  1:user_id  2:filename  3:file_type  4:file_path  5:file_size
 //   6:status  7:extract_result  8:error_msg  9:review_result
 //   10:UNIX_TIMESTAMP(created_at)  11:UNIX_TIMESTAMP(updated_at)
+//   12:fastdfs_file_id  13:fastdfs_url  14:storage_type
 Material RowToMaterial(MYSQL_ROW row, unsigned long* lengths) {
   Material m;
-  if (row[0] && lengths[0]) m.id             = std::string(row[0], lengths[0]);
-  if (row[1])               m.user_id        = std::stoull(row[1]);
-  if (row[2] && lengths[2]) m.filename       = std::string(row[2], lengths[2]);
-  if (row[3] && lengths[3]) m.file_type      = std::string(row[3], lengths[3]);
-  if (row[4] && lengths[4]) m.file_path      = std::string(row[4], lengths[4]);
-  if (row[5])               m.file_size      = std::stoull(row[5]);
-  if (row[6] && lengths[6]) m.status         = std::string(row[6], lengths[6]);
-  if (row[7] && lengths[7]) m.extract_result = std::string(row[7], lengths[7]);
-  if (row[8] && lengths[8]) m.error_msg      = std::string(row[8], lengths[8]);
-  if (row[9] && lengths[9]) m.review_result  = std::string(row[9], lengths[9]);
-  if (row[10])              m.created_at     = std::stoull(row[10]);
-  if (row[11])              m.updated_at     = std::stoull(row[11]);
+  if (row[0] && lengths[0])  m.id              = std::string(row[0], lengths[0]);
+  if (row[1])                m.user_id         = std::stoull(row[1]);
+  if (row[2] && lengths[2])  m.filename        = std::string(row[2], lengths[2]);
+  if (row[3] && lengths[3])  m.file_type       = std::string(row[3], lengths[3]);
+  if (row[4] && lengths[4])  m.file_path       = std::string(row[4], lengths[4]);
+  if (row[5])                m.file_size       = std::stoull(row[5]);
+  if (row[6] && lengths[6])  m.status          = std::string(row[6], lengths[6]);
+  if (row[7] && lengths[7])  m.extract_result  = std::string(row[7], lengths[7]);
+  if (row[8] && lengths[8])  m.error_msg       = std::string(row[8], lengths[8]);
+  if (row[9] && lengths[9])  m.review_result   = std::string(row[9], lengths[9]);
+  if (row[10])               m.created_at      = std::stoull(row[10]);
+  if (row[11])               m.updated_at      = std::stoull(row[11]);
+  if (row[12] && lengths[12]) m.fastdfs_file_id = std::string(row[12], lengths[12]);
+  if (row[13] && lengths[13]) m.fastdfs_url     = std::string(row[13], lengths[13]);
+  if (row[14] && lengths[14]) m.storage_type    = std::string(row[14], lengths[14]);
   return m;
 }
 
@@ -66,11 +71,13 @@ Material RowToMaterial(MYSQL_ROW row, unsigned long* lengths) {
 MaterialService::MaterialService(std::shared_ptr<MySQLConnectionPool> pool,
                                  MaterialConfig material_config,
                                  std::string qwen_api_key,
-                                 std::string python_binary)
+                                 std::string python_binary,
+                                 std::shared_ptr<FastDfsClient> fastdfs_client)
     : pool_(std::move(pool)),
       material_config_(std::move(material_config)),
       qwen_api_key_(std::move(qwen_api_key)),
-      python_binary_(std::move(python_binary)) {}
+      python_binary_(std::move(python_binary)),
+      fastdfs_client_(std::move(fastdfs_client)) {}
 
 bool MaterialService::CreateMaterial(std::uint64_t user_id,
                                      const std::string& filename,
@@ -179,7 +186,8 @@ bool MaterialService::GetMaterial(const std::string& material_id,
   std::ostringstream q;
   q << "SELECT id, user_id, filename, file_type, file_path, file_size, status, "
     << "extract_result, error_msg, review_result, "
-    << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at) "
+    << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at), "
+    << "IFNULL(fastdfs_file_id,''), IFNULL(fastdfs_url,''), IFNULL(storage_type,'local') "
     << "FROM materials WHERE id = '" << material_id << "' AND user_id = " << user_id;
 
   if (mysql_query(conn, q.str().c_str()) != 0) {
@@ -209,7 +217,8 @@ std::vector<Material> MaterialService::ListMaterials(std::uint64_t user_id, std:
   std::ostringstream q;
   q << "SELECT id, user_id, filename, file_type, file_path, file_size, status, "
     << "extract_result, error_msg, review_result, "
-    << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at) "
+    << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at), "
+    << "IFNULL(fastdfs_file_id,''), IFNULL(fastdfs_url,''), IFNULL(storage_type,'local') "
     << "FROM materials WHERE user_id = " << user_id
     << " ORDER BY created_at DESC LIMIT 50";
 
@@ -307,6 +316,18 @@ bool MaterialService::DeleteMaterial(const std::string& material_id,
     return false;
   }
 
+  // 若已上传 FastDFS，删除远程文件
+  if (!mat.fastdfs_file_id.empty() && fastdfs_client_ && fastdfs_client_->IsEnabled()) {
+    std::string fdfs_err;
+    Logger::Info("DeleteMaterial: deleting FastDFS file " + mat.fastdfs_file_id);
+    if (!fastdfs_client_->DeleteFile(mat.fastdfs_file_id, fdfs_err)) {
+      Logger::Warn("DeleteMaterial: FastDFS delete failed for " + mat.fastdfs_file_id + ": " + fdfs_err);
+    } else {
+      Logger::Info("DeleteMaterial: FastDFS delete success for " + mat.fastdfs_file_id);
+    }
+  } else if (!mat.fastdfs_file_id.empty()) {
+    Logger::Warn("DeleteMaterial: FastDFS file_id exists but client not enabled, skipping remote delete: " + mat.fastdfs_file_id);
+  }
   // Remove file from disk
   if (!mat.file_path.empty()) {
     std::error_code ec;
@@ -390,7 +411,8 @@ void MaterialService::RunExtraction(const std::string& material_id) {
   std::ostringstream q;
   q << "SELECT id, user_id, filename, file_type, file_path, file_size, status, "
     << "extract_result, error_msg, review_result, "
-    << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at) "
+    << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at), "
+    << "IFNULL(fastdfs_file_id,''), IFNULL(fastdfs_url,''), IFNULL(storage_type,'local') "
     << "FROM materials WHERE id = '" << material_id << "'";
 
   if (mysql_query(conn, q.str().c_str()) != 0) {
@@ -483,6 +505,11 @@ void MaterialService::RunExtraction(const std::string& material_id) {
 
   Logger::Info("MaterialService: extraction completed for " + material_id);
   UpdateExtractResult(material_id, "completed", output, "", db_error);
+
+  // 提取完成后异步上传到 FastDFS（若已配置）
+  if (fastdfs_client_ && fastdfs_client_->IsEnabled()) {
+    UploadToFastDfs(material_id, fastdfs_client_->config().delete_local_after_upload);
+  }
 }
 
 std::vector<Material> MaterialService::AdminListMaterials(const AdminMaterialFilter& filter,
@@ -539,10 +566,11 @@ std::vector<Material> MaterialService::AdminListMaterials(const AdminMaterialFil
 
   // Data query — join with users to get username
   std::ostringstream data_sql;
-  // 列顺序：0..11 同 RowToMaterial，第 12 列是 username
+  // 列顺序：0..14 同 RowToMaterial，第 15 列是 username
   data_sql << "SELECT m.id, m.user_id, m.filename, m.file_type, m.file_path, m.file_size, "
            << "m.status, m.extract_result, m.error_msg, m.review_result, "
            << "UNIX_TIMESTAMP(m.created_at), UNIX_TIMESTAMP(m.updated_at), "
+           << "IFNULL(m.fastdfs_file_id,''), IFNULL(m.fastdfs_url,''), IFNULL(m.storage_type,'local'), "
            << "IFNULL(u.username, '') "
            << "FROM materials m LEFT JOIN users u ON m.user_id = u.id"
            << where.str()
@@ -559,9 +587,9 @@ std::vector<Material> MaterialService::AdminListMaterials(const AdminMaterialFil
   while ((row = mysql_fetch_row(res)) != nullptr) {
     unsigned long* lengths = mysql_fetch_lengths(res);
     Material m = RowToMaterial(row, lengths);
-    // row[12] is username — 编码到 error_msg 字段（仅 error_msg 为空时安全）
-    if (row[12] && lengths[12] && m.error_msg.empty()) {
-      m.error_msg = std::string("__username__:") + std::string(row[12], lengths[12]);
+    // row[15] is username — 编码到 error_msg 字段（仅 error_msg 为空时安全）
+    if (row[15] && lengths[15] && m.error_msg.empty()) {
+      m.error_msg = std::string("__username__:") + std::string(row[15], lengths[15]);
     }
     result.push_back(m);
   }
@@ -605,27 +633,28 @@ bool MaterialService::AdminDeleteMaterial(const std::string& material_id,
   MYSQL* conn = conn_guard.Get();
   if (!conn) { error = "无法获取数据库连接"; return false; }
 
-  // Fetch metadata before deletion (user_id, filename, file_type, file_size, file_path)
+  // Fetch metadata before deletion (user_id, filename, file_type, file_size, file_path, fastdfs_file_id)
   std::ostringstream q;
-  q << "SELECT user_id, filename, file_type, file_size, file_path FROM materials"
+  q << "SELECT user_id, filename, file_type, file_size, file_path, IFNULL(fastdfs_file_id,'') FROM materials"
     << " WHERE id = '" << material_id << "'";
   if (mysql_query(conn, q.str().c_str()) != 0) {
     error = "查询失败";
     return false;
   }
   std::uint64_t user_id = 0;
-  std::string filename, file_type, file_path;
+  std::string filename, file_type, file_path, fastdfs_file_id;
   std::uint64_t file_size = 0;
   {
     MYSQL_RES* res = mysql_store_result(conn);
     if (res) {
       MYSQL_ROW row = mysql_fetch_row(res);
       if (row) {
-        if (row[0]) user_id   = std::stoull(row[0]);
-        if (row[1]) filename  = row[1];
-        if (row[2]) file_type = row[2];
-        if (row[3]) file_size = std::stoull(row[3]);
-        if (row[4]) file_path = row[4];
+        if (row[0]) user_id        = std::stoull(row[0]);
+        if (row[1]) filename       = row[1];
+        if (row[2]) file_type      = row[2];
+        if (row[3]) file_size      = std::stoull(row[3]);
+        if (row[4]) file_path      = row[4];
+        if (row[5]) fastdfs_file_id = row[5];
       }
       mysql_free_result(res);
     }
@@ -645,6 +674,18 @@ bool MaterialService::AdminDeleteMaterial(const std::string& material_id,
     return false;
   }
 
+  // 若已上传 FastDFS，删除远程文件
+  if (!fastdfs_file_id.empty() && fastdfs_client_ && fastdfs_client_->IsEnabled()) {
+    std::string fdfs_err;
+    Logger::Info("AdminDeleteMaterial: deleting FastDFS file " + fastdfs_file_id);
+    if (!fastdfs_client_->DeleteFile(fastdfs_file_id, fdfs_err)) {
+      Logger::Warn("AdminDeleteMaterial: FastDFS delete failed for " + fastdfs_file_id + ": " + fdfs_err);
+    } else {
+      Logger::Info("AdminDeleteMaterial: FastDFS delete success for " + fastdfs_file_id);
+    }
+  } else if (!fastdfs_file_id.empty()) {
+    Logger::Warn("AdminDeleteMaterial: FastDFS file_id exists but client not enabled, skipping remote delete: " + fastdfs_file_id);
+  }
   // Remove file from disk
   if (!file_path.empty()) {
     std::error_code ec;
@@ -758,7 +799,8 @@ bool MaterialService::AdminGetMaterial(const std::string& material_id,
   std::ostringstream q;
   q << "SELECT id, user_id, filename, file_type, file_path, file_size, status, "
     << "extract_result, error_msg, review_result, "
-    << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at) "
+    << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at), "
+    << "IFNULL(fastdfs_file_id,''), IFNULL(fastdfs_url,''), IFNULL(storage_type,'local') "
     << "FROM materials WHERE id = '" << material_id << "'";
 
   if (mysql_query(conn, q.str().c_str()) != 0) {
@@ -993,4 +1035,127 @@ bool MaterialService::AdminReviewMaterial(const std::string& material_id,
   }
 
   return true;
+}
+
+bool MaterialService::UpdateFastDfsInfo(const std::string& material_id,
+                                        const std::string& fastdfs_file_id,
+                                        const std::string& fastdfs_url,
+                                        const std::string& storage_type) {
+  auto conn_guard = pool_->GetConnection();
+  MYSQL* conn = conn_guard.Get();
+  if (!conn) return false;
+
+  const std::string sql = R"(
+    UPDATE materials
+    SET fastdfs_file_id=?, fastdfs_url=?, storage_type=?, updated_at=FROM_UNIXTIME(?)
+    WHERE id=?
+  )";
+  MYSQL_STMT* stmt = mysql_stmt_init(conn);
+  if (!stmt) return false;
+  if (mysql_stmt_prepare(stmt, sql.c_str(), sql.length()) != 0) {
+    mysql_stmt_close(stmt);
+    return false;
+  }
+
+  MYSQL_BIND params[5];
+  memset(params, 0, sizeof(params));
+
+  params[0].buffer_type   = MYSQL_TYPE_STRING;
+  params[0].buffer        = (void*)fastdfs_file_id.c_str();
+  params[0].buffer_length = fastdfs_file_id.length();
+
+  params[1].buffer_type   = MYSQL_TYPE_STRING;
+  params[1].buffer        = (void*)fastdfs_url.c_str();
+  params[1].buffer_length = fastdfs_url.length();
+
+  params[2].buffer_type   = MYSQL_TYPE_STRING;
+  params[2].buffer        = (void*)storage_type.c_str();
+  params[2].buffer_length = storage_type.length();
+
+  const std::uint64_t now = NowSeconds();
+  unsigned long long now_val = static_cast<unsigned long long>(now);
+  params[3].buffer_type   = MYSQL_TYPE_LONGLONG;
+  params[3].buffer        = &now_val;
+  params[3].is_unsigned   = 1;
+
+  params[4].buffer_type   = MYSQL_TYPE_STRING;
+  params[4].buffer        = (void*)material_id.c_str();
+  params[4].buffer_length = material_id.length();
+
+  const bool ok = (mysql_stmt_bind_param(stmt, params) == 0 &&
+                   mysql_stmt_execute(stmt) == 0);
+  if (!ok) {
+    Logger::Warn(std::string("UpdateFastDfsInfo failed: ") + mysql_stmt_error(stmt));
+  }
+  mysql_stmt_close(stmt);
+  return ok;
+}
+
+void MaterialService::UploadToFastDfs(const std::string& material_id, bool delete_local) {
+  if (!fastdfs_client_ || !fastdfs_client_->IsEnabled()) return;
+
+  // 查询素材信息
+  Material mat;
+  {
+    auto conn_guard = pool_->GetConnection();
+    MYSQL* conn = conn_guard.Get();
+    if (!conn) {
+      Logger::Warn("UploadToFastDfs: no DB connection for " + material_id);
+      return;
+    }
+
+    std::ostringstream q;
+    q << "SELECT id, user_id, filename, file_type, file_path, file_size, status, "
+      << "extract_result, error_msg, review_result, "
+      << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at), "
+      << "IFNULL(fastdfs_file_id,''), IFNULL(fastdfs_url,''), IFNULL(storage_type,'local') "
+      << "FROM materials WHERE id = '" << material_id << "'";
+
+    if (mysql_query(conn, q.str().c_str()) != 0) {
+      Logger::Warn("UploadToFastDfs: query failed for " + material_id);
+      return;
+    }
+    MYSQL_RES* res = mysql_store_result(conn);
+    if (!res) return;
+    MYSQL_ROW row = mysql_fetch_row(res);
+    if (!row) {
+      mysql_free_result(res);
+      Logger::Warn("UploadToFastDfs: material not found: " + material_id);
+      return;
+    }
+    unsigned long* lengths = mysql_fetch_lengths(res);
+    mat = RowToMaterial(row, lengths);
+    mysql_free_result(res);
+  }
+
+  if (mat.storage_type == "fastdfs" && !mat.fastdfs_file_id.empty()) {
+    Logger::Info("UploadToFastDfs: already uploaded for " + material_id);
+    return;
+  }
+  if (mat.file_path.empty() || !std::filesystem::exists(mat.file_path)) {
+    Logger::Warn("UploadToFastDfs: local file missing for " + material_id + ": " + mat.file_path);
+    return;
+  }
+
+  std::string file_id, upload_error;
+  if (!fastdfs_client_->UploadFile(mat.file_path, mat.file_type, file_id, upload_error)) {
+    Logger::Error("UploadToFastDfs: upload failed for " + material_id + ": " + upload_error);
+    return;
+  }
+
+  const std::string access_url = fastdfs_client_->BuildAccessUrl(file_id);
+  if (!UpdateFastDfsInfo(material_id, file_id, access_url, "fastdfs")) {
+    Logger::Error("UploadToFastDfs: DB update failed for " + material_id);
+    return;
+  }
+
+  Logger::Info("UploadToFastDfs: success for " + material_id + " -> " + file_id);
+
+  if (delete_local && !mat.file_path.empty()) {
+    std::error_code ec;
+    std::filesystem::remove(mat.file_path, ec);
+    if (!ec) {
+      Logger::Info("UploadToFastDfs: deleted local file " + mat.file_path);
+    }
+  }
 }

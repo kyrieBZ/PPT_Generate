@@ -16,4 +16,8 @@ struct Material {
   std::string review_result;   // JSON: {"result":"pass|violation|unknown","reason":"...","reviewed_at":unix_ts}
   std::uint64_t created_at = 0;
   std::uint64_t updated_at = 0;
+  // FastDFS 存储字段（上传到 FastDFS 后填充）
+  std::string fastdfs_file_id;  // 如 group1/M00/00/00/xxx.pdf
+  std::string fastdfs_url;      // HTTP 访问 URL
+  std::string storage_type = "local";  // local | fastdfs
 };

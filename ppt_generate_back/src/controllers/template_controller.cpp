@@ -9,9 +9,11 @@
 #include "http/http_types.h"
 
 TemplateController::TemplateController(std::shared_ptr<TemplateService>        service,
-                                       std::shared_ptr<TemplateManagerService> tmpl_mgr_service)
+                                       std::shared_ptr<TemplateManagerService> tmpl_mgr_service,
+                                       std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service)
     : service_(std::move(service)),
-      tmpl_mgr_service_(std::move(tmpl_mgr_service)) {}
+      tmpl_mgr_service_(std::move(tmpl_mgr_service)),
+      tmpl_fastdfs_service_(std::move(tmpl_fastdfs_service)) {}
 
 HttpResponse TemplateController::List(const HttpRequest& request) {
   const auto it = request.query_params.find("q");
@@ -35,6 +37,17 @@ HttpResponse TemplateController::List(const HttpRequest& request) {
       results = std::move(filtered);
     }
     // 若查询失败（数据库问题），降级为返回全部模板，不影响可用性
+  }
+
+  // 填充 FastDFS URL（若服务可用）
+  if (tmpl_fastdfs_service_) {
+    for (auto& r : results) {
+      auto entry = tmpl_fastdfs_service_->GetEntry(r.id);
+      if (entry) {
+        r.fastdfs_pptx_url       = entry->pptx_url;
+        r.fastdfs_thumbnail_url  = entry->thumbnail_url;
+      }
+    }
   }
 
   nlohmann::json payload;
@@ -73,11 +86,21 @@ nlohmann::json TemplateController::ToJson(const RemoteTemplate& item) {
         {"accentColor", layout.accent_color},
         {"backgroundImage", layout.background_image}});
   }
-  if (item.has_local_file) {
+  // 只要模板可下载（本地文件存在 或 FastDFS 已有记录），就暴露下载端点
+  const bool can_download = item.has_local_file || !item.fastdfs_pptx_url.empty();
+  if (can_download) {
+    json_item["hasLocalFile"]     = true;
     json_item["localDownloadUrl"] = "/api/templates/file?id=" + item.id;
   }
-  if (item.preview_image.empty()) {
+  if (item.preview_image.empty() && item.fastdfs_thumbnail_url.empty()) {
     json_item["previewImage"] = "/api/templates/preview?id=" + item.id;
+  }
+  // FastDFS 访问 URL（若已迁移，同时覆盖预览图）
+  if (!item.fastdfs_pptx_url.empty()) {
+    json_item["fastdfsDownloadUrl"] = item.fastdfs_pptx_url;
+  }
+  if (!item.fastdfs_thumbnail_url.empty()) {
+    json_item["previewImage"] = item.fastdfs_thumbnail_url;
   }
   return json_item;
 }
@@ -87,7 +110,22 @@ HttpResponse TemplateController::Preview(const HttpRequest& request) {
   if (it == request.query_params.end() || it->second.empty()) {
     return HttpResponse::Json(400, ErrorJson("ERR_TEMPLATE_ID_MISSING", "Template ID missing"));
   }
-  auto path = service_->GetPreviewPath(it->second);
+  const std::string& template_id = it->second;
+
+  // 优先使用 FastDFS 缩略图 URL（302 重定向）
+  if (tmpl_fastdfs_service_) {
+    auto entry = tmpl_fastdfs_service_->GetEntry(template_id);
+    if (entry && !entry->thumbnail_url.empty()) {
+      HttpResponse resp;
+      resp.status_code = 302;
+      resp.status_message = "Found";
+      resp.headers["location"] = entry->thumbnail_url;
+      resp.headers["cache-control"] = "public, max-age=86400";
+      return resp;
+    }
+  }
+
+  auto path = service_->GetPreviewPath(template_id);
   if (!path) {
     return HttpResponse::Json(404, ErrorJson("ERR_PREVIEW_NOT_FOUND", "Preview image not found"));
   }
@@ -117,6 +155,21 @@ HttpResponse TemplateController::Download(const HttpRequest& request) {
   if (!template_info) {
     return HttpResponse::Json(404, ErrorJson("ERR_TEMPLATE_NOT_FOUND", "Template file does not exist"));
   }
+
+  // 优先使用 FastDFS pptx URL（302 重定向）
+  if (tmpl_fastdfs_service_) {
+    auto entry = tmpl_fastdfs_service_->GetEntry(template_info->id);
+    if (entry && !entry->pptx_url.empty()) {
+      HttpResponse resp;
+      resp.status_code = 302;
+      resp.status_message = "Found";
+      resp.headers["location"] = entry->pptx_url;
+      resp.headers["content-disposition"] = "attachment; filename=\"" + template_info->id + ".pptx\"";
+      return resp;
+    }
+  }
+
+  // 降级：读取本地文件
   auto local_file = service_->GetLocalFile(template_info->id);
   if (!local_file) {
     return HttpResponse::Json(404, ErrorJson("ERR_TEMPLATE_FILE_MISSING", "Template file is missing"));

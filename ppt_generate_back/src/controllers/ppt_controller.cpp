@@ -25,6 +25,7 @@
 #include "models/slide_content.h"
 #include "services/ai_native_ppt_service.h"
 #include "services/material_service.h"
+#include "services/template_fastdfs_service.h"
 #include "utils/ppt_metrics.h"
 #include "utils/settings_reader.h"
 
@@ -1126,6 +1127,7 @@ struct PptGenerationJob {
   std::string user_email;
   std::string template_id;
   std::shared_ptr<MaterialService> material_service;
+  std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service;
 };
 
 std::filesystem::path BuildStructurePath(const GenerationConfig& config,
@@ -1299,7 +1301,8 @@ void DoActualGeneration(
     std::shared_ptr<RedisClient> redis,
     int redis_ttl_ppt_status,
     std::shared_ptr<AiSearchService> ai_search_svc = nullptr,
-    std::shared_ptr<ThreadPool> thread_pool = nullptr) {
+    std::shared_ptr<ThreadPool> thread_pool = nullptr,
+    std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_svc = nullptr) {
   using namespace std::chrono;
   const auto start_time = steady_clock::now();
   const std::uint64_t request_id = job.ppt_request.id;
@@ -1328,6 +1331,7 @@ void DoActualGeneration(
   // 标记处理中
   redis_set_progress("processing", "5", "init");
 
+  std::string fastdfs_tmp_file;  // 若从 FastDFS 下载了临时模板文件，在此记录路径以便清理
   const auto record_end = [&](bool success) {
     const auto elapsed_ms = duration_cast<milliseconds>(steady_clock::now() - start_time).count();
     PptMetrics::SetLastGenerationDurationMs(static_cast<std::uint64_t>(elapsed_ms));
@@ -1339,6 +1343,11 @@ void DoActualGeneration(
     Logger::Info("generation_end request_id=" + std::to_string(request_id) +
                  " status=" + (success ? "completed" : "failed") +
                  " duration_ms=" + std::to_string(elapsed_ms));
+    // 清理从 FastDFS 下载的临时模板文件
+    if (!fastdfs_tmp_file.empty()) {
+      std::error_code ec;
+      std::filesystem::remove(fastdfs_tmp_file, ec);
+    }
   };
 
   const PptRequest& ppt_request = job.ppt_request;
@@ -1362,6 +1371,49 @@ void DoActualGeneration(
                                     ? template_info_opt->description
                                     : template_info_opt->prompt;
   std::optional<std::string> template_file = template_svc->GetLocalFile(template_info_opt->id);
+
+  // 若本地文件不存在但 FastDFS 有记录，则从 FastDFS 下载到临时文件
+  if (!template_file && tmpl_fastdfs_svc) {
+    auto fdfs_entry = tmpl_fastdfs_svc->GetEntry(template_info_opt->id);
+    if (fdfs_entry && !fdfs_entry->pptx_url.empty()) {
+      // 临时文件放在 output_dir 旁的 tmp/ 目录
+      const std::string tmp_dir = generation_config.output_dir + "/tmp";
+      std::error_code ec;
+      std::filesystem::create_directories(tmp_dir, ec);
+      const std::string tmp_path = tmp_dir + "/tpl_" + template_info_opt->id + "_"
+                                   + std::to_string(job.ppt_request.id) + ".pptx";
+      // 用 libcurl 下载
+      CURL* curl = curl_easy_init();
+      bool download_ok = false;
+      if (curl) {
+        FILE* fp = fopen(tmp_path.c_str(), "wb");
+        if (fp) {
+          curl_easy_setopt(curl, CURLOPT_URL, fdfs_entry->pptx_url.c_str());
+          curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fwrite);
+          curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+          curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+          curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+          CURLcode res = curl_easy_perform(curl);
+          fclose(fp);
+          if (res == CURLE_OK) {
+            download_ok = true;
+            template_file = tmp_path;
+            fastdfs_tmp_file = tmp_path;
+            Logger::Info("DoActualGeneration: downloaded template from FastDFS: " + fdfs_entry->pptx_url);
+          } else {
+            Logger::Warn("DoActualGeneration: failed to download template from FastDFS: "
+                         + std::string(curl_easy_strerror(res)));
+            std::filesystem::remove(tmp_path, ec);
+          }
+        }
+        curl_easy_cleanup(curl);
+      }
+      if (!download_ok) {
+        Logger::Warn("DoActualGeneration: FastDFS download failed, will proceed without template file");
+      }
+    }
+  }
+
   nlohmann::json template_analysis;
   bool has_template_analysis = false;
   if (template_file) {
@@ -1798,7 +1850,8 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
                            int redis_ttl_ppt_status,
                            int redis_ttl_ppt_history,
                            std::shared_ptr<MySQLConnectionPool> pool,
-                           std::shared_ptr<AiSearchService> ai_search_service)
+                           std::shared_ptr<AiSearchService> ai_search_service,
+                           std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
@@ -1813,7 +1866,8 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
       redis_ttl_ppt_status_(redis_ttl_ppt_status),
       redis_ttl_ppt_history_(redis_ttl_ppt_history),
       pool_(std::move(pool)),
-      ai_search_service_(std::move(ai_search_service)) {}
+      ai_search_service_(std::move(ai_search_service)),
+      tmpl_fastdfs_service_(std::move(tmpl_fastdfs_service)) {}
 
 HttpResponse PptController::Generate(const HttpRequest& request) {
   std::string error;
@@ -1942,6 +1996,7 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     job.user_email = user->email;
     job.template_id = template_info_opt->id;
     job.material_service = material_service_;
+    job.tmpl_fastdfs_service = tmpl_fastdfs_service_;
 
     // Redis：初始化生成状态 Hash
     if (redis_) {
@@ -1976,14 +2031,15 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     auto redis = redis_;
     auto ai_search_svc = ai_search_service_;
     auto tp = thread_pool_;
+    auto tmpl_fastdfs_svc = tmpl_fastdfs_service_;
     int ttl_status = redis_ttl_ppt_status_;
     GenerationConfig config = generation_config_;
     active_jobs_.fetch_add(1, std::memory_order_relaxed);
     thread_pool_->EnqueueDetached([job, ppt_svc, template_svc, qwen, s3, wanx, config,
-                                   redis, ttl_status, ai_search_svc, tp, this]() {
+                                   redis, ttl_status, ai_search_svc, tp, tmpl_fastdfs_svc, this]() {
       try {
         DoActualGeneration(job, ppt_svc, template_svc, qwen, s3, wanx, config,
-                           redis, ttl_status, ai_search_svc, tp);
+                           redis, ttl_status, ai_search_svc, tp, tmpl_fastdfs_svc);
       } catch (const std::exception& ex) {
         Logger::Error(std::string("DoActualGeneration unhandled exception: ") + ex.what());
         // 确保前端能感知：将状态写为 failed

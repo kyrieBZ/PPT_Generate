@@ -43,7 +43,10 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: 'http://127.0.0.1:8080',
           changeOrigin: true,
-          secure: false
+          secure: false,
+          // 模板上传时需要 LibreOffice 转换 + FastDFS 上传，耗时较长，延长超时至 5 分钟
+          timeout: 300000,
+          proxyTimeout: 300000,
         },
       }
     },

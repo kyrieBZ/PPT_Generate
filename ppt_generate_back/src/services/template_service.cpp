@@ -324,3 +324,68 @@ std::optional<std::string> TemplateService::GetPreviewPath(const std::string& id
   }
   return std::nullopt;
 }
+
+bool TemplateService::RemoveFromCatalog(const std::string& id,
+                                         std::string& out_local_file,
+                                         std::string& error) {
+  if (id.empty()) {
+    error = "template id 不能为空";
+    return false;
+  }
+  const std::string needle = ToLower(id);
+
+  // 1. 读取 catalog JSON
+  nlohmann::json catalog;
+  try {
+    std::ifstream ifs(catalog_path_str_);
+    if (!ifs) { error = "无法读取 catalog: " + catalog_path_str_; return false; }
+    ifs >> catalog;
+    if (!catalog.is_array()) { error = "catalog 格式错误（应为数组）"; return false; }
+  } catch (const std::exception& ex) {
+    error = std::string("读取 catalog 失败: ") + ex.what();
+    return false;
+  }
+
+  // 2. 找到并移除目标条目，同时记录 local_file 路径
+  bool found = false;
+  nlohmann::json new_catalog = nlohmann::json::array();
+  for (const auto& entry : catalog) {
+    const std::string entry_id = ToLower(entry.value("id", ""));
+    if (entry_id == needle) {
+      found = true;
+      // 获取 local_file（相对 catalog 目录的路径）
+      const std::string rel = entry.value("local_file", "");
+      if (!rel.empty()) {
+        try {
+          out_local_file = std::filesystem::weakly_canonical(
+              catalog_dir_ / rel).string();
+        } catch (...) {
+          out_local_file = (catalog_dir_ / rel).string();
+        }
+      }
+    } else {
+      new_catalog.push_back(entry);
+    }
+  }
+
+  // 3. 写回 catalog（即使 id 不存在也视为成功，幂等）
+  try {
+    std::ofstream ofs(catalog_path_str_);
+    if (!ofs) { error = "无法写入 catalog: " + catalog_path_str_; return false; }
+    ofs << new_catalog.dump(2);
+    ofs.close();
+  } catch (const std::exception& ex) {
+    error = std::string("写入 catalog 失败: ") + ex.what();
+    return false;
+  }
+
+  // 4. 热重载内存副本
+  std::string reload_error;
+  Reload(reload_error);
+
+  if (!found) {
+    // 幂等：id 不在 catalog 中也返回 true
+    return true;
+  }
+  return true;
+}

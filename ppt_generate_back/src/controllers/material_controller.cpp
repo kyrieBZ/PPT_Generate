@@ -148,14 +148,18 @@ std::string GetExtension(const std::string& filename) {
 
 nlohmann::json MaterialToJson(const Material& m) {
   nlohmann::json j;
-  j["id"]        = m.id;
-  j["userId"]    = m.user_id;
-  j["filename"]  = m.filename;
-  j["fileType"]  = m.file_type;
-  j["fileSize"]  = m.file_size;
-  j["status"]    = m.status;
-  j["createdAt"] = m.created_at;
-  j["updatedAt"] = m.updated_at;
+  j["id"]          = m.id;
+  j["userId"]      = m.user_id;
+  j["filename"]    = m.filename;
+  j["fileType"]    = m.file_type;
+  j["fileSize"]    = m.file_size;
+  j["status"]      = m.status;
+  j["createdAt"]   = m.created_at;
+  j["updatedAt"]   = m.updated_at;
+  j["storageType"] = m.storage_type.empty() ? "local" : m.storage_type;
+  if (!m.fastdfs_url.empty()) {
+    j["accessUrl"] = m.fastdfs_url;
+  }
   if (!m.error_msg.empty()) {
     j["errorMsg"] = m.error_msg;
   }
@@ -825,7 +829,29 @@ HttpResponse MaterialController::AdminGetFile(const HttpRequest& request) {
     return HttpResponse::Json(404, ErrorJson("ERR_MATERIAL_NOT_FOUND", error.empty() ? "材料不存在" : error));
   }
 
-  // Read file from disk
+  // Determine MIME type from file_type
+  std::string mime = "application/octet-stream";
+  if (mat.file_type == "pdf") {
+    mime = "application/pdf";
+  } else if (mat.file_type == "docx") {
+    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  } else if (mat.file_type == "txt") {
+    mime = "text/plain; charset=utf-8";
+  } else if (mat.file_type == "doc") {
+    mime = "application/msword";
+  }
+
+  // 若已存储在 FastDFS，302 重定向到 FastDFS HTTP URL
+  if (mat.storage_type == "fastdfs" && !mat.fastdfs_url.empty()) {
+    HttpResponse resp;
+    resp.status_code = 302;
+    resp.status_message = "Found";
+    resp.headers["location"] = mat.fastdfs_url;
+    resp.headers["cache-control"] = "no-store";
+    return resp;
+  }
+
+  // 本地文件读取
   std::ifstream file(mat.file_path, std::ios::binary | std::ios::ate);
   if (!file.is_open()) {
     Logger::Error("AdminGetFile: cannot open file: " + mat.file_path);
@@ -838,18 +864,6 @@ HttpResponse MaterialController::AdminGetFile(const HttpRequest& request) {
   std::string content(static_cast<std::size_t>(file_size), '\0');
   if (!file.read(content.data(), file_size)) {
     return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "文件读取失败"));
-  }
-
-  // Determine MIME type from file_type
-  std::string mime = "application/octet-stream";
-  if (mat.file_type == "pdf") {
-    mime = "application/pdf";
-  } else if (mat.file_type == "docx") {
-    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-  } else if (mat.file_type == "txt") {
-    mime = "text/plain; charset=utf-8";
-  } else if (mat.file_type == "doc") {
-    mime = "application/msword";
   }
 
   HttpResponse resp;

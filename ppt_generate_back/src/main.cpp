@@ -41,6 +41,8 @@
 #include "services/ppt_service_interface.h"
 #include "services/libreoffice_powerpoint_service.h"
 #include "services/s3_client.h"
+#include "services/fastdfs_client.h"
+#include "services/template_fastdfs_service.h"
 #include "services/wanxiang_image_client.h"
 #include "utils/thread_pool.h"
 #include "utils/ppt_metrics.h"
@@ -136,6 +138,17 @@ int main(int argc, char* argv[]) {
       s3_client = std::make_shared<S3Client>(config.s3());
       Logger::Info("S3 upload enabled: bucket=" + config.s3().bucket);
     }
+
+    // ── FastDFS（可选）──────────────────────────────────────────────────────
+    std::shared_ptr<FastDfsClient> fastdfs_client;
+    std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service;
+    if (config.fastdfs().enabled) {
+      fastdfs_client = std::make_shared<FastDfsClient>(config.fastdfs());
+      Logger::Info("FastDFS enabled: tracker=" + config.fastdfs().tracker_http_url +
+                   " storage=" + config.fastdfs().storage_http_url);
+      tmpl_fastdfs_service = std::make_shared<TemplateFastDfsService>(pool, fastdfs_client);
+      tmpl_fastdfs_service->EnsureTable();
+    }
     std::shared_ptr<QwenClient> qwen_client;
     if (!config.providers().qwen_api_key.empty()) {
       qwen_client = std::make_shared<QwenClient>(config.providers().qwen_api_key,
@@ -174,7 +187,8 @@ int main(int argc, char* argv[]) {
 
     std::string qwen_key = config.providers().qwen_api_key;
     auto material_service = std::make_shared<MaterialService>(
-        pool, config.material(), qwen_key, config.generation().python_binary);
+        pool, config.material(), qwen_key, config.generation().python_binary,
+        fastdfs_client);
 
     // ── MongoDB（可选）──────────────────────────────────────────────────────
     std::shared_ptr<MongoClient> mongo_client;
@@ -224,14 +238,16 @@ int main(int argc, char* argv[]) {
                                  config.redis().ttl_ppt_status,
                                  config.redis().ttl_ppt_history,
                                  pool,
-                                 ai_search_service);
-    TemplateController template_controller(template_service, tmpl_mgr_service);
+                                 ai_search_service,
+                                 tmpl_fastdfs_service);
+    TemplateController template_controller(template_service, tmpl_mgr_service, tmpl_fastdfs_service);
     ModelController model_controller(model_service);
     AnnouncementController announcement_controller(auth_service, pool, audit_service);
     AuditController audit_controller(auth_service, audit_service);
     SettingsController settings_controller(auth_service, pool, audit_service);
     TemplateManagerController tmpl_mgr_controller(auth_service, audit_service,
-                                                   tmpl_mgr_service, template_service);
+                                                   tmpl_mgr_service, template_service,
+                                                   tmpl_fastdfs_service);
 
     // OfficePLUS 导入控制器（路径均基于 base_dir，支持从任意目录启动）
     const std::string op_fetcher_script  = (base_dir / "scripts/officeplus_fetcher.py").string();
@@ -245,7 +261,8 @@ int main(int argc, char* argv[]) {
         config.generation().python_binary,
         op_catalog_path,
         op_templates_dir, op_thumbnails_dir,
-        op_fetcher_script);
+        op_fetcher_script,
+        tmpl_fastdfs_service);
 
     AiSearchController ai_search_controller(auth_service, ai_search_service, thread_pool);
 
@@ -486,6 +503,9 @@ int main(int argc, char* argv[]) {
     router.AddRoute("POST", "/api/admin/officeplus/batch_upload", [&officeplus_controller](const HttpRequest& request) {
       return officeplus_controller.BatchUpload(request);
     });
+    router.AddRoute("POST", "/api/admin/officeplus/batch_upload_form", [&officeplus_controller](const HttpRequest& request) {
+      return officeplus_controller.BatchUploadForm(request);
+    });
     router.AddRoute("POST", "/api/admin/officeplus/reload", [&officeplus_controller](const HttpRequest& request) {
       return officeplus_controller.Reload(request);
     });
@@ -502,6 +522,15 @@ int main(int argc, char* argv[]) {
     });
     router.AddRoute("DELETE", "/api/admin/templates", [&tmpl_mgr_controller](const HttpRequest& request) {
       return tmpl_mgr_controller.Remove(request);
+    });
+    router.AddRoute("DELETE", "/api/admin/templates/full", [&tmpl_mgr_controller](const HttpRequest& request) {
+      return tmpl_mgr_controller.FullDelete(request);
+    });
+    router.AddRoute("POST", "/api/admin/templates/sync_thumbnails", [&tmpl_mgr_controller](const HttpRequest& request) {
+      return tmpl_mgr_controller.SyncThumbnails(request);
+    });
+    router.AddRoute("GET", "/api/admin/templates/sync_status", [&tmpl_mgr_controller](const HttpRequest& request) {
+      return tmpl_mgr_controller.SyncStatus(request);
     });
 
     // ── 数据导出（模块七）─────────────────────────────────────────────────────

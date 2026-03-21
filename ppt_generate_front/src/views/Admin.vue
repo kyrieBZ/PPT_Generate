@@ -1349,6 +1349,10 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" :class="{ 'spin': tmplMgrLoading }"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 刷新
               </button>
+              <button class="tmpl-refresh-btn tmpl-sync-btn" @click="doSyncThumbnails" :disabled="tmplSyncing" title="将本地缩略图批量上传到 FastDFS">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" :class="{ 'spin': tmplSyncing }"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+                {{ tmplSyncing ? '同步中…' : '同步缩略图' }}
+              </button>
             </div>
 
             <!-- 骨架屏 -->
@@ -1403,8 +1407,22 @@
                 <div class="tmpl-card-body">
                   <div class="tmpl-card-name" :title="tmpl.name">{{ tmpl.name }}</div>
                   <div class="tmpl-card-meta">
-                    <span class="tmpl-card-provider">{{ tmpl.provider }}</span>
+                    <span class="tmpl-card-provider">{{ tmpl.provider || '用户上传' }}</span>
                     <span class="tmpl-card-id">{{ tmpl.id }}</span>
+                  </div>
+                  <div class="tmpl-card-badges">
+                    <span v-if="tmpl.hasFastDfs" class="tmpl-badge tmpl-badge--cloud" title="文件已存入 FastDFS 云存储">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+                      云存储
+                    </span>
+                    <span v-else-if="tmpl.hasLocalFile" class="tmpl-badge tmpl-badge--local" title="文件仅在本地">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                      本地
+                    </span>
+                    <span v-else class="tmpl-badge tmpl-badge--missing" title="模板文件不可用">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                      无文件
+                    </span>
                   </div>
                   <div class="tmpl-card-tags">
                     <span v-for="tag in (tmpl.tags || []).slice(0,3)" :key="tag" class="tmpl-tag">{{ tag }}</span>
@@ -1454,7 +1472,15 @@
                     @click="handleRemoveRecord(tmpl)"
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
-                    清除
+                    清除记录
+                  </button>
+                  <button
+                    class="tmpl-action-btn tmpl-action-btn--delete"
+                    @click="handleFullDelete(tmpl)"
+                    title="彻底删除：同时删除 FastDFS 文件、数据库记录和 catalog 条目"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><line x1="12" y1="2" x2="12" y2="4"/></svg>
+                    彻底删除
                   </button>
                 </div>
               </div>
@@ -1521,36 +1547,96 @@
                 @change="onOpFileSelect"
               />
 
-              <!-- 上传进行中 -->
-              <div v-if="opBatchUploading" class="op-dz-uploading">
-                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="spin op-dz-spin-icon"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-                <div class="op-dz-uploading-text">正在上传 {{ opBatchProgress.done }} / {{ opBatchProgress.total }} …</div>
-                <div class="op-dz-progress-bar">
-                  <div class="op-dz-progress-fill" :style="{ width: (opBatchProgress.total ? opBatchProgress.done / opBatchProgress.total * 100 : 0) + '%' }"></div>
-                </div>
-              </div>
-
-              <!-- 有待上传文件 -->
-              <div v-else-if="opPendingFiles.length > 0" class="op-dz-files">
+              <!-- 有待上传文件 / 上传进行中：统一在列表里显示每行状态 -->
+              <div v-if="opPendingFiles.length > 0" class="op-dz-files">
+                <!-- 头部：上传中时显示整体进度，待上传时显示文件数 -->
                 <div class="op-dz-files-header">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                  已选择 {{ opPendingFiles.length }} 个文件
-                  <button class="op-dz-clear-btn" @click.stop="opPendingFiles = []">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                    清空
-                  </button>
-                </div>
-                <div class="op-dz-file-list">
-                  <div v-for="(f, i) in opPendingFiles" :key="i" class="op-dz-file-item">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="op-dz-file-icon"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                    <span class="op-dz-file-name">{{ f.name }}</span>
-                    <span class="op-dz-file-size">{{ (f.size / 1024 / 1024).toFixed(1) }} MB</span>
-                    <button class="op-dz-remove-btn" @click.stop="opPendingFiles.splice(i, 1)">
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  <template v-if="opBatchUploading">
+                    正在上传 {{ opBatchProgress.done }} / {{ opBatchProgress.total }}
+                    <span class="op-dz-overall-pct">{{ opOverallPercent }}%</span>
+                    <div class="op-dz-overall-bar">
+                      <div class="op-dz-overall-fill" :style="{ width: opOverallPercent + '%' }"></div>
+                    </div>
+                  </template>
+                  <template v-else>
+                    已选择 {{ opPendingFiles.length }} 个文件
+                    <button class="op-dz-clear-btn" @click.stop="opPendingFiles = []">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      清空
                     </button>
+                  </template>
+                </div>
+
+                <!-- 列头（仅待上传时显示） -->
+                <div v-if="!opBatchUploading" class="op-dz-file-list-header">
+                  <span class="op-dz-col-file">文件名</span>
+                  <span class="op-dz-col-name">前端展示名称（中文）</span>
+                  <span class="op-dz-col-size">大小</span>
+                </div>
+
+                <div class="op-dz-file-list">
+                  <div
+                    v-for="(item, i) in opPendingFiles"
+                    :key="i"
+                    class="op-dz-file-item"
+                    :class="[`fstatus-${item.status || 'idle'}`]"
+                  >
+                    <!-- 状态图标 -->
+                    <span class="op-dz-fstatus-icon">
+                      <!-- 等待 -->
+                      <svg v-if="!item.status || item.status === 'idle'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="op-dz-file-icon"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                      <!-- 编码中 -->
+                      <svg v-else-if="item.status === 'encoding'" class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                      <!-- 上传中 -->
+                      <svg v-else-if="item.status === 'uploading'" class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                      <!-- 成功 -->
+                      <svg v-else-if="item.status === 'done'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      <!-- 失败 -->
+                      <svg v-else-if="item.status === 'error'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </span>
+
+                    <!-- 文件名 + 进度条（上传中）/ 可编辑名（待上传）-->
+                    <div class="op-dz-file-main">
+                      <div class="op-dz-file-row">
+                        <span class="op-dz-file-name">{{ item.file.name }}</span>
+                        <template v-if="!opBatchUploading">
+                          <input
+                            class="op-dz-display-name-input"
+                            v-model="item.displayName"
+                            placeholder="输入中文展示名称"
+                            @click.stop
+                          />
+                        </template>
+                        <template v-else-if="item.status === 'uploading'">
+                          <span class="op-dz-upload-pct">{{ item.progress }}%</span>
+                        </template>
+                        <template v-else-if="item.status === 'done'">
+                          <span class="op-dz-status-label done">上传成功</span>
+                        </template>
+                        <template v-else-if="item.status === 'error'">
+                          <span class="op-dz-status-label error">{{ item.errorMsg || '上传失败' }}</span>
+                        </template>
+                        <template v-else-if="item.status === 'encoding'">
+                          <span class="op-dz-status-label encoding">读取文件…</span>
+                        </template>
+                        <template v-else>
+                          <span class="op-dz-status-label waiting">等待上传</span>
+                        </template>
+                        <span class="op-dz-file-size">{{ (item.file.size / 1024 / 1024).toFixed(1) }} MB</span>
+                        <button v-if="!opBatchUploading" class="op-dz-remove-btn" @click.stop="opPendingFiles.splice(i, 1)">
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      </div>
+                      <!-- 进度条（上传中） -->
+                      <div v-if="item.status === 'uploading'" class="op-dz-file-bar">
+                        <div class="op-dz-file-bar-fill" :style="{ width: item.progress + '%' }"></div>
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <div class="op-dz-add-more" @click.stop="$refs.opFileInput.click()">
+
+                <div v-if="!opBatchUploading" class="op-dz-add-more" @click.stop="$refs.opFileInput.click()">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                   继续添加文件
                 </div>
@@ -1572,7 +1658,7 @@
             <div v-if="opPendingFiles.length > 0 && !opBatchUploading" class="op-upload-action">
               <div class="op-upload-summary">
                 共 {{ opPendingFiles.length }} 个文件 ·
-                {{ (opPendingFiles.reduce((s,f) => s+f.size, 0)/1024/1024).toFixed(1) }} MB
+                {{ (opPendingFiles.reduce((s,item) => s + item.file.size, 0)/1024/1024).toFixed(1) }} MB
               </div>
               <button class="op-upload-submit-btn" @click="doOpBatchUpload">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -1591,9 +1677,11 @@
                 v-for="(log, idx) in opImportLogs"
                 :key="idx"
                 class="op-log-item"
-                :class="log.ok ? 'ok' : 'fail'"
+                :class="log.syncing ? 'syncing' : (log.ok ? 'ok' : 'fail')"
               >
-                <span class="op-log-dot"></span>
+                <span class="op-log-dot">
+                  <svg v-if="log.syncing" class="spin" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                </span>
                 <div class="op-log-content">
                   <span class="op-log-text">{{ log.text }}</span>
                   <span v-if="log.size" class="op-log-size">{{ log.size }}</span>
@@ -1629,7 +1717,7 @@
           </div>
           <div class="activate-tmpl-info">
             <div class="activate-tmpl-name">{{ activateDialog.tmpl.name }}</div>
-            <div class="activate-tmpl-provider">{{ activateDialog.tmpl.provider }} · {{ activateDialog.tmpl.id }}</div>
+            <div class="activate-tmpl-provider">{{ activateDialog.tmpl.provider || '用户上传' }} · {{ activateDialog.tmpl.id }}</div>
           </div>
         </div>
 
@@ -3475,6 +3563,7 @@ watch(activeNav, (value) => {
 const tmplMgrLoading = ref(false)
 const tmplMgrList = ref([])
 const tmplMgrSearch = ref('')
+const tmplSyncing = ref(false)
 /** 记录加载失败的缩略图 id，避免无限重试（reactive Set 使 Vue 能追踪 add 操作） */
 const tmplPreviewFailed = reactive(new Set())
 
@@ -3521,6 +3610,26 @@ async function loadTemplateList() {
     ElMessage.error('模板列表加载失败：' + (e?.response?.data?.message || e.message))
   } finally {
     tmplMgrLoading.value = false
+  }
+}
+
+async function doSyncThumbnails() {
+  tmplSyncing.value = true
+  try {
+    const res = await adminAPI.syncTemplateThumbnails(false)
+    const { ok, skipped, failed } = res.data || {}
+    ElMessage.success(`缩略图同步完成：成功 ${ok}，跳过 ${skipped}，失败 ${failed}`)
+    // 刷新列表以展示新缩略图
+    await loadTemplateList()
+  } catch (e) {
+    const msg = e?.response?.data?.message || e.message
+    if (msg?.includes('FastDFS 未启用') || msg?.includes('503')) {
+      ElMessage.warning('FastDFS 未启用，无需同步')
+    } else {
+      ElMessage.error('同步失败：' + msg)
+    }
+  } finally {
+    tmplSyncing.value = false
   }
 }
 
@@ -3605,112 +3714,242 @@ async function handleRemoveRecord(tmpl) {
   }
 }
 
+async function handleFullDelete(tmpl) {
+  const hasFastDfs = tmpl.hasFastDfs
+  const tipLines = [
+    `即将彻底删除模板「${tmpl.name}」（ID: ${tmpl.id}）`,
+    '',
+    '此操作将同时：',
+    hasFastDfs ? '• 删除 FastDFS 云存储中的 pptx 及缩略图文件' : '• 检查并清理 FastDFS 记录',
+    '• 删除数据库上架记录',
+    '• 从模板目录（catalog）中移除条目',
+    '• 删除服务器本地文件（如有）',
+    '',
+    '⚠️ 此操作不可撤销，请谨慎确认。',
+  ].join('\n')
+
+  try {
+    await ElMessageBox.confirm(tipLines, '彻底删除模板', {
+      type: 'error',
+      confirmButtonText: '确认删除',
+      cancelButtonText: '取消',
+      confirmButtonClass: 'el-button--danger',
+      dangerouslyUseHTMLString: false,
+    })
+  } catch {
+    return
+  }
+
+  try {
+    await adminAPI.fullDeleteTemplate(tmpl.id)
+    ElMessage.success(`模板「${tmpl.name}」已彻底删除`)
+    await loadTemplateList()
+  } catch (e) {
+    ElMessage.error('删除失败：' + (e?.response?.data?.message || e.message))
+  }
+}
+
 // ── OfficePLUS 导入 ──────────────────────────────────────────────────────────
 const tmplActiveTab = ref('local')   // 'local' | 'officeplus'
 const opImportLogs = ref([])
-const opPendingFiles = ref([])       // File[]
+// { file: File, displayName: string, status: 'idle'|'encoding'|'uploading'|'done'|'error', progress: number, errorMsg: string }
+const opPendingFiles = ref([])
 const opDragover = ref(false)
 const opBatchUploading = ref(false)
 const opBatchProgress = ref({ done: 0, total: 0 })
+
+/** 整体上传百分比（已完成文件 + 当前文件进度 的加权平均） */
+const opOverallPercent = computed(() => {
+  const items = opPendingFiles.value
+  if (!items.length) return 0
+  const total = items.length
+  let sum = 0
+  for (const it of items) {
+    if (it.status === 'done' || it.status === 'error') sum += 100
+    else if (it.status === 'uploading') sum += (it.progress || 0)
+    // encoding / idle = 0
+  }
+  return Math.round(sum / total)
+})
 
 function openOpSite() {
   window.open('https://www.officeplus.cn/PPT/template/', '_blank')
 }
 
+/** 从文件名 stem 生成默认展示名（去掉扩展名，连字符/下划线替换为空格） */
+function stemToDisplayName(filename) {
+  let stem = filename
+  const dot = stem.lastIndexOf('.')
+  if (dot !== -1) stem = stem.substring(0, dot)
+  return stem.replace(/[-_]+/g, ' ').trim()
+}
+
+function addPendingFiles(fileList) {
+  const filtered = [...fileList].filter(f => f.name.toLowerCase().endsWith('.pptx'))
+  if (!filtered.length) return false
+  const items = filtered.map(file => reactive({
+    file,
+    displayName: stemToDisplayName(file.name),
+    status: 'idle',   // idle | encoding | uploading | done | error
+    progress: 0,
+    errorMsg: '',
+  }))
+  opPendingFiles.value.push(...items)
+  return true
+}
+
 function onOpDrop(e) {
   opDragover.value = false
-  const files = [...(e.dataTransfer?.files || [])].filter(f =>
-    f.name.toLowerCase().endsWith('.pptx')
-  )
-  if (!files.length) {
+  if (!addPendingFiles(e.dataTransfer?.files || [])) {
     ElMessage.warning('请拖入 .pptx 格式的文件')
-    return
   }
-  opPendingFiles.value.push(...files)
 }
 
 function onOpFileSelect(e) {
-  const files = [...(e.target.files || [])].filter(f =>
-    f.name.toLowerCase().endsWith('.pptx')
-  )
-  if (files.length) opPendingFiles.value.push(...files)
+  addPendingFiles(e.target.files || [])
   // reset input so same file can be re-selected
   e.target.value = ''
 }
 
-/** File → base64 string */
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      // result is "data:...;base64,<actual>" — strip prefix
-      const b64 = reader.result.split(',')[1]
-      resolve(b64)
+/**
+ * 并发限制执行器（与 MaterialBatchUpload 相同实现）
+ * 将 tasks（均为返回 Promise 的函数）以最多 concurrency 个并行方式执行完毕。
+ */
+async function runWithConcurrency(tasks, concurrency) {
+  const queue = [...tasks]
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const task = queue.shift()
+      if (task) await task().catch(() => {})
     }
-    reader.onerror = reject
-    reader.readAsDataURL(file)
   })
+  await Promise.all(workers)
 }
+
+/** 上传单个模板文件（multipart/form-data），更新 item 状态 */
+async function uploadOneTemplate(item, allResults) {
+  item.status   = 'uploading'
+  item.progress = 0
+  item.errorMsg = ''
+
+  try {
+    const displayName = item.displayName || stemToDisplayName(item.file.name)
+    const res = await adminAPI.officeplusUploadForm(
+      item.file,
+      displayName,
+      (pct) => { item.progress = pct }
+    )
+    item.progress = 100
+    item.status   = 'done'
+
+    const data = res.data || {}
+    const r = { ok: data.success, filename: item.file.name, ...data }
+    allResults.push(r)
+
+    const logEntry = reactive({
+      ok: true,
+      syncing: !!data.asyncFastDfs,
+      text: `「${item.file.name}」上传成功 → ${data.templateId}${data.asyncFastDfs ? '（云存储同步中…）' : ''}`,
+      size: data.fileSize ? `${(data.fileSize / 1024 / 1024).toFixed(2)} MB` : '',
+    })
+    opImportLogs.value.unshift(logEntry)
+
+    if (data.asyncFastDfs && data.templateId) {
+      pollSyncStatus(data.templateId, item.file.name, logEntry)
+    }
+  } catch (e) {
+    item.status   = 'error'
+    item.errorMsg = e?.response?.data?.message || e?.message || '网络错误'
+    allResults.push({ ok: false, filename: item.file.name })
+    opImportLogs.value.unshift(reactive({
+      ok: false, syncing: false,
+      text: `「${item.file.name}」上传失败：${item.errorMsg}`,
+      size: '',
+    }))
+  }
+}
+
+const OP_CONCURRENCY = 3  // 最多同时上传 3 个文件
 
 async function doOpBatchUpload() {
   if (!opPendingFiles.value.length) return
   opBatchUploading.value = true
   opBatchProgress.value = { done: 0, total: opPendingFiles.value.length }
 
-  // 逐个发送，每次一个文件，避免单次 body 过大（base64 膨胀约 1.35x）
-  const BATCH_SIZE = 1
-  const files = [...opPendingFiles.value]
-  const allResults = []
-
-  for (let i = 0; i < files.length; i += BATCH_SIZE) {
-    const chunk = files.slice(i, i + BATCH_SIZE)
-    const fileItems = await Promise.all(chunk.map(async f => ({
-      filename: f.name,
-      file_base64: await fileToBase64(f),
-    })))
-
-    try {
-      const res = await adminAPI.officeplusBatchUpload({ files: fileItems })
-      const data = res.data || {}
-      for (const r of (data.results || [])) {
-        allResults.push(r)
-        opImportLogs.value.unshift({
-          ok: r.ok,
-          text: r.ok
-            ? `「${r.filename}」上传成功 → ${r.templateId}`
-            : `「${r.filename}」失败：${r.error || '未知错误'}`,
-          size: r.ok && r.fileSize ? `${(r.fileSize/1024/1024).toFixed(2)} MB` : '',
-        })
-      }
-    } catch (e) {
-      for (const f of chunk) {
-        opImportLogs.value.unshift({
-          ok: false,
-          text: `「${f.name}」上传失败：${e?.response?.data?.message || e.message}`,
-          size: '',
-        })
-      }
-    }
-    opBatchProgress.value.done = Math.min(i + BATCH_SIZE, files.length)
+  // 重置所有文件状态
+  for (const it of opPendingFiles.value) {
+    it.status   = 'idle'
+    it.progress = 0
+    it.errorMsg = ''
   }
+
+  const allResults = []
+  let completedCount = 0
+
+  const tasks = opPendingFiles.value.map(item => async () => {
+    await uploadOneTemplate(item, allResults)
+    completedCount++
+    opBatchProgress.value.done = completedCount
+  })
+
+  await runWithConcurrency(tasks, OP_CONCURRENCY)
 
   // 保持日志最多 50 条
   if (opImportLogs.value.length > 50) opImportLogs.value.length = 50
 
-  const okCount = allResults.filter(r => r.ok).length
+  const okCount   = allResults.filter(r => r.ok).length
   const failCount = allResults.length - okCount
   if (okCount > 0) {
     await loadTemplateList()
     ElMessage.success(`${okCount} 个模板上传成功${failCount ? `，${failCount} 个失败` : ''}，可在「本地模板库」中上架`)
-    // 自动切换到本地模板库，让管理员立即看到新模板
     tmplActiveTab.value = 'local'
   } else if (failCount > 0) {
     ElMessage.error(`${failCount} 个文件上传失败`)
   }
 
-  opPendingFiles.value = []
   opBatchUploading.value = false
-  opBatchProgress.value = { done: 0, total: 0 }
+  // 保留结果 3 秒后自动清空
+  await new Promise(r => setTimeout(r, 3000))
+  if (!opBatchUploading.value) {
+    opPendingFiles.value = []
+    opBatchProgress.value = { done: 0, total: 0 }
+  }
+}
+
+/**
+ * 轮询单个模板的 FastDFS 同步状态。
+ * 最多尝试 20 次（约 3 分钟），同步完成后更新日志条目并刷新模板列表。
+ */
+async function pollSyncStatus(templateId, filename, logEntry) {
+  const MAX_ATTEMPTS = 20
+  const INTERVAL_MS  = 10000  // 每 10 秒查一次
+  let attempts = 0
+
+  const check = async () => {
+    attempts++
+    try {
+      const res  = await adminAPI.templateSyncStatus(templateId)
+      const data = res.data || {}
+      if (data.synced) {
+        logEntry.syncing = false
+        logEntry.text    = `「${filename}」上传成功 → ${templateId}（云存储已同步${data.hasThumb ? '，含缩略图' : ''}）`
+        await loadTemplateList()
+        return
+      }
+    } catch (_) {
+      // 网络抖动，继续轮询
+    }
+
+    if (attempts < MAX_ATTEMPTS) {
+      setTimeout(check, INTERVAL_MS)
+    } else {
+      // 超时，停止轮询，标记为普通成功（不再 syncing）
+      logEntry.syncing = false
+      logEntry.text    = `「${filename}」上传成功 → ${templateId}（云存储同步超时，可稍后刷新）`
+    }
+  }
+
+  setTimeout(check, INTERVAL_MS)
 }
 
 // 切换到模板管理 tab 时自动加载
@@ -6636,6 +6875,8 @@ onMounted(() => {
 }
 .tmpl-refresh-btn:hover:not(:disabled) { border-color: #a5b4fc; color: #4f46e5; }
 .tmpl-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.tmpl-sync-btn { color: #0369a1; border-color: #bae6fd; background: #f0f9ff; }
+.tmpl-sync-btn:hover:not(:disabled) { border-color: #38bdf8; color: #0284c7; background: #e0f2fe; }
 
 /* 骨架屏 */
 .tmpl-skeleton-grid {
@@ -6798,6 +7039,38 @@ onMounted(() => {
   border-radius: 3px;
 }
 
+.tmpl-card-badges {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+
+.tmpl-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.tmpl-badge--cloud {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.tmpl-badge--local {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.tmpl-badge--missing {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
 .tmpl-card-tags {
   display: flex;
   flex-wrap: wrap;
@@ -6892,6 +7165,18 @@ onMounted(() => {
   border: 1px solid #fecaca;
 }
 .tmpl-action-btn--danger:hover { background: #fee2e2; }
+
+.tmpl-action-btn--delete {
+  background: #450a0a;
+  color: #fca5a5;
+  border: 1px solid #7f1d1d;
+  font-weight: 600;
+}
+.tmpl-action-btn--delete:hover {
+  background: #7f1d1d;
+  color: #fee2e2;
+  border-color: #991b1b;
+}
 
 /* ── 上架对话框 ───────────────────────────────────────────────────── */
 .tmpl-activate-dialog .el-dialog__header {
@@ -7132,8 +7417,9 @@ onMounted(() => {
   animation: dropzone-pulse 1s ease-in-out infinite;
 }
 .op-dropzone.is-uploading {
-  cursor: not-allowed;
+  cursor: default;
   background: #f8fafc;
+  pointer-events: none;
 }
 .op-dropzone.has-files {
   cursor: default;
@@ -7179,39 +7465,6 @@ onMounted(() => {
 }
 
 /* 上传中 */
-.op-dz-uploading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 14px;
-  padding: 40px 20px;
-  pointer-events: none;
-  width: 100%;
-}
-
-.op-dz-spin-icon { color: #6366f1; }
-
-.op-dz-uploading-text {
-  font-size: 14px;
-  font-weight: 600;
-  color: #4f46e5;
-}
-
-.op-dz-progress-bar {
-  width: 240px;
-  height: 4px;
-  background: #e2e8f0;
-  border-radius: 99px;
-  overflow: hidden;
-}
-
-.op-dz-progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #6366f1, #818cf8);
-  border-radius: 99px;
-  transition: width 0.3s ease;
-}
-
 /* 文件列表 */
 .op-dz-files {
   width: 100%;
@@ -7221,6 +7474,7 @@ onMounted(() => {
   gap: 0;
 }
 
+/* 头部：文件数 / 整体进度 */
 .op-dz-files-header {
   display: flex;
   align-items: center;
@@ -7231,6 +7485,33 @@ onMounted(() => {
   margin-bottom: 10px;
   padding-bottom: 10px;
   border-bottom: 1px solid #f1f5f9;
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+/* 整体进度百分比 */
+.op-dz-overall-pct {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: #4f46e5;
+  font-weight: 700;
+}
+
+/* 整体进度条（宽度 100%，嵌在 header 里，独占一行） */
+.op-dz-overall-bar {
+  width: 100%;
+  height: 3px;
+  background: #e2e8f0;
+  border-radius: 99px;
+  overflow: hidden;
+  flex-basis: 100%;
+}
+.op-dz-overall-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #818cf8);
+  border-radius: 99px;
+  transition: width 0.4s ease;
 }
 
 .op-dz-clear-btn {
@@ -7250,25 +7531,73 @@ onMounted(() => {
 }
 .op-dz-clear-btn:hover { background: #fee2e2; color: #b91c1c; }
 
-.op-dz-file-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 220px;
-  overflow-y: auto;
-}
-
-.op-dz-file-item {
+/* 列头（待上传时） */
+.op-dz-file-list-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
-  border-radius: 7px;
-  transition: background 0.12s;
+  padding: 4px 36px 4px 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 2px;
+}
+.op-dz-col-file  { flex: 1; min-width: 0; }
+.op-dz-col-name  { width: 180px; flex-shrink: 0; }
+.op-dz-col-size  { width: 54px; flex-shrink: 0; text-align: right; }
+
+.op-dz-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+/* 每行：状态图标 + 主体 */
+.op-dz-file-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  transition: background 0.12s, border-color 0.12s;
+  border: 1px solid transparent;
 }
 .op-dz-file-item:hover { background: #f8fafc; }
+.op-dz-file-item.fstatus-uploading { background: #f5f3ff; border-color: #c7d2fe; }
+.op-dz-file-item.fstatus-done      { background: #f0fdf4; border-color: #bbf7d0; }
+.op-dz-file-item.fstatus-error     { background: #fff1f2; border-color: #fecdd3; }
+.op-dz-file-item.fstatus-encoding  { background: #fffbeb; border-color: #fde68a; }
 
-.op-dz-file-icon { color: #6366f1; flex-shrink: 0; }
+/* 状态图标列 */
+.op-dz-fstatus-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  margin-top: 1px;
+}
+.op-dz-file-icon { color: #94a3b8; }
+
+/* 主体：文件名行 + 进度条 */
+.op-dz-file-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.op-dz-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 
 .op-dz-file-name {
   flex: 1;
@@ -7277,13 +7606,74 @@ onMounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
+/* 展示名输入框 */
+.op-dz-display-name-input {
+  width: 180px;
+  flex-shrink: 0;
+  padding: 3px 8px;
+  font-size: 12.5px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+  color: #1e293b;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.op-dz-display-name-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99,102,241,0.12);
+}
+.op-dz-display-name-input::placeholder { color: #cbd5e1; }
+
+/* 文件大小 */
 .op-dz-file-size {
   font-size: 11px;
   color: #94a3b8;
   font-family: 'Fira Code', monospace;
   flex-shrink: 0;
+  width: 52px;
+  text-align: right;
+}
+
+/* 状态标签（上传进行中） */
+.op-dz-status-label {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 99px;
+  flex-shrink: 0;
+}
+.op-dz-status-label.waiting  { color: #94a3b8; background: #f1f5f9; }
+.op-dz-status-label.encoding { color: #b45309; background: #fef9c3; }
+.op-dz-status-label.done     { color: #15803d; background: #dcfce7; }
+.op-dz-status-label.error    { color: #b91c1c; background: #fee2e2; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 上传中百分比 */
+.op-dz-upload-pct {
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #4f46e5;
+  flex-shrink: 0;
+  min-width: 36px;
+  text-align: right;
+}
+
+/* 每文件进度条 */
+.op-dz-file-bar {
+  height: 3px;
+  background: #e2e8f0;
+  border-radius: 99px;
+  overflow: hidden;
+}
+.op-dz-file-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #a5b4fc);
+  border-radius: 99px;
+  transition: width 0.3s ease;
 }
 
 .op-dz-remove-btn {
@@ -7399,13 +7789,15 @@ onMounted(() => {
 .op-log-item:last-child { border-bottom: none; }
 
 .op-log-dot {
-  width: 6px; height: 6px;
+  width: 14px; height: 14px;
   border-radius: 50%;
   flex-shrink: 0;
-  margin-top: 5px;
+  margin-top: 3px;
+  display: flex; align-items: center; justify-content: center;
 }
-.op-log-item.ok   .op-log-dot { background: #22c55e; box-shadow: 0 0 5px rgba(34,197,94,0.5); }
-.op-log-item.fail .op-log-dot { background: #ef4444; box-shadow: 0 0 5px rgba(239,68,68,0.5); }
+.op-log-item.ok      .op-log-dot { background: #22c55e; box-shadow: 0 0 5px rgba(34,197,94,0.5); }
+.op-log-item.fail    .op-log-dot { background: #ef4444; box-shadow: 0 0 5px rgba(239,68,68,0.5); }
+.op-log-item.syncing .op-log-dot { background: transparent; color: #f59e0b; }
 
 .op-log-content {
   flex: 1;
@@ -7416,8 +7808,9 @@ onMounted(() => {
 }
 
 .op-log-text { font-size: 12px; line-height: 1.5; }
-.op-log-item.ok   .op-log-text { color: #86efac; }
-.op-log-item.fail .op-log-text { color: #fca5a5; }
+.op-log-item.ok      .op-log-text { color: #86efac; }
+.op-log-item.fail    .op-log-text { color: #fca5a5; }
+.op-log-item.syncing .op-log-text { color: #fde68a; }
 
 .op-log-size {
   font-size: 10.5px;

@@ -148,6 +148,26 @@ struct S3Config {
   }
 };
 
+struct FastDfsConfig {
+  bool enabled = false;
+  /** fdfs_upload_file 客户端配置文件路径，新版 FastDFS(v6.x) 通过 TCP 上传 */
+  std::string client_conf = "/etc/fdfs/client.conf";
+  /** Tracker HTTP 接口地址（新版不再用于上传，仅保留供参考），如 "http://127.0.0.1:8080" */
+  std::string tracker_http_url;
+  /** Storage Nginx 反代地址（下载访问），如 "http://127.0.0.1:8888" */
+  std::string storage_http_url;
+  /** 上传时指定的分组，默认 group1 */
+  std::string group_name = "group1";
+  /** 上传超时（秒） */
+  std::uint32_t upload_timeout_seconds = 60;
+  /** 上传素材文件成功后是否删除本地副本 */
+  bool delete_local_after_upload = false;
+  /** 是否用于素材文件 */
+  bool use_for_materials = true;
+  /** 是否用于模板文件 */
+  bool use_for_templates = true;
+};
+
 class AppConfig {
  public:
   static AppConfig Load(const std::string& path);
@@ -162,6 +182,7 @@ class AppConfig {
   const EmailConfig& email() const { return email_; }
   const GenerationConfig& generation() const { return generation_; }
   const S3Config& s3() const { return s3_; }
+  const FastDfsConfig& fastdfs() const { return fastdfs_; }
   const MaterialConfig& material() const { return material_; }
   const MongoConfig& mongodb() const { return mongodb_; }
   const RedisConfig& redis() const { return redis_; }
@@ -178,6 +199,7 @@ class AppConfig {
   EmailConfig email_{};
   GenerationConfig generation_{};
   S3Config s3_{};
+  FastDfsConfig fastdfs_{};
   MaterialConfig material_{};
   MongoConfig mongodb_{};
   RedisConfig redis_{};

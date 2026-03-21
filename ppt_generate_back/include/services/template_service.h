@@ -26,6 +26,15 @@ class TemplateService {
   /** 重新从磁盘加载 catalog（热重载，线程安全）。返回加载后的模板数量。 */
   int Reload(std::string& error);
 
+  /**
+   * 从 catalog JSON 文件中移除指定模板并写回磁盘，然后热重载内存副本。
+   * 成功返回 true；若 id 不在 catalog 中也返回 true（幂等）。
+   * out_local_file：若原条目有 local_file 字段，写入此变量供调用方删除本地文件。
+   */
+  bool RemoveFromCatalog(const std::string& id,
+                         std::string& out_local_file,
+                         std::string& error);
+
   const std::string& CatalogPath() const { return catalog_path_str_; }
 
  private:

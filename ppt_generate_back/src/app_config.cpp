@@ -376,6 +376,44 @@ S3Config ParseS3(const nlohmann::json& json) {
   }
   return cfg;
 }
+
+FastDfsConfig ParseFastDfs(const nlohmann::json& json) {
+  FastDfsConfig cfg;
+  if (auto it = json.find("enabled"); it != json.end() && it->is_boolean()) {
+    cfg.enabled = it->get<bool>();
+  }
+  if (auto it = json.find("client_conf"); it != json.end() && it->is_string()) {
+    cfg.client_conf = *it;
+  }
+  if (auto it = json.find("tracker_http_url"); it != json.end() && it->is_string()) {
+    cfg.tracker_http_url = *it;
+  }
+  if (auto it = json.find("storage_http_url"); it != json.end() && it->is_string()) {
+    cfg.storage_http_url = *it;
+  }
+  if (auto it = json.find("group_name"); it != json.end() && it->is_string()) {
+    cfg.group_name = *it;
+  }
+  if (auto it = json.find("upload_timeout_seconds"); it != json.end() && it->is_number_unsigned()) {
+    cfg.upload_timeout_seconds = it->get<std::uint32_t>();
+  }
+  if (auto it = json.find("delete_local_after_upload"); it != json.end() && it->is_boolean()) {
+    cfg.delete_local_after_upload = it->get<bool>();
+  }
+  if (auto it = json.find("use_for_materials"); it != json.end() && it->is_boolean()) {
+    cfg.use_for_materials = it->get<bool>();
+  }
+  if (auto it = json.find("use_for_templates"); it != json.end() && it->is_boolean()) {
+    cfg.use_for_templates = it->get<bool>();
+  }
+  if (cfg.group_name.empty()) {
+    cfg.group_name = "group1";
+  }
+  if (cfg.upload_timeout_seconds == 0) {
+    cfg.upload_timeout_seconds = 30;
+  }
+  return cfg;
+}
 }  // namespace
 
 AppConfig AppConfig::Load(const std::string& path) {
@@ -427,6 +465,9 @@ AppConfig AppConfig::Load(const std::string& path) {
   }
   if (auto it = data.find("s3"); it != data.end()) {
     config.s3_ = ParseS3(*it);
+  }
+  if (auto it = data.find("fastdfs"); it != data.end()) {
+    config.fastdfs_ = ParseFastDfs(*it);
   }
   if (auto it = data.find("material"); it != data.end()) {
     config.material_ = ParseMaterial(*it, project_root);

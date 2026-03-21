@@ -7,13 +7,15 @@
 #include "app_config.h"
 #include "database/mysql_connection_pool.h"
 #include "models/material.h"
+#include "services/fastdfs_client.h"
 
 class MaterialService {
  public:
   MaterialService(std::shared_ptr<MySQLConnectionPool> pool,
                   MaterialConfig material_config,
                   std::string qwen_api_key,
-                  std::string python_binary);
+                  std::string python_binary,
+                  std::shared_ptr<FastDfsClient> fastdfs_client = nullptr);
 
   /** 创建材料记录（status=pending），返回 material_id */
   bool CreateMaterial(std::uint64_t user_id,
@@ -138,9 +140,23 @@ class MaterialService {
 
   const MaterialConfig& config() const { return material_config_; }
 
+  /**
+   * 将已提取完成的素材上传到 FastDFS，更新数据库中的 fastdfs_file_id/fastdfs_url/storage_type。
+   * 若 FastDFS 未启用或上传失败，仅记录警告，不影响素材可用性。
+   * @param material_id  素材 ID
+   * @param delete_local 上传成功后是否删除本地文件
+   */
+  void UploadToFastDfs(const std::string& material_id, bool delete_local = false);
+
  private:
+  bool UpdateFastDfsInfo(const std::string& material_id,
+                         const std::string& fastdfs_file_id,
+                         const std::string& fastdfs_url,
+                         const std::string& storage_type);
+
   std::shared_ptr<MySQLConnectionPool> pool_;
   MaterialConfig material_config_;
   std::string qwen_api_key_;
   std::string python_binary_;
+  std::shared_ptr<FastDfsClient> fastdfs_client_;
 };

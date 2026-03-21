@@ -8,6 +8,7 @@
 #include "services/audit_service.h"
 #include "services/template_manager_service.h"
 #include "services/template_service.h"
+#include "services/template_fastdfs_service.h"
 
 /**
  * 管理员端模板管理控制器
@@ -16,13 +17,15 @@
  * POST   /api/admin/templates/activate — 上架/更新模板
  * POST   /api/admin/templates/deactivate — 下架模板
  * DELETE /api/admin/templates          — 删除模板记录
+ * POST   /api/admin/templates/sync_thumbnails — 批量同步缩略图到 FastDFS
  */
 class TemplateManagerController {
  public:
   TemplateManagerController(std::shared_ptr<AuthService>            auth_service,
                              std::shared_ptr<AuditService>           audit_service,
                              std::shared_ptr<TemplateManagerService> tmpl_mgr_service,
-                             std::shared_ptr<TemplateService>        template_service);
+                             std::shared_ptr<TemplateService>        template_service,
+                             std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service = nullptr);
 
   /** GET /api/admin/templates — 返回 catalog 中所有模板，并附加上架状态信息 */
   HttpResponse AdminList(const HttpRequest& request);
@@ -33,8 +36,25 @@ class TemplateManagerController {
   /** POST /api/admin/templates/deactivate — 下架模板 */
   HttpResponse Deactivate(const HttpRequest& request);
 
-  /** DELETE /api/admin/templates — 删除模板记录 */
+  /** DELETE /api/admin/templates — 仅删除数据库上架记录（保留文件） */
   HttpResponse Remove(const HttpRequest& request);
+
+  /**
+   * DELETE /api/admin/templates/full — 彻底删除模板：
+   *   1. 从 FastDFS 删除 pptx + 缩略图文件
+   *   2. 删除 template_fastdfs_map 记录
+   *   3. 删除 template_listings 记录
+   *   4. 从 templates.json catalog 中移除条目
+   *   5. 删除本地 pptx / 缩略图文件
+   *   6. 热重载 catalog
+   */
+  HttpResponse FullDelete(const HttpRequest& request);
+
+  /** POST /api/admin/templates/sync_thumbnails — 将本地缩略图批量上传 FastDFS 并写 DB */
+  HttpResponse SyncThumbnails(const HttpRequest& request);
+
+  /** GET /api/admin/templates/sync_status?templateId=xxx — 查询单个模板的 FastDFS 同步状态 */
+  HttpResponse SyncStatus(const HttpRequest& request);
 
  private:
   std::shared_ptr<User> AuthenticateAdmin(const HttpRequest& request, std::string& error) const;
@@ -44,4 +64,5 @@ class TemplateManagerController {
   std::shared_ptr<AuditService>           audit_service_;
   std::shared_ptr<TemplateManagerService> tmpl_mgr_service_;
   std::shared_ptr<TemplateService>        template_service_;
+  std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service_;
 };

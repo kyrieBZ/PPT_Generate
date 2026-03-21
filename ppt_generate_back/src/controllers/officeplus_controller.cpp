@@ -1,17 +1,22 @@
 #include "controllers/officeplus_controller.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "http/http_types.h"
 #include "logger.h"
+#include "services/template_fastdfs_service.h"
 
 namespace {
 
@@ -41,20 +46,64 @@ std::string ShellEscapeSingleQuote(const std::string& s) {
 }  // namespace
 
 OfficePlusController::OfficePlusController(
-    std::shared_ptr<AuthService>    auth_service,
-    std::shared_ptr<TemplateService> template_service,
-    const std::string&               python_binary,
-    const std::string&               catalog_path,
-    const std::string&               templates_dir,
-    const std::string&               thumbnails_dir,
-    const std::string&               fetcher_script)
+    std::shared_ptr<AuthService>             auth_service,
+    std::shared_ptr<TemplateService>         template_service,
+    const std::string&                       python_binary,
+    const std::string&                       catalog_path,
+    const std::string&                       templates_dir,
+    const std::string&                       thumbnails_dir,
+    const std::string&                       fetcher_script,
+    std::shared_ptr<TemplateFastDfsService>  tmpl_fastdfs_service)
     : auth_service_(std::move(auth_service)),
       template_service_(std::move(template_service)),
+      tmpl_fastdfs_service_(std::move(tmpl_fastdfs_service)),
       python_binary_(python_binary),
       catalog_path_(catalog_path),
       templates_dir_(templates_dir),
       thumbnails_dir_(thumbnails_dir),
       fetcher_script_(fetcher_script) {}
+
+bool OfficePlusController::ExtractThumbnail(const std::string& pptx_path,
+                                             const std::string& out_dir,
+                                             std::string&       out_png_path,
+                                             std::string&       error) const {
+  // 用 LibreOffice 将 pptx 转为图片（只取第一张）
+  // 命令：libreoffice --headless --convert-to png --outdir <out_dir> <pptx>
+  // LibreOffice 输出文件名规则：<stem>1.png（多页则有1,2,3...，只需第一张）
+  std::error_code ec;
+  std::filesystem::create_directories(out_dir, ec);
+
+  std::ostringstream cmd;
+  cmd << "libreoffice --headless --convert-to png"
+      << " --outdir '" << ShellEscapeSingleQuote(out_dir) << "'"
+      << " '" << ShellEscapeSingleQuote(pptx_path) << "'"
+      << " 2>/dev/null";
+
+  int ret = std::system(cmd.str().c_str());
+  if (ret != 0) {
+    error = "LibreOffice 转换失败（exit=" + std::to_string(ret) + "）";
+    return false;
+  }
+
+  // 查找输出文件：收集 out_dir 下所有 .png 文件，按文件名排序取第一个
+  // LibreOffice 命名规则：单页输出 <stem>.png；多页输出 <stem>1.png, <stem>2.png ...
+  std::vector<std::string> png_files;
+  for (auto& entry : std::filesystem::directory_iterator(out_dir, ec)) {
+    const auto& p = entry.path();
+    const auto ext = p.extension().string();
+    if (ext == ".png" || ext == ".PNG") {
+      png_files.push_back(p.string());
+    }
+  }
+  if (png_files.empty()) {
+    error = "LibreOffice 转换后未找到 PNG 输出文件（outdir=" + out_dir + "）";
+    return false;
+  }
+  // 按文件名字母序排序，取最小的（即第一张幻灯片）
+  std::sort(png_files.begin(), png_files.end());
+  out_png_path = png_files.front();
+  return true;
+}
 
 std::shared_ptr<User> OfficePlusController::AuthenticateAdmin(
     const HttpRequest& request, std::string& error) const {
@@ -461,7 +510,10 @@ HttpResponse OfficePlusController::BatchUpload(const HttpRequest& request) {
     }
 
     // 更新或新增 catalog 条目
-    const std::string tmpl_name = stem.empty() ? template_id : stem;
+    // 优先使用前端传入的展示名；若为空则回退到文件名 stem
+    std::string display_name = item.value("display_name", "");
+    if (display_name.empty()) display_name = stem;
+    const std::string tmpl_name = display_name.empty() ? template_id : display_name;
     nlohmann::json new_entry = {
       {"id",           template_id},
       {"name",         tmpl_name},
@@ -488,8 +540,81 @@ HttpResponse OfficePlusController::BatchUpload(const HttpRequest& request) {
     }
     if (!found) catalog.push_back(new_entry);
 
-    results.push_back({{"filename", orig_filename}, {"ok", true},
-                       {"templateId", template_id}, {"fileSize", static_cast<int>(file_data.size())}});
+    // ── FastDFS 异步：后台线程完成缩略图提取 + FastDFS 上传，不阻塞 HTTP 响应 ──
+    if (tmpl_fastdfs_service_) {
+      // 捕获值拷贝，避免悬挂引用
+      const std::string  async_tmpl_id    = template_id;
+      const std::string  async_pptx_path  = dest_path.string();
+      const std::string  async_thumb_dir  = std::filesystem::path(thumbnails_dir_).string()
+                                            + "/tmp_" + template_id;
+      const std::string  async_final_dir  = thumbnails_dir_;
+      auto               async_fdfs_svc   = tmpl_fastdfs_service_;
+
+      // ExtractThumbnail 是成员函数，需用 shared_ptr 延长 controller 生命周期
+      // 这里直接在 lambda 中复制所需数据，用 [=] 捕获
+      std::thread([=]() {
+        // 1. 提取缩略图
+        std::string thumb_path;
+        std::string thumb_error;
+        // 重新构造临时逻辑（无法调用成员函数，需复制其逻辑）
+        std::filesystem::create_directories(async_thumb_dir);
+        const std::string cmd = "libreoffice --headless --convert-to png"
+                                " --outdir " + async_thumb_dir
+                                + " \"" + async_pptx_path + "\""
+                                + " > /dev/null 2>&1";
+        int ret = std::system(cmd.c_str());
+        bool thumb_ok = false;
+        if (ret == 0) {
+          std::error_code ec_dir;
+          std::vector<std::filesystem::path> pngs;
+          for (auto& e : std::filesystem::directory_iterator(async_thumb_dir, ec_dir)) {
+            if (e.path().extension() == ".png") pngs.push_back(e.path());
+          }
+          std::sort(pngs.begin(), pngs.end());
+          if (!pngs.empty()) {
+            const std::filesystem::path final_thumb =
+                std::filesystem::path(async_final_dir) / (async_tmpl_id + ".png");
+            std::error_code ec2;
+            std::filesystem::create_directories(async_final_dir, ec2);
+            std::filesystem::copy_file(pngs[0], final_thumb,
+                                       std::filesystem::copy_options::overwrite_existing, ec2);
+            std::filesystem::remove_all(async_thumb_dir, ec2);
+            if (!ec2) {
+              thumb_path = final_thumb.string();
+              thumb_ok   = true;
+            }
+          }
+        }
+        if (!thumb_ok) {
+          Logger::Warn("BatchUpload[async]: thumbnail extraction failed for " + async_tmpl_id);
+          std::error_code ec2;
+          std::filesystem::remove_all(async_thumb_dir, ec2);
+        }
+
+        // 2. 上传 pptx + 缩略图到 FastDFS
+        std::string fdfs_error;
+        if (async_fdfs_svc->UploadTemplate(
+                async_tmpl_id,
+                async_pptx_path,
+                thumb_ok ? thumb_path : "",
+                fdfs_error)) {
+          auto entry = async_fdfs_svc->GetEntry(async_tmpl_id);
+          Logger::Info("BatchUpload[async]: FastDFS upload ok for " + async_tmpl_id
+                       + " pptx=" + (entry ? entry->pptx_url : "?")
+                       + " thumb=" + (entry ? entry->thumbnail_url : "?"));
+        } else {
+          Logger::Warn("BatchUpload[async]: FastDFS upload failed for " + async_tmpl_id + ": " + fdfs_error);
+        }
+      }).detach();
+    }
+
+    results.push_back({
+        {"filename",   orig_filename},
+        {"ok",         true},
+        {"templateId", template_id},
+        {"fileSize",   static_cast<int>(file_data.size())},
+        {"asyncFastDfs", tmpl_fastdfs_service_ != nullptr},
+    });
     success_count++;
   }
 
@@ -517,6 +642,294 @@ HttpResponse OfficePlusController::BatchUpload(const HttpRequest& request) {
     {"results", results},
     {"catalogSize", cnt},
     {"message", std::to_string(success_count) + " 个模板上传成功"}
+  });
+}
+
+// ── multipart/form-data 辅助（与 material_controller 相同逻辑，局部复制避免跨文件依赖） ──
+
+namespace {
+
+std::string MpExtractBoundary(const std::string& content_type) {
+  const std::string key = "boundary=";
+  auto pos = content_type.find(key);
+  if (pos == std::string::npos) return {};
+  std::string b = content_type.substr(pos + key.size());
+  if (!b.empty() && b.front() == '"') {
+    b = b.substr(1);
+    auto q = b.find('"');
+    if (q != std::string::npos) b.resize(q);
+  }
+  auto semi = b.find(';');
+  if (semi != std::string::npos) b.resize(semi);
+  // trim
+  while (!b.empty() && (b.front() == ' ' || b.front() == '\t')) b.erase(b.begin());
+  while (!b.empty() && (b.back()  == ' ' || b.back()  == '\t')) b.pop_back();
+  return b;
+}
+
+struct MpPart {
+  std::string name;
+  std::string filename;
+  std::string data;
+};
+
+std::vector<MpPart> MpParse(const std::string& body, const std::string& boundary) {
+  std::vector<MpPart> parts;
+  if (boundary.empty()) return parts;
+  const std::string delim = "--" + boundary;
+  std::size_t pos = 0;
+  while (pos < body.size()) {
+    auto dp = body.find(delim, pos);
+    if (dp == std::string::npos) break;
+    std::size_t after = dp + delim.size();
+    if (after + 1 < body.size() && body[after] == '-' && body[after + 1] == '-') break;
+    if (after < body.size() && body[after] == '\r') ++after;
+    if (after < body.size() && body[after] == '\n') ++after;
+    auto hend = body.find("\r\n\r\n", after);
+    if (hend == std::string::npos) break;
+    const std::string hdrs = body.substr(after, hend - after);
+    std::size_t dstart = hend + 4;
+    auto ndp = body.find("\r\n" + delim, dstart);
+    std::size_t dend = (ndp == std::string::npos) ? body.size() : ndp;
+    MpPart part;
+    part.data = body.substr(dstart, dend - dstart);
+    std::istringstream hs(hdrs);
+    std::string hl;
+    while (std::getline(hs, hl)) {
+      if (!hl.empty() && hl.back() == '\r') hl.pop_back();
+      auto colon = hl.find(':');
+      if (colon == std::string::npos) continue;
+      std::string hk = hl.substr(0, colon);
+      std::transform(hk.begin(), hk.end(), hk.begin(), [](unsigned char c){ return std::tolower(c); });
+      std::string hv = hl.substr(colon + 1);
+      while (!hv.empty() && (hv.front() == ' ' || hv.front() == '\t')) hv.erase(hv.begin());
+      if (hk == "content-disposition") {
+        std::istringstream ds(hv);
+        std::string tok;
+        while (std::getline(ds, tok, ';')) {
+          while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.erase(tok.begin());
+          while (!tok.empty() && (tok.back()  == ' ' || tok.back()  == '\t')) tok.pop_back();
+          if (tok.rfind("name=", 0) == 0) {
+            part.name = tok.substr(5);
+            if (!part.name.empty() && part.name.front() == '"') {
+              part.name = part.name.substr(1);
+              auto q = part.name.find('"');
+              if (q != std::string::npos) part.name.resize(q);
+            }
+          } else if (tok.rfind("filename=", 0) == 0) {
+            part.filename = tok.substr(9);
+            if (!part.filename.empty() && part.filename.front() == '"') {
+              part.filename = part.filename.substr(1);
+              auto q = part.filename.find('"');
+              if (q != std::string::npos) part.filename.resize(q);
+            }
+          }
+        }
+      }
+    }
+    if (!part.name.empty()) parts.push_back(std::move(part));
+    pos = dend;
+  }
+  return parts;
+}
+
+}  // namespace
+
+// ── BatchUploadForm（multipart/form-data 版）────────────────────────────────
+// 请求格式（每次一个文件，前端并发多请求）：
+//   Content-Type: multipart/form-data; boundary=...
+//   字段 "file"         : pptx 二进制数据（filename 即原始文件名）
+//   字段 "display_name" : 可选，前端中文展示名
+HttpResponse OfficePlusController::BatchUploadForm(const HttpRequest& request) {
+  std::string error;
+  auto admin = AuthenticateAdmin(request, error);
+  if (!admin) {
+    int code = (error == "Forbidden") ? 403 : 401;
+    return HttpResponse::Json(code, ErrorJson("ERR_UNAUTHORIZED", error));
+  }
+
+  const std::string content_type = request.Header("content-type");
+  const std::string boundary = MpExtractBoundary(content_type);
+  if (boundary.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Content-Type 必须为 multipart/form-data"));
+  }
+
+  const auto parts = MpParse(request.body, boundary);
+  if (parts.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "请求中没有有效的 multipart 字段"));
+  }
+
+  // 取 file 字段和 display_name 字段
+  std::string orig_filename, file_data, display_name;
+  for (const auto& p : parts) {
+    if (p.name == "file" && !p.filename.empty()) {
+      orig_filename = p.filename;
+      file_data     = p.data;
+    } else if (p.name == "display_name") {
+      display_name = p.data;
+      // trim
+      while (!display_name.empty() && (display_name.back() == '\r' || display_name.back() == '\n' || display_name.back() == ' '))
+        display_name.pop_back();
+    }
+  }
+
+  if (orig_filename.empty() || file_data.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "缺少 file 字段或文件为空"));
+  }
+
+  // 验证 PPTX 格式（ZIP magic bytes）
+  if (file_data.size() < 4 ||
+      (unsigned char)file_data[0] != 'P' || (unsigned char)file_data[1] != 'K') {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "不是有效的 pptx（ZIP）格式"));
+  }
+
+  // 读取现有 catalog
+  nlohmann::json catalog = nlohmann::json::array();
+  if (std::filesystem::exists(catalog_path_)) {
+    try {
+      std::ifstream ifs(catalog_path_);
+      if (ifs) ifs >> catalog;
+    } catch (...) {}
+  }
+
+  std::filesystem::path cat_dir = std::filesystem::path(catalog_path_).parent_path();
+  std::filesystem::create_directories(std::filesystem::path(templates_dir_));
+
+  // 生成 template_id
+  std::string stem = orig_filename;
+  auto dot = stem.rfind('.');
+  if (dot != std::string::npos) stem = stem.substr(0, dot);
+  std::string clean_id;
+  for (unsigned char c : stem) {
+    if (std::isalnum(c) || c == '-' || c == '_' || c >= 0x80) clean_id += c;
+    else clean_id += '-';
+  }
+  if (clean_id.size() > 48) clean_id = clean_id.substr(0, 48);
+  const std::string template_id = "up-" + clean_id;
+
+  // 保存文件
+  const std::filesystem::path dest_path =
+      std::filesystem::path(templates_dir_) / (template_id + ".pptx");
+  try {
+    std::ofstream ofs(dest_path, std::ios::binary);
+    if (!ofs) throw std::runtime_error("无法创建文件");
+    ofs.write(file_data.data(), static_cast<std::streamsize>(file_data.size()));
+  } catch (const std::exception& ex) {
+    return HttpResponse::Json(500, ErrorJson("ERR_SAVE", std::string("文件保存失败: ") + ex.what()));
+  }
+
+  // catalog 相对路径
+  std::string rel_local;
+  try {
+    rel_local = std::filesystem::relative(dest_path, cat_dir).string();
+  } catch (...) {
+    rel_local = dest_path.string();
+  }
+
+  // 确定展示名
+  if (display_name.empty()) display_name = stem;
+  const std::string tmpl_name = display_name.empty() ? template_id : display_name;
+
+  nlohmann::json new_entry = {
+    {"id",           template_id},
+    {"name",         tmpl_name},
+    {"provider",     "upload"},
+    {"provider_url", ""},
+    {"description",  ""},
+    {"preview_image", ""},
+    {"download_url", ""},
+    {"license",      ""},
+    {"tags",         nlohmann::json::array()},
+    {"theme",        {{"primary_color","#1e293b"},{"secondary_color","#334155"},
+                      {"accent_color","#6366f1"},{"background_image",""}}},
+    {"local_file",   rel_local},
+  };
+
+  bool found = false;
+  for (auto& entry : catalog) {
+    if (entry.value("id", "") == template_id) {
+      entry["local_file"] = rel_local;
+      entry["name"]       = tmpl_name;
+      found = true;
+      break;
+    }
+  }
+  if (!found) catalog.push_back(new_entry);
+
+  // 写回 catalog
+  try {
+    std::ofstream ofs(catalog_path_);
+    if (!ofs) throw std::runtime_error("无法写入 catalog");
+    ofs << catalog.dump(2);
+  } catch (const std::exception& ex) {
+    return HttpResponse::Json(500, ErrorJson("ERR_CATALOG", std::string("catalog 写入失败: ") + ex.what()));
+  }
+
+  // 热重载
+  std::string reload_error;
+  int cnt = template_service_->Reload(reload_error);
+  Logger::Info("BatchUploadForm: saved " + template_id + " (" + tmpl_name + "), catalog=" + std::to_string(cnt));
+
+  // 异步 FastDFS 上传（缩略图提取 + 上传）
+  if (tmpl_fastdfs_service_) {
+    const std::string  async_tmpl_id   = template_id;
+    const std::string  async_pptx_path = dest_path.string();
+    const std::string  async_thumb_dir = std::filesystem::path(thumbnails_dir_).string() + "/tmp_" + template_id;
+    const std::string  async_final_dir = thumbnails_dir_;
+    auto               async_fdfs_svc  = tmpl_fastdfs_service_;
+
+    std::thread([=]() {
+      std::filesystem::create_directories(async_thumb_dir);
+      const std::string cmd = "libreoffice --headless --convert-to png"
+                              " --outdir " + async_thumb_dir
+                              + " \"" + async_pptx_path + "\""
+                              + " > /dev/null 2>&1";
+      int ret = std::system(cmd.c_str());
+      bool thumb_ok = false;
+      std::string thumb_path;
+      if (ret == 0) {
+        std::error_code ec;
+        std::vector<std::filesystem::path> pngs;
+        for (auto& e : std::filesystem::directory_iterator(async_thumb_dir, ec))
+          if (e.path().extension() == ".png") pngs.push_back(e.path());
+        std::sort(pngs.begin(), pngs.end());
+        if (!pngs.empty()) {
+          const std::filesystem::path ft =
+              std::filesystem::path(async_final_dir) / (async_tmpl_id + ".png");
+          std::error_code ec2;
+          std::filesystem::create_directories(async_final_dir, ec2);
+          std::filesystem::copy_file(pngs[0], ft,
+                                     std::filesystem::copy_options::overwrite_existing, ec2);
+          std::filesystem::remove_all(async_thumb_dir, ec2);
+          if (!ec2) { thumb_path = ft.string(); thumb_ok = true; }
+        }
+      }
+      if (!thumb_ok) {
+        std::error_code ec2;
+        std::filesystem::remove_all(async_thumb_dir, ec2);
+        Logger::Warn("BatchUploadForm[async]: thumbnail failed for " + async_tmpl_id);
+      }
+      std::string fdfs_error;
+      if (async_fdfs_svc->UploadTemplate(async_tmpl_id, async_pptx_path,
+                                          thumb_ok ? thumb_path : "", fdfs_error)) {
+        auto entry = async_fdfs_svc->GetEntry(async_tmpl_id);
+        Logger::Info("BatchUploadForm[async]: FastDFS ok for " + async_tmpl_id
+                     + " pptx=" + (entry ? entry->pptx_url : "?")
+                     + " thumb=" + (entry ? entry->thumbnail_url : "?"));
+      } else {
+        Logger::Warn("BatchUploadForm[async]: FastDFS failed for " + async_tmpl_id + ": " + fdfs_error);
+      }
+    }).detach();
+  }
+
+  return HttpResponse::Json(200, {
+    {"success",      true},
+    {"templateId",   template_id},
+    {"name",         tmpl_name},
+    {"filename",     orig_filename},
+    {"fileSize",     static_cast<int>(file_data.size())},
+    {"asyncFastDfs", tmpl_fastdfs_service_ != nullptr},
+    {"catalogSize",  cnt},
   });
 }
 

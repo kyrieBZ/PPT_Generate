@@ -173,8 +173,25 @@ export default {
    * 批量上传本地 pptx，自动写入 catalog
    * data: { files: [ { filename, file_base64 }, ... ] }
    */
-  officeplusBatchUpload(data = {}) {
-    return apiClient.post('/admin/officeplus/batch_upload', data)
+  officeplusBatchUpload(data = {}, axiosConfig = {}) {
+    return apiClient.post('/admin/officeplus/batch_upload', data, axiosConfig)
+  },
+  /**
+   * 单文件 multipart 上传（用于并发批量）
+   * @param {File}     file         — pptx 文件对象
+   * @param {string}   displayName  — 中文展示名
+   * @param {Function} onProgress   — (percent: number) => void
+   */
+  officeplusUploadForm(file, displayName, onProgress) {
+    const formData = new FormData()
+    formData.append('file', file, file.name)
+    if (displayName) formData.append('display_name', displayName)
+    return apiClient.post('/admin/officeplus/batch_upload_form', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress(e) {
+        if (onProgress && e.total) onProgress(Math.round(e.loaded / e.total * 95))
+      },
+    })
   },
 
   // ── AI 检索索引管理 ───────────────────────────────────────────────────────
@@ -212,10 +229,33 @@ export default {
     return apiClient.post('/admin/templates/deactivate', data)
   },
   /**
-   * 删除模板记录（从数据库中彻底移除上架信息）
+   * 仅删除数据库上架记录（保留文件和 catalog 条目）
    * templateId: string
    */
   removeTemplateRecord(templateId) {
     return apiClient.delete('/admin/templates', { params: { templateId } })
+  },
+  /**
+   * 彻底删除模板：FastDFS 文件 + DB 记录 + catalog 条目 + 本地文件
+   * templateId: string
+   */
+  fullDeleteTemplate(templateId) {
+    return apiClient.delete('/admin/templates/full', { params: { templateId } })
+  },
+  /**
+   * 批量同步本地缩略图到 FastDFS
+   * force=true 时强制覆盖已有记录
+   */
+  syncTemplateThumbnails(force = false) {
+    return apiClient.post('/admin/templates/sync_thumbnails', {}, {
+      params: force ? { force: '1' } : {}
+    })
+  },
+  /**
+   * 查询单个模板的 FastDFS 同步状态
+   * 返回 { templateId, synced, hasPptx, hasThumb, pptxUrl, thumbUrl }
+   */
+  templateSyncStatus(templateId) {
+    return apiClient.get('/admin/templates/sync_status', { params: { templateId } })
   }
 }

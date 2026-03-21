@@ -752,9 +752,10 @@
                     v-if="selectedTemplate.localDownloadUrl"
                     class="template-download-link"
                     :href="selectedTemplate.localDownloadUrl"
-                    download
+                    target="_blank"
+                    rel="noopener"
                   >
-                    下载内置模板
+                    下载模板文件
                   </a>
                 </div>
               </div>
@@ -1196,7 +1197,7 @@
               <div class="template-info">
                 <div class="template-title-row">
                   <h4>{{ template.name }}</h4>
-                  <span v-if="template.localDownloadUrl" class="template-badge">内置模板</span>
+                  <span v-if="template.localDownloadUrl" class="template-badge">可下载</span>
                 </div>
                 <p class="template-desc">{{ template.description }}</p>
                 <div class="template-meta">
@@ -1216,9 +1217,10 @@
                     v-if="template.localDownloadUrl"
                     class="use-template-btn outline"
                     :href="template.localDownloadUrl"
-                    download
+                    target="_blank"
+                    rel="noopener"
                   >
-                    下载内置
+                    下载模板
                   </a>
                   <a
                     class="use-template-btn secondary"

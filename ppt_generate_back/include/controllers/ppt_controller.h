@@ -16,6 +16,7 @@
 #include "services/ppt_service.h"
 #include "services/qwen_client.h"
 #include "services/s3_client.h"
+#include "services/template_fastdfs_service.h"
 #include "services/template_service.h"
 #include "services/wanxiang_image_client.h"
 #include "utils/thread_pool.h"
@@ -36,7 +37,8 @@ class PptController {
                 int redis_ttl_ppt_status = 7200,
                 int redis_ttl_ppt_history = 300,
                 std::shared_ptr<MySQLConnectionPool> pool = nullptr,
-                std::shared_ptr<AiSearchService> ai_search_service = nullptr);
+                std::shared_ptr<AiSearchService> ai_search_service = nullptr,
+                std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service = nullptr);
 
   HttpResponse Generate(const HttpRequest& request);
   /** 轮询单条请求状态，用于异步生成后查询 completed/failed */
@@ -82,6 +84,7 @@ class PptController {
   int redis_ttl_ppt_history_ = 300;
   std::shared_ptr<MySQLConnectionPool> pool_;
   std::shared_ptr<AiSearchService>     ai_search_service_;
+  std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service_;
 
   /** 当前正在执行（已提交到线程池）的生成任务数 */
   mutable std::atomic<int> active_jobs_{0};

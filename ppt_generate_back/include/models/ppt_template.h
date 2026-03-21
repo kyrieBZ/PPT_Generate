@@ -34,4 +34,7 @@ struct RemoteTemplate {
   std::string prompt;
   std::string local_file_path;
   bool has_local_file = false;
+  // FastDFS 存储字段（由 TemplateService 或 TemplateController 填充）
+  std::string fastdfs_pptx_url;
+  std::string fastdfs_thumbnail_url;
 };
