@@ -49,6 +49,12 @@ class AuthService {
                       const std::string& new_password,
                       std::string& error_message);
 
+  /** 用户注销账号：验证密码后删除账号及所有相关数据，并使当前 Token 失效 */
+  bool DeleteAccount(std::uint64_t user_id,
+                     const std::string& password,
+                     const std::string& token,
+                     std::string& error_message);
+
   bool IsAdmin(const User& user) const;
 
   std::vector<User> ListUsers(const std::string& query, std::string& error_message) const;

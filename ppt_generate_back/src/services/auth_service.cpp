@@ -678,6 +678,65 @@ bool AuthService::ChangePassword(std::uint64_t user_id,
   return true;
 }
 
+bool AuthService::DeleteAccount(std::uint64_t user_id,
+                                const std::string& password,
+                                const std::string& token,
+                                std::string& error_message) {
+  auto connection = pool_->GetConnection();
+  MYSQL* conn = connection.Get();
+  if (!conn) {
+    error_message = "无法获取数据库连接";
+    return false;
+  }
+
+  auto user = FindUserById(conn, user_id);
+  if (!user) {
+    error_message = "用户不存在";
+    return false;
+  }
+  if (user->is_disabled) {
+    error_message = "账号已被禁用";
+    return false;
+  }
+
+  const auto hashed = crypto_utils::HashPassword(password, user->salt);
+  if (hashed != user->password_hash) {
+    error_message = "密码错误，无法注销账号";
+    return false;
+  }
+
+  // 使当前 Token 加入黑名单（Redis）
+  if (redis_ && !token.empty()) {
+    const std::string hash    = crypto_utils::Sha256(token);
+    const std::string blk_key = std::string(kRedisKeyBlacklistPrefix) + hash;
+    const std::string tok_key = std::string(kRedisKeyTokenPrefix) + hash;
+    redis_->SetEx(blk_key, "1", 86400);
+    redis_->Del(tok_key);
+  }
+
+  // 删除该用户所有 token（MySQL）
+  const std::string del_tokens =
+      "DELETE FROM auth_tokens WHERE user_id=" + std::to_string(user_id);
+  mysql_query(conn, del_tokens.c_str());
+
+  // 删除密码重置记录
+  const std::string del_reset =
+      "DELETE FROM password_reset_codes WHERE user_id=" + std::to_string(user_id);
+  mysql_query(conn, del_reset.c_str());
+
+  // 删除用户记录
+  const std::string del_user =
+      "DELETE FROM users WHERE id=" + std::to_string(user_id) + " LIMIT 1";
+  if (mysql_query(conn, del_user.c_str()) != 0) {
+    error_message = "删除账号失败: " + std::string(mysql_error(conn));
+    Logger::Error("DeleteAccount failed for user_id=" + std::to_string(user_id) + ": " + error_message);
+    return false;
+  }
+
+  Logger::Info("Account deleted: user_id=" + std::to_string(user_id) + " username=" + user->username);
+  return true;
+}
+
 std::vector<User> AuthService::ListUsers(const std::string& query, std::string& error_message) const {
   std::vector<User> users;
   auto connection = pool_->GetConnection();

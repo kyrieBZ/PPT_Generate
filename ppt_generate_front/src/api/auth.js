@@ -118,5 +118,9 @@ export default {
       currentPassword,
       newPassword
     })
+  },
+
+  deleteAccount(password) {
+    return apiClient.delete('/auth/account', { data: { password } })
   }
 }

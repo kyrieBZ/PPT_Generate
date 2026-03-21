@@ -118,7 +118,7 @@ HttpResponse AiSearchController::AdminReindex(const HttpRequest& request) {
   g_reindex_total.store(0);
 
   auto ai_svc = ai_search_service_;
-  thread_pool_->Submit([ai_svc]() {
+  thread_pool_->EnqueueDetached([ai_svc]() {
     Logger::Info("AiSearch: admin reindex started");
     std::string err;
     const int count = ai_svc->ReindexAll(err);

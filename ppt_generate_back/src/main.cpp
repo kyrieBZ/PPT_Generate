@@ -289,6 +289,9 @@ int main(int argc, char* argv[]) {
     router.AddRoute("POST", "/api/auth/password/change", [&auth_controller](const HttpRequest& request) {
       return auth_controller.ChangePassword(request);
     });
+    router.AddRoute("DELETE", "/api/auth/account", [&auth_controller](const HttpRequest& request) {
+      return auth_controller.DeleteAccount(request);
+    });
 
     router.AddRoute("POST", "/api/ppt/generate", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Generate(request);

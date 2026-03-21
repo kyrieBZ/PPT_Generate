@@ -177,6 +177,16 @@ export default {
     return apiClient.post('/admin/officeplus/batch_upload', data)
   },
 
+  // ── AI 检索索引管理 ───────────────────────────────────────────────────────
+  /** 触发全量重建向量索引（异步后台任务，返回 202） */
+  reindexPpt() {
+    return apiClient.post('/admin/ppt/reindex', {})
+  },
+  /** 查询索引状态：{ running, indexed_count, vector_available } */
+  indexStatus() {
+    return apiClient.get('/admin/ppt/index_status', { params: nc() })
+  },
+
   // ── 模板管理 ──────────────────────────────────────────────────────────────
   /**
    * 获取全部模板列表（含上架状态）

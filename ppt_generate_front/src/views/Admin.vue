@@ -186,6 +186,36 @@
               class="rec-datepicker"
             />
 
+            <!-- AI 索引管理按钮组 -->
+            <div class="rec-ai-index-group">
+              <button
+                class="rec-ai-index-btn"
+                :class="{ 'rec-ai-index-btn--running': aiIndexRunning }"
+                :disabled="aiIndexRunning || !aiIndexAvailable"
+                @click="handleReindex"
+                :title="!aiIndexAvailable ? 'Qdrant 向量服务不可用' : aiIndexRunning ? '正在重建中…' : '重建所有已完成 PPT 的 AI 向量索引'"
+              >
+                <svg v-if="!aiIndexRunning" viewBox="0 0 20 20" fill="none" width="15" height="15">
+                  <path d="M10 2a8 8 0 1 0 5.6 13.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                  <path d="M14 10l2-4 2 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  <circle cx="10" cy="10" r="2.5" fill="currentColor" opacity="0.6"/>
+                </svg>
+                <svg v-else class="spin-icon" viewBox="0 0 20 20" fill="none" width="15" height="15">
+                  <path d="M10 2a8 8 0 1 0 8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+                {{ aiIndexRunning ? '索引构建中…' : '重建 AI 索引' }}
+              </button>
+
+              <!-- 索引状态气泡 -->
+              <div class="rec-ai-status-pill" :class="aiIndexAvailable ? 'rec-ai-status-pill--ok' : 'rec-ai-status-pill--off'">
+                <span class="rec-ai-status-dot"></span>
+                <span v-if="aiIndexAvailable">
+                  {{ aiIndexRunning ? '构建中' : `已索引 ${aiIndexedCount} 条` }}
+                </span>
+                <span v-else>向量服务离线</span>
+              </div>
+            </div>
+
             <button class="rec-export-btn" @click="exportPptHistoryCSV" title="导出 CSV">
               <svg viewBox="0 0 20 20" fill="none" width="16" height="16">
                 <path d="M10 3v10M6 9l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1069,14 +1099,14 @@
 
           <!-- 表头 -->
           <div class="mgmt-table-head mgmt-table-head--audit">
-            <div class="mgmt-col" style="width:44px">#</div>
-            <div class="mgmt-col">操作人</div>
-            <div class="mgmt-col">操作类型</div>
-            <div class="mgmt-col">对象类型</div>
-            <div class="mgmt-col">对象 ID</div>
-            <div class="mgmt-col" style="flex:2">详情</div>
-            <div class="mgmt-col">来源 IP</div>
-            <div class="mgmt-col">时间</div>
+            <div class="mgmt-col mgmt-col-audit--idx">#</div>
+            <div class="mgmt-col mgmt-col-audit--operator">操作人</div>
+            <div class="mgmt-col mgmt-col-audit--action">操作类型</div>
+            <div class="mgmt-col mgmt-col-audit--target">对象类型</div>
+            <div class="mgmt-col mgmt-col-audit--targetid">对象 ID</div>
+            <div class="mgmt-col mgmt-col-audit--detail">详情</div>
+            <div class="mgmt-col mgmt-col-audit--ip">来源 IP</div>
+            <div class="mgmt-col mgmt-col-audit--time">时间</div>
           </div>
 
           <!-- 日志行列表 -->
@@ -1090,33 +1120,36 @@
               :key="log.id || idx"
               class="mgmt-row mgmt-row--audit"
             >
-              <div class="mgmt-col audit-idx" style="width:44px">
+              <div class="mgmt-col mgmt-col-audit--idx audit-idx">
                 {{ (auditPage - 1) * auditPageSize + idx + 1 }}
               </div>
-              <div class="mgmt-col">
+              <div class="mgmt-col mgmt-col-audit--operator">
                 <div class="mgmt-avatar" style="width:24px;height:24px;font-size:10px;margin-right:7px">
                   {{ (log.operator || '?')[0].toUpperCase() }}
                 </div>
                 <span class="mgmt-username">{{ log.operator || '—' }}</span>
               </div>
-              <div class="mgmt-col">
+              <div class="mgmt-col mgmt-col-audit--action">
                 <span class="audit-action-badge" :class="`audit-action--${auditActionTagType(log.action)}`">
                   {{ auditActionLabel(log.action) }}
                 </span>
               </div>
-              <div class="mgmt-col">
+              <div class="mgmt-col mgmt-col-audit--target">
                 <span class="audit-target-chip">{{ log.targetType || '—' }}</span>
               </div>
-              <div class="mgmt-col">
+              <div class="mgmt-col mgmt-col-audit--targetid">
                 <span class="audit-id-text" :title="log.targetId">{{ log.targetId || '—' }}</span>
               </div>
-              <div class="mgmt-col" style="flex:2">
-                <span class="audit-detail-text" :title="log.detail">{{ log.detail || '—' }}</span>
+              <div class="mgmt-col mgmt-col-audit--detail">
+                <div
+                  class="audit-detail-text"
+                  :class="{ 'audit-detail-text--empty': !auditDetailHasBody(log.detail) }"
+                >{{ auditDetailDisplay(log.detail) }}</div>
               </div>
-              <div class="mgmt-col">
-                <span class="audit-ip">{{ log.ip || '—' }}</span>
+              <div class="mgmt-col mgmt-col-audit--ip">
+                <span class="audit-ip" :title="log.ip || ''">{{ log.ip || '—' }}</span>
               </div>
-              <div class="mgmt-col">
+              <div class="mgmt-col mgmt-col-audit--time">
                 <span class="rec-time">{{ log.createdAt || '—' }}</span>
               </div>
             </div>
@@ -1785,7 +1818,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useStore } from 'vuex'
 import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
@@ -2830,6 +2863,58 @@ const exportPptHistoryCSV = () => {
   window.open(adminAPI.exportPptHistory(params), '_blank')
 }
 
+// ── AI 索引管理 ────────────────────────────────────────────────────────────
+const aiIndexAvailable = ref(false)
+const aiIndexRunning   = ref(false)
+const aiIndexedCount   = ref(0)
+let aiIndexPollTimer   = null
+
+const fetchIndexStatus = async () => {
+  try {
+    const res = await adminAPI.indexStatus()
+    const data = res.data || {}
+    aiIndexAvailable.value = data.vector_available ?? false
+    aiIndexRunning.value   = data.running ?? false
+    aiIndexedCount.value   = data.indexed_count ?? 0
+  } catch {
+    aiIndexAvailable.value = false
+  }
+}
+
+const handleReindex = async () => {
+  if (aiIndexRunning.value) return
+  try {
+    await adminAPI.reindexPpt()
+    aiIndexRunning.value = true
+    ElMessage.success('AI 索引重建任务已启动，正在后台处理…')
+    // 轮询直到 running=false
+    aiIndexPollTimer = setInterval(async () => {
+      await fetchIndexStatus()
+      if (!aiIndexRunning.value) {
+        clearInterval(aiIndexPollTimer)
+        aiIndexPollTimer = null
+        ElMessage.success(`AI 索引重建完成，共索引 ${aiIndexedCount.value} 条记录`)
+      }
+    }, 3000)
+  } catch (e) {
+    const msg = e?.response?.data?.message || 'AI 索引重建启动失败'
+    ElMessage.error(msg)
+  }
+}
+
+// 进入生成记录页时拉取一次索引状态
+watch(
+  () => activeNav.value,
+  (nav) => {
+    if (nav === 'records') fetchIndexStatus()
+  },
+  { immediate: true }
+)
+
+onUnmounted(() => {
+  if (aiIndexPollTimer) clearInterval(aiIndexPollTimer)
+})
+
 const exportUsersCSV = () => {
   const params = {}
   if (userSearchQuery.value) params.q = userSearchQuery.value
@@ -2859,6 +2944,13 @@ const auditActionTagType = (action) => {
   if (action.startsWith('update'))  return 'info'
   return ''
 }
+
+const auditDetailHasBody = (detail) => {
+  if (detail == null) return false
+  return String(detail).trim().length > 0
+}
+
+const auditDetailDisplay = (detail) => (auditDetailHasBody(detail) ? String(detail) : '—')
 
 // KPI 摘要 computed
 const totalGenerations = computed(() => {
@@ -4582,8 +4674,31 @@ onMounted(() => {
 .mgmt-col--date  { flex: 0 0 145px; }
 .mgmt-col--action{ flex: 0 0 80px; justify-content: center; }
 
-.mgmt-table-head--mat .mgmt-col,
-.mgmt-table-head--audit .mgmt-col { flex: 1; }
+.mgmt-table-head--mat .mgmt-col { flex: 1; }
+
+/* 操作审计：按内容收窄列，详情列吃剩余宽度 */
+.mgmt-col-audit--idx {
+  flex: 0 0 40px;
+  max-width: 40px;
+  justify-content: center;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.mgmt-col-audit--operator { flex: 0 0 118px; min-width: 0; }
+.mgmt-col-audit--action { flex: 0 0 104px; min-width: 0; }
+.mgmt-col-audit--target { flex: 0 0 84px; min-width: 0; }
+.mgmt-col-audit--targetid { flex: 0 0 112px; min-width: 0; }
+.mgmt-col-audit--detail {
+  flex: 1 1 220px;
+  min-width: 0;
+  align-items: flex-start;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.mgmt-col-audit--ip { flex: 0 0 112px; min-width: 0; }
+.mgmt-col-audit--time { flex: 0 0 144px; min-width: 0; }
+.mgmt-row--audit .mgmt-col { padding: 8px 6px; }
+.mgmt-table-head--audit .mgmt-col { padding: 9px 6px; }
 
 /* Custom checkbox */
 .mgmt-checkbox {
@@ -4622,7 +4737,14 @@ onMounted(() => {
 .mgmt-row--disabled { opacity: 0.65; }
 .mgmt-row--self { background: #f8faff; }
 .mgmt-row--mat  { min-height: 52px; }
-.mgmt-row--audit{ min-height: 46px; }
+.mgmt-row--audit {
+  min-height: 46px;
+  align-items: flex-start;
+}
+.mgmt-row--audit .mgmt-col:not(.mgmt-col-audit--detail) {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
 
 /* ── Avatar */
 .mgmt-avatar {
@@ -5066,17 +5188,49 @@ onMounted(() => {
   max-width: 100%;
 }
 .audit-detail-text {
-  font-size: 12.5px;
+  font-size: 12px;
+  line-height: 1.55;
   color: #334155;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  width: 100%;
   max-width: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow-y: auto;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  box-sizing: border-box;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 #f1f5f9;
+}
+.audit-detail-text--empty {
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-family: inherit;
+}
+.audit-detail-text::-webkit-scrollbar {
+  width: 6px;
+}
+.audit-detail-text::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
 }
 .audit-ip {
   font-size: 11px;
   color: #94a3b8;
   font-family: 'Fira Code', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 /* ── 空状态 ── */
@@ -5434,6 +5588,82 @@ onMounted(() => {
 }
 .rec-export-btn:hover { background: #1e293b; transform: translateY(-1px); }
 .rec-export-btn:active { transform: translateY(0); }
+
+/* AI 索引管理按钮组 */
+.rec-ai-index-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.rec-ai-index-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 16px;
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.2s, transform 0.12s, box-shadow 0.2s;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.35);
+}
+.rec-ai-index-btn:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.45);
+}
+.rec-ai-index-btn:active:not(:disabled) { transform: translateY(0); }
+.rec-ai-index-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.rec-ai-index-btn--running {
+  background: linear-gradient(135deg, #64748b 0%, #475569 100%);
+  box-shadow: none;
+}
+
+.rec-ai-status-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.rec-ai-status-pill--ok {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+}
+.rec-ai-status-pill--off {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+.rec-ai-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.rec-ai-status-pill--ok .rec-ai-status-dot {
+  background: #10b981;
+  box-shadow: 0 0 5px rgba(16, 185, 129, 0.6);
+}
+.rec-ai-status-pill--off .rec-ai-status-dot {
+  background: #ef4444;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin-icon { animation: spin 1s linear infinite; }
 
 /* Table Head */
 .rec-table-head {
@@ -6213,17 +6443,6 @@ onMounted(() => {
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.5px;
-}
-
-.audit-detail {
-  display: block;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: #64748b;
-  cursor: default;
 }
 
 /* ── 模板管理面板 ────────────────────────────────────────────────────── */

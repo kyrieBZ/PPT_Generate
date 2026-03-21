@@ -955,7 +955,7 @@
               </div>
               <div class="history-grid">
                 <div
-                  v-for="(item, idx) in aiSearchResults"
+                  v-for="(item, idx) in aiSearchResults.filter(r => r.score > 0)"
                   :key="item.ppt_id"
                   class="hcard hcard--completed ai-result-card"
                   :style="{ animationDelay: (idx * 60) + 'ms' }"
@@ -1237,40 +1237,63 @@
 
         <!-- ===== 个人信息（内嵌） ===== -->
         <section v-if="activeMenu === 'profile'" class="profile-section">
-          <div class="profile-section-layout">
-            <div class="profile-hero-card">
-              <div class="profile-avatar-wrap">
+
+          <!-- 顶部用户卡片 -->
+          <div class="profile-hero-card">
+            <div class="profile-hero-left">
+              <div class="profile-avatar-ring">
                 <span class="profile-avatar">{{ profileInitials }}</span>
-                <span v-if="currentUser?.isAdmin || currentUser?.is_admin" class="profile-role-pill">管理员</span>
               </div>
-              <h2 class="profile-display-name">{{ currentUser?.username || '—' }}</h2>
-              <p class="profile-display-email">{{ currentUser?.email || '—' }}</p>
-              <dl class="profile-meta-list">
-                <div class="profile-meta-item">
-                  <dt>用户 ID</dt>
-                  <dd>{{ currentUser?.id ?? '—' }}</dd>
+              <div class="profile-hero-info">
+                <div class="profile-name-row">
+                  <h2 class="profile-display-name">{{ currentUser?.username || '—' }}</h2>
+                  <span v-if="currentUser?.isAdmin || currentUser?.is_admin" class="profile-role-pill profile-role-admin">
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1L6.18 3.64L9 4.09L7 6.04L7.47 9L5 7.64L2.53 9L3 6.04L1 4.09L3.82 3.64L5 1Z" fill="currentColor"/></svg>
+                    管理员
+                  </span>
+                  <span v-else class="profile-role-pill profile-role-user">普通用户</span>
                 </div>
-                <div class="profile-meta-item" v-if="currentUser?.createdAt || currentUser?.created_at">
-                  <dt>注册时间</dt>
-                  <dd>{{ profileFormatDate(currentUser?.createdAt || currentUser?.created_at) }}</dd>
-                </div>
-                <div class="profile-meta-item" v-if="currentUser?.lastLogin || currentUser?.last_login">
-                  <dt>最近登录</dt>
-                  <dd>{{ profileFormatDate(currentUser?.lastLogin || currentUser?.last_login) }}</dd>
-                </div>
-              </dl>
+                <p class="profile-display-email">{{ currentUser?.email || '—' }}</p>
+              </div>
             </div>
-            <div class="profile-password-card">
-              <h3 class="profile-password-title">
-                <el-icon><Lock /></el-icon>
-                修改密码
-              </h3>
+            <dl class="profile-stats-row">
+              <div class="profile-stat-item">
+                <dt>用户 ID</dt>
+                <dd>{{ currentUser?.id ?? '—' }}</dd>
+              </div>
+              <div class="profile-stat-divider"></div>
+              <div class="profile-stat-item" v-if="currentUser?.createdAt || currentUser?.created_at">
+                <dt>注册时间</dt>
+                <dd>{{ profileFormatDate(currentUser?.createdAt || currentUser?.created_at) }}</dd>
+              </div>
+              <div class="profile-stat-divider" v-if="currentUser?.lastLogin || currentUser?.last_login"></div>
+              <div class="profile-stat-item" v-if="currentUser?.lastLogin || currentUser?.last_login">
+                <dt>最近登录</dt>
+                <dd>{{ profileFormatDate(currentUser?.lastLogin || currentUser?.last_login) }}</dd>
+              </div>
+            </dl>
+          </div>
+
+          <!-- 下方双列卡片 -->
+          <div class="profile-cards-grid">
+
+            <!-- 修改密码 -->
+            <div class="profile-card profile-card-password">
+              <div class="profile-card-header">
+                <div class="profile-card-icon profile-card-icon-teal">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                </div>
+                <div>
+                  <h3 class="profile-card-title">修改密码</h3>
+                  <p class="profile-card-subtitle">定期更换密码有助于保护账号安全</p>
+                </div>
+              </div>
               <el-form
                 ref="profilePasswordFormRef"
                 :model="profilePasswordForm"
                 :rules="profilePasswordRules"
                 label-position="top"
-                class="profile-password-form"
+                class="profile-form"
                 @submit.prevent="submitProfilePassword"
               >
                 <el-form-item label="当前密码" prop="currentPassword">
@@ -1282,7 +1305,9 @@
                     show-password
                     autocomplete="current-password"
                   >
-                    <template #prefix><el-icon><Lock /></el-icon></template>
+                    <template #prefix>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    </template>
                   </el-input>
                 </el-form-item>
                 <el-form-item label="新密码" prop="newPassword">
@@ -1294,7 +1319,9 @@
                     show-password
                     autocomplete="new-password"
                   >
-                    <template #prefix><el-icon><Lock /></el-icon></template>
+                    <template #prefix>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    </template>
                   </el-input>
                 </el-form-item>
                 <el-form-item label="确认新密码" prop="confirmPassword">
@@ -1306,18 +1333,83 @@
                     show-password
                     autocomplete="new-password"
                   >
-                    <template #prefix><el-icon><Lock /></el-icon></template>
+                    <template #prefix>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    </template>
                   </el-input>
                 </el-form-item>
-                <button
-                  type="submit"
-                  class="profile-password-submit"
-                  :disabled="profilePasswordLoading"
-                >
+                <button type="submit" class="profile-btn profile-btn-teal" :disabled="profilePasswordLoading">
+                  <svg v-if="!profilePasswordLoading" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                  <span class="profile-btn-spinner" v-if="profilePasswordLoading"></span>
                   {{ profilePasswordLoading ? '提交中...' : '确认修改密码' }}
                 </button>
               </el-form>
             </div>
+
+            <!-- 危险区：注销账号 -->
+            <div class="profile-card profile-card-danger">
+              <div class="profile-card-header">
+                <div class="profile-card-icon profile-card-icon-red">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                </div>
+                <div>
+                  <h3 class="profile-card-title profile-card-title-red">危险操作</h3>
+                  <p class="profile-card-subtitle">注销账号为不可逆操作，请谨慎</p>
+                </div>
+              </div>
+
+              <div class="profile-danger-notice">
+                <p>注销账号后，以下数据将被<strong>永久删除</strong>且无法恢复：</p>
+                <ul>
+                  <li>账号信息与登录凭证</li>
+                  <li>所有历史 PPT 生成记录</li>
+                  <li>上传的材料与文件</li>
+                </ul>
+              </div>
+
+              <div v-if="!deleteAccountVisible" class="profile-danger-trigger">
+                <button
+                  class="profile-btn profile-btn-danger-outline"
+                  :disabled="currentUser?.isAdmin || currentUser?.is_admin"
+                  :title="(currentUser?.isAdmin || currentUser?.is_admin) ? '管理员账号无法自助注销' : ''"
+                  @click="deleteAccountVisible = true"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                  注销我的账号
+                </button>
+              </div>
+
+              <div v-else class="profile-danger-confirm">
+                <p class="profile-danger-confirm-label">请输入密码以确认注销</p>
+                <el-input
+                  v-model="deleteAccountPassword"
+                  type="password"
+                  placeholder="输入当前账号密码"
+                  size="large"
+                  show-password
+                  autocomplete="current-password"
+                  class="profile-danger-input"
+                >
+                  <template #prefix>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  </template>
+                </el-input>
+                <div class="profile-danger-actions">
+                  <button class="profile-btn profile-btn-ghost" @click="deleteAccountVisible = false; deleteAccountPassword = ''">
+                    取消
+                  </button>
+                  <button
+                    class="profile-btn profile-btn-danger"
+                    :disabled="deleteAccountLoading || !deleteAccountPassword"
+                    @click="submitDeleteAccount"
+                  >
+                    <span class="profile-btn-spinner" v-if="deleteAccountLoading"></span>
+                    {{ deleteAccountLoading ? '注销中...' : '确认永久注销' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
           </div>
         </section>
 
@@ -2168,6 +2260,29 @@ const submitProfilePassword = async () => {
       profilePasswordLoading.value = false
     }
   })
+}
+
+const deleteAccountVisible = ref(false)
+const deleteAccountPassword = ref('')
+const deleteAccountLoading = ref(false)
+const submitDeleteAccount = async () => {
+  if (!deleteAccountPassword.value) {
+    ElMessage.warning('请输入密码')
+    return
+  }
+  deleteAccountLoading.value = true
+  try {
+    await authAPI.deleteAccount(deleteAccountPassword.value)
+    ElMessage.success('账号已注销，感谢您的使用')
+    deleteAccountPassword.value = ''
+    deleteAccountVisible.value = false
+    await store.dispatch('logout')
+    router.push('/login')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || e?.message || '注销失败，请稍后重试')
+  } finally {
+    deleteAccountLoading.value = false
+  }
 }
 
 const generateForm = ref({
@@ -7372,175 +7487,391 @@ h4 {
 /* ===== 个人信息（内嵌） ===== */
 .profile-section {
   padding: 0;
+  max-width: 1000px;
+  margin: 0 auto;
   animation: profileReveal 0.4s ease-out;
 }
 
 @keyframes profileReveal {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .profile-section {
-    animation: none;
-  }
+  .profile-section { animation: none; }
 }
 
-.profile-section-layout {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 28px;
-  max-width: 960px;
-  margin: 0 auto;
+/* ── Hero Card ── */
+.profile-hero-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  padding: 28px 32px;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  box-shadow: 0 1px 3px rgba(15,23,42,0.06), 0 4px 16px rgba(15,23,42,0.04);
+  flex-wrap: wrap;
+}
+
+.profile-hero-left {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.profile-avatar-ring {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 4px rgba(99,102,241,0.12);
+}
+
+.profile-avatar {
+  color: #fff;
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.profile-hero-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.profile-name-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.profile-display-name {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.03em;
+}
+
+.profile-display-email {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #64748b;
+}
+
+.profile-role-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+}
+
+.profile-role-admin {
+  background: rgba(99,102,241,0.12);
+  color: #4f46e5;
+}
+
+.profile-role-user {
+  background: rgba(100,116,139,0.1);
+  color: #475569;
+}
+
+.profile-stats-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 0;
+}
+
+.profile-stat-item {
+  text-align: center;
+  padding: 0 24px;
+}
+
+.profile-stat-item dt {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+.profile-stat-item dd {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.profile-stat-divider {
+  width: 1px;
+  height: 36px;
+  background: #e2e8f0;
+  flex-shrink: 0;
 }
 
 @media (max-width: 768px) {
-  .profile-section-layout {
+  .profile-hero-card {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 24px;
+  }
+  .profile-stats-row {
+    width: 100%;
+    padding-top: 16px;
+    border-top: 1px solid #f1f5f9;
+    justify-content: space-around;
+  }
+  .profile-stat-item {
+    padding: 0 12px;
+  }
+}
+
+/* ── Cards Grid ── */
+.profile-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 768px) {
+  .profile-cards-grid {
     grid-template-columns: 1fr;
   }
 }
 
-.profile-hero-card {
-  background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 16px;
-  padding: 32px;
-  box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
-  border-left: 4px solid #0ea5e9;
+.profile-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  padding: 28px;
+  box-shadow: 0 1px 3px rgba(15,23,42,0.05);
 }
 
-.profile-avatar-wrap {
+.profile-card-danger {
+  border-color: #fee2e2;
+  background: #fffbfb;
+}
+
+.profile-card-header {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 24px;
 }
 
-.profile-avatar {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #0ea5e9 0%, #38bdf8 100%);
-  color: #fff;
-  font-size: 1.5rem;
-  font-weight: 600;
+.profile-card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
-  letter-spacing: -0.02em;
   flex-shrink: 0;
 }
 
-.profile-role-pill {
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(14, 165, 233, 0.15);
-  color: #0369a1;
-}
-
-.profile-display-name {
-  margin: 0 0 4px;
-  font-size: 1.5rem;
-  font-weight: 600;
-  color: #0f172a;
-  letter-spacing: -0.02em;
-}
-
-.profile-display-email {
-  margin: 0 0 20px;
-  font-size: 0.95rem;
-  color: #64748b;
-}
-
-.profile-meta-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin: 0;
-}
-
-.profile-meta-item dt {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #94a3b8;
-  margin-bottom: 2px;
-}
-
-.profile-meta-item dd {
-  margin: 0;
-  font-size: 0.9rem;
-  color: #334155;
-}
-
-.profile-password-card {
-  background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 16px;
-  padding: 32px;
-  box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
-  border-left: 4px solid #0d9488;
-}
-
-.profile-password-title {
-  margin: 0 0 20px;
-  font-size: 1.15rem;
-  font-weight: 600;
-  color: #0f172a;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.profile-password-title .el-icon {
-  font-size: 1.2rem;
+.profile-card-icon-teal {
+  background: rgba(13,148,136,0.1);
   color: #0d9488;
 }
 
-.profile-password-form :deep(.el-form-item) {
-  margin-bottom: 18px;
+.profile-card-icon-red {
+  background: rgba(239,68,68,0.1);
+  color: #ef4444;
 }
 
-.profile-password-form :deep(.el-form-item__label) {
+.profile-card-title {
+  margin: 0 0 2px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.profile-card-title-red {
+  color: #b91c1c;
+}
+
+.profile-card-subtitle {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+/* ── Form shared ── */
+.profile-form :deep(.el-form-item) {
+  margin-bottom: 16px;
+}
+
+.profile-form :deep(.el-form-item__label) {
+  font-size: 0.85rem;
+  font-weight: 600;
   color: #475569;
-  font-weight: 500;
+  padding-bottom: 6px;
 }
 
-.profile-password-submit {
+.profile-form :deep(.el-input__wrapper) {
+  border-radius: 10px;
+}
+
+/* ── Buttons ── */
+.profile-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 11px 20px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.18s ease;
   width: 100%;
   margin-top: 8px;
-  padding: 12px 20px;
-  font-size: 1rem;
-  font-weight: 600;
-  color: #fff;
-  background: linear-gradient(135deg, #0d9488 0%, #14b8a6 100%);
-  border: none;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
-.profile-password-submit:hover:not(:disabled) {
-  background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%);
-  box-shadow: 0 4px 12px rgba(13, 148, 136, 0.35);
-}
-
-.profile-password-submit:disabled {
-  opacity: 0.7;
+.profile-btn:disabled {
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
-.profile-password-submit:focus-visible {
+.profile-btn-teal {
+  background: linear-gradient(135deg, #0d9488 0%, #14b8a6 100%);
+  color: #fff;
+}
+
+.profile-btn-teal:hover:not(:disabled) {
+  background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%);
+  box-shadow: 0 4px 14px rgba(13,148,136,0.3);
+  transform: translateY(-1px);
+}
+
+.profile-btn-teal:focus-visible {
   outline: 2px solid #0d9488;
   outline-offset: 2px;
+}
+
+.profile-btn-danger-outline {
+  background: transparent;
+  color: #dc2626;
+  border: 1.5px solid #fca5a5;
+}
+
+.profile-btn-danger-outline:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #ef4444;
+}
+
+.profile-btn-danger {
+  background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+  color: #fff;
+}
+
+.profile-btn-danger:hover:not(:disabled) {
+  background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%);
+  box-shadow: 0 4px 14px rgba(220,38,38,0.3);
+  transform: translateY(-1px);
+}
+
+.profile-btn-ghost {
+  background: transparent;
+  color: #64748b;
+  border: 1.5px solid #e2e8f0;
+}
+
+.profile-btn-ghost:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.profile-btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: profileSpin 0.7s linear infinite;
+}
+
+@keyframes profileSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Danger Notice ── */
+.profile-danger-notice {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+}
+
+.profile-danger-notice p {
+  margin: 0 0 8px;
+  font-size: 0.84rem;
+  color: #7f1d1d;
+}
+
+.profile-danger-notice ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.profile-danger-notice li {
+  font-size: 0.82rem;
+  color: #991b1b;
+  margin-bottom: 2px;
+}
+
+.profile-danger-trigger {
+  margin-top: 4px;
+}
+
+.profile-danger-confirm-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #b91c1c;
+  margin-bottom: 10px;
+}
+
+.profile-danger-input {
+  margin-bottom: 14px;
+}
+
+.profile-danger-input :deep(.el-input__wrapper) {
+  border-color: #fca5a5;
+  border-radius: 10px;
+}
+
+.profile-danger-input :deep(.el-input__wrapper):focus-within {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239,68,68,0.12);
+}
+
+.profile-danger-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.profile-danger-actions .profile-btn {
+  width: auto;
+  flex: 1;
+  margin-top: 0;
 }
 
 /* ===== 材料管理页 ===== */

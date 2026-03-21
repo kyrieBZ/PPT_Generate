@@ -174,6 +174,35 @@ HttpResponse AuthController::ConfirmPasswordReset(const HttpRequest& request) {
   }
 }
 
+HttpResponse AuthController::DeleteAccount(const HttpRequest& request) {
+  const auto token = ExtractToken(request);
+  if (token.empty()) {
+    return HttpResponse::Json(401, ErrorJson("ERR_AUTH_TOKEN_MISSING", "Token not provided"));
+  }
+  std::string error;
+  auto user = service_->GetUserFromToken(token, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_AUTH_TOKEN_INVALID", error.empty() ? "Invalid token" : error));
+  }
+  if (user->is_admin) {
+    return HttpResponse::Json(403, ErrorJson("ERR_FORBIDDEN", "管理员账号无法自助注销"));
+  }
+  try {
+    auto body = nlohmann::json::parse(request.body);
+    const std::string password = body.value("password", "");
+    if (password.empty()) {
+      return HttpResponse::Json(400, ErrorJson("ERR_PASSWORD_MISSING", "请输入密码以确认注销"));
+    }
+    if (!service_->DeleteAccount(user->id, password, token, error)) {
+      return HttpResponse::Json(400, ErrorJson("ERR_DELETE_ACCOUNT_FAILED", error.empty() ? "注销失败" : error));
+    }
+    return HttpResponse::Json(200, {{"message", "账号已成功注销"}});
+  } catch (const std::exception& ex) {
+    Logger::Error(std::string("DeleteAccount parse error: ") + ex.what());
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
+  }
+}
+
 std::string AuthController::ExtractToken(const HttpRequest& request) const {
   auto header = request.Header("authorization");
   if (header.rfind("Bearer ", 0) == 0 || header.rfind("bearer ", 0) == 0) {
