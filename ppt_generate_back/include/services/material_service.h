@@ -8,6 +8,7 @@
 #include "database/mysql_connection_pool.h"
 #include "models/material.h"
 #include "services/fastdfs_client.h"
+#include "services/knowledge_rag_service.h"
 
 class MaterialService {
  public:
@@ -15,7 +16,21 @@ class MaterialService {
                   MaterialConfig material_config,
                   std::string qwen_api_key,
                   std::string python_binary,
-                  std::shared_ptr<FastDfsClient> fastdfs_client = nullptr);
+                  std::shared_ptr<FastDfsClient> fastdfs_client = nullptr,
+                  std::shared_ptr<KnowledgeRagService> knowledge_rag_service = nullptr);
+
+  /** 设置 RAG 服务（可在构造后注入，用于解决循环依赖） */
+  void SetKnowledgeRagService(std::shared_ptr<KnowledgeRagService> service) {
+    knowledge_rag_service_ = std::move(service);
+  }
+
+  /**
+   * 将指定素材的提取文本写入 RAG 知识库（向量化 + 存入 Qdrant）。
+   * 若 RAG 服务不可用则静默跳过。
+   * @param material_id  素材 ID
+   * @return             成功索引的块数；-1 表示服务不可用或失败
+   */
+  int IndexMaterialToRag(const std::string& material_id);
 
   /** 创建材料记录（status=pending），返回 material_id */
   bool CreateMaterial(std::uint64_t user_id,
@@ -58,8 +73,9 @@ class MaterialService {
 
   struct AdminMaterialFilter {
     std::uint64_t user_id = 0;   // 0 表示不过滤
-    std::string status;          // "" 表示全部
+    std::string status;          // "" 表示全部；提取状态：pending/extracting/completed/failed
     std::string file_type;       // "" 表示全部
+    std::string review_status;   // "" 表示全部；审核状态：unreviewed/pass/violation/unknown
     int page = 1;
     int page_size = 20;
   };
@@ -159,4 +175,5 @@ class MaterialService {
   std::string qwen_api_key_;
   std::string python_binary_;
   std::shared_ptr<FastDfsClient> fastdfs_client_;
+  std::shared_ptr<KnowledgeRagService> knowledge_rag_service_;
 };

@@ -23,6 +23,7 @@ class HttpServer {
   void HandleClient(int client_fd);
   bool ParseRequest(int client_fd, HttpRequest& request);
   void SendResponse(int client_fd, const HttpResponse& response);
+  void SendSseResponse(int client_fd, const SseResponse& sse);
 
   ServerConfig config_;
   Router& router_;

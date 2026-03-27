@@ -8,15 +8,72 @@ namespace {
 
 // 从 URL path 中提取 session_id
 // 约定路径格式：/api/assistant/sessions/{session_id}/...
-// 返回 session_id 段，如果路径格式不符则返回空字符串
 std::string ExtractSessionId(const std::string& path) {
-  // /api/assistant/sessions/
   constexpr std::string_view kPrefix = "/api/assistant/sessions/";
   if (path.size() <= kPrefix.size()) return {};
   const std::string after = path.substr(kPrefix.size());
-  // session_id 是第一个 '/' 之前的部分
   const auto slash = after.find('/');
   return slash == std::string::npos ? after : after.substr(0, slash);
+}
+
+// 序列化 AssistantResponse 为 JSON（含 Tool Call 扩展字段）
+nlohmann::json SerializeResponse(const AssistantResponse& resp) {
+  nlohmann::json result;
+  result["reply"] = resp.reply;
+  result["requires_confirm"] = resp.requires_confirm;
+
+  // 待前端执行的客户端工具列表
+  nlohmann::json client_tools = nlohmann::json::array();
+  for (const auto& ct : resp.pending_client_tools) {
+    nlohmann::json item = {
+        {"tool", ct.tool_name},
+        {"params", ct.params},
+        {"confirm_required", ct.confirm_required},
+        {"require_confirm_code", ct.require_confirm_code}
+    };
+    if (!ct.confirm_text.empty()) {
+      item["confirm_text"] = ct.confirm_text;
+    }
+    client_tools.push_back(std::move(item));
+  }
+  result["pending_client_tools"] = client_tools;
+
+  // 服务端工具执行摘要（供前端展示结果卡片）
+  nlohmann::json summaries = nlohmann::json::array();
+  for (const auto& card : resp.tool_results_summary) {
+    nlohmann::json item = {{"card_type", card.card_type}, {"data", card.data}};
+    // 合并顶层元数据（total/page/is_admin_view 等）
+    if (card.meta.is_object()) {
+      for (auto it = card.meta.begin(); it != card.meta.end(); ++it) {
+        item[it.key()] = it.value();
+      }
+    }
+    summaries.push_back(std::move(item));
+  }
+  result["tool_results_summary"] = summaries;
+
+  // 旧版兼容 action 字段（无状态模式 / 降级时使用）
+  if (resp.has_action) {
+    const auto& act = resp.action;
+    nlohmann::json action_json;
+    action_json["intent"]       = act.intent;
+    action_json["confirm_text"] = act.confirm_text;
+
+    nlohmann::json params;
+    if (!act.ppt_id.empty())    params["ppt_id"]     = act.ppt_id;
+    if (!act.ppt_title.empty()) params["ppt_title"]  = act.ppt_title;
+    if (!act.topic.empty())     params["topic"]      = act.topic;
+    if (act.page_count > 0)     params["page_count"] = act.page_count;
+    if (!act.style.empty())     params["style"]      = act.style;
+    if (!act.page.empty())      params["page"]       = act.page;
+
+    action_json["params"] = params;
+    result["action"] = action_json;
+  } else {
+    result["action"] = nullptr;
+  }
+
+  return result;
 }
 
 }  // namespace
@@ -36,7 +93,7 @@ std::string AssistantController::ExtractToken(const HttpRequest& request) {
   return {};
 }
 
-// ── 原有：无状态对话（向后兼容） ─────────────────────────────────────────────
+// ── 原有：无状态对话（向后兼容）─────────────────────────────────────────────
 HttpResponse AssistantController::Chat(const HttpRequest& request) {
   HttpResponse response;
   response.ApplyCors();
@@ -98,30 +155,7 @@ HttpResponse AssistantController::Chat(const HttpRequest& request) {
     return HttpResponse::Json(500, ErrorJson("INTERNAL_ERROR", kInternalErrorMessage));
   }
 
-  nlohmann::json result;
-  result["reply"] = assistant_response.reply;
-
-  if (assistant_response.has_action) {
-    const auto& act = assistant_response.action;
-    nlohmann::json action_json;
-    action_json["intent"]       = act.intent;
-    action_json["confirm_text"] = act.confirm_text;
-
-    nlohmann::json params;
-    if (!act.ppt_id.empty())    params["ppt_id"]     = act.ppt_id;
-    if (!act.ppt_title.empty()) params["ppt_title"]  = act.ppt_title;
-    if (!act.topic.empty())     params["topic"]      = act.topic;
-    if (act.page_count > 0)     params["page_count"] = act.page_count;
-    if (!act.style.empty())     params["style"]      = act.style;
-    if (!act.page.empty())      params["page"]       = act.page;
-
-    action_json["params"] = params;
-    result["action"] = action_json;
-  } else {
-    result["action"] = nullptr;
-  }
-
-  return HttpResponse::Json(200, result);
+  return HttpResponse::Json(200, SerializeResponse(assistant_response));
 }
 
 // ── POST /api/assistant/sessions ─────────────────────────────────────────────
@@ -170,7 +204,6 @@ HttpResponse AssistantController::ListSessions(const HttpRequest& request) {
     return HttpResponse::Json(401, ErrorJson("UNAUTHORIZED", "登录已过期，请重新登录"));
   }
 
-  // ?limit=20
   int limit = 20;
   if (auto it = request.query_params.find("limit"); it != request.query_params.end()) {
     try {
@@ -232,8 +265,13 @@ HttpResponse AssistantController::GetMessages(const HttpRequest& request) {
 
   nlohmann::json list = nlohmann::json::array();
   for (const auto& m : messages) {
+    // 过滤 tool 角色消息（前端不展示）
+    if (m.role == "tool") continue;
     nlohmann::json item = {{"role", m.role}, {"content", m.content}};
     if (!m.timestamp.empty()) item["timestamp"] = m.timestamp;
+    if (m.tool_cards.is_array() && !m.tool_cards.empty()) {
+      item["tool_cards"] = m.tool_cards;
+    }
     list.push_back(std::move(item));
   }
   return HttpResponse::Json(200, {{"session_id", session_id}, {"messages", list}});
@@ -279,14 +317,16 @@ HttpResponse AssistantController::ChatInSession(const HttpRequest& request) {
     try { context_json = body["context"].dump(); } catch (...) { context_json = "{}"; }
   }
 
+  const bool is_admin = user_opt->is_admin;
+
   AssistantResponse assistant_response;
   std::string svc_error;
   const bool ok = assistant_service_->ChatInSession(
-      session_id, user_opt->id, message, context_json, assistant_response, svc_error);
+      session_id, user_opt->id, is_admin, message, context_json,
+      assistant_response, svc_error);
 
   if (!ok) {
     Logger::Error("ChatInSession failed: " + svc_error);
-    // 会话归属校验失败时返回 403，其他错误返回 500
     if (svc_error.find("不存在") != std::string::npos ||
         svc_error.find("无权") != std::string::npos) {
       return HttpResponse::Json(403, ErrorJson("FORBIDDEN", svc_error));
@@ -294,29 +334,8 @@ HttpResponse AssistantController::ChatInSession(const HttpRequest& request) {
     return HttpResponse::Json(500, ErrorJson("INTERNAL_ERROR", kInternalErrorMessage));
   }
 
-  nlohmann::json result;
-  result["reply"] = assistant_response.reply;
-
-  if (assistant_response.has_action) {
-    const auto& act = assistant_response.action;
-    nlohmann::json action_json;
-    action_json["intent"]       = act.intent;
-    action_json["confirm_text"] = act.confirm_text;
-
-    nlohmann::json params;
-    if (!act.ppt_id.empty())    params["ppt_id"]     = act.ppt_id;
-    if (!act.ppt_title.empty()) params["ppt_title"]  = act.ppt_title;
-    if (!act.topic.empty())     params["topic"]      = act.topic;
-    if (act.page_count > 0)     params["page_count"] = act.page_count;
-    if (!act.style.empty())     params["style"]      = act.style;
-    if (!act.page.empty())      params["page"]       = act.page;
-
-    action_json["params"] = params;
-    result["action"] = action_json;
-  } else {
-    result["action"] = nullptr;
-  }
-
+  nlohmann::json result = SerializeResponse(assistant_response);
+  result["session_id"] = session_id;
   return HttpResponse::Json(200, result);
 }
 

@@ -82,11 +82,18 @@ router.beforeEach(async (to, from, next) => {
     try {
       await store.dispatch('fetchCurrentUser')
     } catch (error) {
-      if (error?.response?.status === 401) {
+      const status = error?.response?.status
+      if (status === 401) {
         store.commit('logout')
         if (to.meta.requiresAuth) {
           router.replace('/login')
         }
+        return
+      }
+      if (status === 503) {
+        // 维护模式：清除 token，重定向到登录页（登录页会在提交时再次检测到维护并展示提示）
+        store.commit('logout')
+        next('/login')
         return
       }
       console.error('获取用户信息失败:', error)

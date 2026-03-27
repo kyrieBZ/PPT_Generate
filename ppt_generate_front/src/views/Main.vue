@@ -174,6 +174,22 @@
                       :class="{ active: generateSource === 'material' }"
                       @click="generateSource = 'material'"
                     >从文档提取</button>
+                    <button
+                      class="source-tab source-tab--image"
+                      :class="{ active: generateSource === 'image' }"
+                      @click="generateSource = 'image'; generateForm.materialId = ''"
+                    >
+                      <el-icon style="font-size:13px;margin-right:4px"><Picture /></el-icon>
+                          从图片生成
+                        </button>
+                        <button
+                          class="source-tab source-tab--style"
+                          :class="{ active: generateSource === 'style_ref' }"
+                          @click="generateSource = 'style_ref'; generateForm.materialId = ''"
+                        >
+                          <el-icon style="font-size:13px;margin-right:4px"><MagicStick /></el-icon>
+                          风格迁移
+                        </button>
                   </div>
 
                   <!-- 文档上传区 -->
@@ -254,6 +270,160 @@
                     <el-tag type="success" size="small">已关联文档材料</el-tag>
                     <button class="link-btn" @click="generateForm.materialId = ''">取消关联</button>
                   </div>
+
+                  <!-- 图片上传区（F04：多模态输入）-->
+                  <div v-if="generateSource === 'image'" class="image-upload-area">
+                    <div
+                      class="image-drop-zone"
+                      :class="{ 'is-dragging': imageDropDragging }"
+                      @click="$refs.imageFileInput.click()"
+                      @dragover.prevent="imageDropDragging = true"
+                      @dragleave.prevent="imageDropDragging = false"
+                      @drop.prevent="handleImageDrop($event)"
+                    >
+                      <el-icon style="font-size:2.2rem;color:#7C3AED"><Picture /></el-icon>
+                      <p style="margin:8px 0 4px;font-weight:500">点击或拖拽上传图片</p>
+                      <p style="font-size:12px;color:#94A3B8">支持 JPG、PNG、WEBP，最多 5 张，每张不超过 10MB</p>
+                    </div>
+                    <input
+                      ref="imageFileInput"
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      multiple
+                      style="display:none"
+                      @change="handleImageFileChange"
+                    />
+
+                    <!-- 预览缩略图 -->
+                    <div v-if="imageFiles.length" class="image-previews">
+                      <div
+                        v-for="(img, idx) in imageFiles"
+                        :key="idx"
+                        class="image-thumb-card"
+                      >
+                        <img :src="img.dataUrl" :alt="img.name" class="image-thumb" />
+                        <span class="image-thumb-name">{{ img.name }}</span>
+                        <button class="image-thumb-remove" @click.stop="removeImageFile(idx)" title="移除">×</button>
+                      </div>
+                    </div>
+
+                    <!-- 用户补充说明 -->
+                    <div v-if="imageFiles.length" class="form-group" style="margin-top:12px">
+                      <label>补充说明（可选）</label>
+                      <input
+                        v-model="imageHint"
+                        type="text"
+                        placeholder="例如：这是我们产品的功能截图，重点介绍性能优势"
+                      />
+                    </div>
+
+                    <!-- 图片分析状态 -->
+                    <div v-if="imageAnalyzing" class="image-analyze-status">
+                      <span class="spinner-dot"></span>
+                      <span>AI 正在分析图片内容，提取关键信息…</span>
+                    </div>
+                    <div v-if="imageAnalyzed && imageAnalysisResult" class="image-analysis-result">
+                      <el-tag type="success" size="small" style="margin-bottom:8px">图片分析完成</el-tag>
+                      <p class="image-analysis-topic"><strong>推断主题：</strong>{{ imageAnalysisResult.topic }}</p>
+                      <div class="extract-actions" style="margin-top:8px">
+                        <button class="action-primary" :disabled="!imageFiles.length" @click="submitImageGenerate">
+                          {{ imageGenerating ? '生成中…' : '开始生成 PPT' }}
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- 未分析时的生成按钮 -->
+                    <div v-if="imageFiles.length && !imageAnalyzing && !imageAnalyzed" class="extract-actions" style="margin-top:12px">
+                      <button class="action-primary" @click="submitImageGenerate" :disabled="imageGenerating">
+                        {{ imageGenerating ? '处理中…' : '分析图片并生成 PPT' }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- 风格迁移区（F10）-->
+                  <div v-if="generateSource === 'style_ref'" class="style-ref-area">
+                    <!-- 上传参考 PPTX -->
+                    <div
+                      class="style-drop-zone"
+                      :class="{ 'is-dragging': styleRefDragging, 'has-file': styleRefFile }"
+                      @click="$refs.styleRefInput.click()"
+                      @dragover.prevent="styleRefDragging = true"
+                      @dragleave.prevent="styleRefDragging = false"
+                      @drop.prevent="handleStyleRefDrop($event)"
+                    >
+                      <el-icon style="font-size:2.4rem;color:#0891B2" v-if="!styleRefFile"><MagicStick /></el-icon>
+                      <el-icon style="font-size:2.4rem;color:#0891B2" v-else><DocumentChecked /></el-icon>
+                      <p style="margin:8px 0 4px;font-weight:500">
+                        {{ styleRefFile ? styleRefFile.name : '点击或拖拽上传参考 PPT' }}
+                      </p>
+                      <p style="font-size:12px;color:#94A3B8">仅支持 .pptx 格式，最大 50MB</p>
+                    </div>
+                    <input
+                      ref="styleRefInput"
+                      type="file"
+                      accept=".pptx"
+                      style="display:none"
+                      @change="handleStyleRefFileChange"
+                    />
+
+                    <!-- 分析中状态 -->
+                    <div v-if="styleAnalyzing" class="style-analyze-status">
+                      <span class="spinner-dot"></span>
+                      <span>AI 正在提取参考 PPT 的配色、字体和布局风格…</span>
+                    </div>
+
+                    <!-- 分析结果：调色板预览 -->
+                    <div v-if="styleSpec && !styleAnalyzing" class="style-spec-result">
+                      <div class="style-spec-header">
+                        <el-tag type="success" size="small">风格提取成功</el-tag>
+                        <button class="link-btn" @click="clearStyleRef" style="margin-left:8px">重新上传</button>
+                      </div>
+
+                      <!-- 调色板预览 -->
+                      <div class="style-palette-preview">
+                        <span
+                          v-for="(color, idx) in styleSpec.preview_palette"
+                          :key="idx"
+                          class="palette-swatch"
+                          :style="{ background: color }"
+                          :title="color"
+                        ></span>
+                      </div>
+
+                      <!-- 字体信息 -->
+                      <div class="style-spec-meta">
+                        <span>
+                          <strong>标题字体：</strong>{{ styleSpec.typography?.title_font || '—' }}
+                          （{{ styleSpec.typography?.title_size || '—' }}pt）
+                        </span>
+                        <span style="margin-left:16px">
+                          <strong>正文字体：</strong>{{ styleSpec.typography?.body_font || '—' }}
+                          （{{ styleSpec.typography?.body_size || '—' }}pt）
+                        </span>
+                        <span style="margin-left:16px;color:#64748b">
+                          分析了 {{ styleSpec.sample_slides }} 张幻灯片
+                        </span>
+                      </div>
+
+                      <!-- 说明 -->
+                      <p class="style-spec-hint">
+                        生成时将使用 <strong>AI 原生</strong> 模式，并严格遵循以上视觉规格（配色、字体、布局）。
+                      </p>
+
+                      <div class="extract-actions" style="margin-top:12px">
+                        <button class="action-primary" @click="submitWithStyleRef">
+                          开始生成（应用参考风格）
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- 已选文件但未分析 -->
+                    <div v-if="styleRefFile && !styleSpec && !styleAnalyzing" class="extract-actions" style="margin-top:12px">
+                      <button class="action-primary" @click="doAnalyzeStyle">
+                        分析参考风格
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -283,7 +453,27 @@
                       v-model="generateForm.topic"
                       placeholder="请详细描述PPT的主题和内容要求..."
                       rows="4"
+                      @input="onTopicChangeForRecommend($event.target.value)"
                     ></textarea>
+                  </div>
+
+                  <!-- AI 推荐提示条 -->
+                  <div class="ai-trigger-tip" v-if="generateForm.generateMode === 'template' || !generateForm.generateMode">
+                    <el-icon style="color:#7C3AED;font-size:13px"><MagicStick /></el-icon>
+                    <span v-if="!generateForm.topic || generateForm.topic.trim().length < 5">
+                      输入主题描述后，AI 将自动为您推荐最匹配的模板
+                    </span>
+                    <span v-else-if="aiRecommendLoading">AI 正在分析主题，模板推荐即将出现…</span>
+                    <span v-else-if="aiRecommendDone && aiRecommendations.length">
+                      已找到 {{ aiRecommendations.length }} 个推荐模板 ↓ 在"选择模板"中查看
+                    </span>
+                    <span v-else-if="aiRecommendDone">未找到高度匹配模板，请手动选择</span>
+                    <span v-else>主题描述已达到推荐阈值</span>
+                    <button
+                      v-if="generateForm.topic && generateForm.topic.trim().length >= 2 && !aiRecommendLoading"
+                      class="ai-trigger-btn"
+                      @click="fetchAiRecommendations(generateForm.topic)"
+                    >立即推荐</button>
                   </div>
 
                   <div class="form-group">
@@ -333,6 +523,70 @@
                     <p class="form-hint">AI 将根据主题自动选择配色方案、字体和布局，生成时间约 60-90 秒</p>
                   </div>
 
+                  <!-- F07：AI 推荐模板区域 -->
+                  <div
+                    v-if="generateForm.generateMode === 'template' && (aiRecommendLoading || aiRecommendDone)"
+                    class="ai-recommend-block"
+                  >
+                    <div class="ai-recommend-header">
+                      <el-icon style="color:#7C3AED"><MagicStick /></el-icon>
+                      <span class="ai-recommend-title">AI 推荐模板</span>
+                      <el-tag v-if="!aiRecommendAvailable" size="small" type="info" style="margin-left:8px">降级推荐</el-tag>
+                      <el-tag v-if="aiRecommendDone && aiRecommendations.length && aiRecommendAvailable" size="small" type="success" style="margin-left:8px">{{ aiRecommendations.length }} 个匹配</el-tag>
+                      <span v-if="aiRecommendLoading" class="ai-recommend-hint">AI 分析中，请稍候…</span>
+                      <span class="ai-recommend-desc" v-else>点击卡片即可选中该模板</span>
+                      <button
+                        v-if="!aiRecommendLoading && generateForm.topic && generateForm.topic.length >= 2"
+                        class="ai-recommend-refresh"
+                        title="重新根据当前主题推荐"
+                        @click="fetchAiRecommendations(generateForm.topic)"
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                        重新推荐
+                      </button>
+                    </div>
+
+                    <div v-if="aiRecommendLoading" class="ai-recommend-loading">
+                      <div class="ai-recommend-skeleton" v-for="i in 5" :key="i"></div>
+                    </div>
+
+                    <div v-else-if="aiRecommendations.length" class="ai-recommend-cards">
+                      <div
+                        v-for="rec in aiRecommendations"
+                        :key="rec.templateId"
+                        class="ai-recommend-card"
+                        :class="{ 'ai-recommend-card--selected': generateForm.templateId === rec.templateId }"
+                        @click="applyRecommendedTemplate(rec.templateId)"
+                      >
+                        <div
+                          class="ai-recommend-thumb"
+                          :style="{ background: rec.primaryColor || '#1e293b' }"
+                        >
+                          <img
+                            v-if="(imgBlobSrcs[rec.templateId] || rec.previewImage) && !aiRecImgFailed[rec.templateId]"
+                            :src="imgBlobSrcs[rec.templateId] || resolvePreviewUrl(rec.previewImage)"
+                            :alt="rec.name"
+                            @error="(e) => { aiRecImgFailed = { ...aiRecImgFailed, [rec.templateId]: true }; fetch('http://localhost:7242/ingest/e3507e7c-9c9f-4573-a855-7f640db78f02',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'post-fix-v3',location:'Main.vue:img@error',message:'img load error',hypothesisId:'D',data:{id:rec.templateId,src:e.target?.src},timestamp:Date.now()})}).catch(()=>{}) }"
+                          />
+                          <el-icon v-else :size="22" style="color:rgba(255,255,255,0.6)"><Document /></el-icon>
+                        </div>
+                        <div class="ai-recommend-info">
+                          <div class="ai-recommend-name">{{ rec.name }}</div>
+                          <div class="ai-recommend-reason">{{ rec.matchReason }}</div>
+                          <div class="ai-recommend-score" v-if="rec.score > 0">
+                            匹配度 {{ Math.round(rec.score * 100) }}%
+                          </div>
+                        </div>
+                        <div
+                          v-if="generateForm.templateId === rec.templateId"
+                          class="ai-recommend-check"
+                        >✓</div>
+                      </div>
+                    </div>
+
+                    <p v-else class="ai-recommend-empty">未找到匹配模板，请手动选择</p>
+                  </div>
+
                   <div v-if="generateForm.generateMode === 'template'" class="form-group">
                     <label>选择模板</label>
                     <div class="template-options template-options-grid" v-if="!templatesLoading && templates.length">
@@ -351,10 +605,9 @@
                         />
                         <div class="template-thumb template-thumb-compact">
                           <img
-                            v-if="(tpl.previewImage || tpl.preview_image) && !templatePreviewFailed(tpl.id)"
-                            :src="tpl.previewImage || tpl.preview_image"
+                            v-if="(imgBlobSrcs[tpl.id] || tpl.previewImage || tpl.preview_image) && !templatePreviewFailed(tpl.id)"
+                            :src="imgBlobSrcs[tpl.id] || resolvePreviewUrl(tpl.previewImage || tpl.preview_image)"
                             :alt="tpl.name"
-                            loading="lazy"
                             @error="setTemplatePreviewFailed(tpl.id)"
                           >
                           <div
@@ -420,7 +673,42 @@
                         <input type="checkbox" v-model="generateForm.enableSectionSlides" />
                         启用章节页
                       </label>
+                      <label class="option-checkbox option-checkbox--rag" :title="ragStatus.available ? '使用您上传的文档作为知识库，生成内容将引用文档中的具体数据和观点' : 'RAG 知识库未启用（需配置 Qdrant + AI 检索）'">
+                        <input type="checkbox" v-model="generateForm.useKnowledge" :disabled="!ragStatus.available" />
+                        <span :class="{ 'text-muted': !ragStatus.available }">
+                          使用我的知识库
+                          <el-tag v-if="ragStatus.available && ragStatus.totalChunks > 0" size="small" type="success" style="margin-left:4px">{{ ragStatus.totalChunks }} 块</el-tag>
+                          <el-tag v-else-if="!ragStatus.available" size="small" type="info" style="margin-left:4px">未启用</el-tag>
+                        </span>
+                      </label>
                     </div>
+
+                    <!-- 知识库素材选择（当启用知识库时展示） -->
+                    <div v-if="generateForm.useKnowledge && ragStatus.available" class="rag-materials-selector">
+                      <label class="rag-label">
+                        <el-icon style="color:#7C3AED;margin-right:4px"><Reading /></el-icon>
+                        选择参与检索的素材（不选则使用全部已索引素材）
+                      </label>
+                      <div class="rag-material-list" v-if="materialsList.filter(m => m.status === 'completed').length">
+                        <label
+                          v-for="mat in materialsList.filter(m => m.status === 'completed')"
+                          :key="mat.id"
+                          class="rag-material-item"
+                          :class="{ selected: generateForm.ragMaterialIds.includes(mat.id) }"
+                        >
+                          <input
+                            type="checkbox"
+                            :value="mat.id"
+                            v-model="generateForm.ragMaterialIds"
+                          />
+                          <el-icon style="margin-right:4px"><Document /></el-icon>
+                          <span>{{ mat.filename }}</span>
+                          <el-tag size="small" style="margin-left:auto">{{ mat.file_type }}</el-tag>
+                        </label>
+                      </div>
+                      <p v-else class="rag-empty-hint">暂无提取完成的素材，请先在「我的材料」中上传并等待提取完成。</p>
+                    </div>
+
                     <div v-if="generateForm.enableSectionSlides" class="form-group-inline mt-1">
                       <label for="section-interval">每</label>
                       <select id="section-interval" v-model.number="generateForm.sectionSlideInterval" class="select-sm">
@@ -1177,10 +1465,9 @@
             <div v-for="template in filteredTemplates" :key="template.id" class="template-card">
               <div class="template-preview">
                 <img
-                  v-if="template.previewImage && !templatePreviewFailed(template.id)"
-                  :src="template.previewImage"
+                  v-if="(imgBlobSrcs[template.id] || template.previewImage) && !templatePreviewFailed(template.id)"
+                  :src="imgBlobSrcs[template.id] || template.previewImage"
                   :alt="template.name"
-                  loading="lazy"
                   @error="setTemplatePreviewFailed(template.id)"
                 >
                 <div
@@ -1512,6 +1799,16 @@
                     @click="viewMaterialDetail(mat.id)"
                   >查看结果</button>
                   <button
+                    v-if="mat.status === 'completed' && ragStatus.available"
+                    class="mat-btn rag"
+                    :disabled="ragIndexingId === mat.id"
+                    :title="'将此文档写入 RAG 知识库，生成 PPT 时可引用其中内容'"
+                    @click="triggerRagIndex(mat.id, mat.filename)"
+                  >
+                    <span v-if="ragIndexingId === mat.id">索引中...</span>
+                    <span v-else>加入知识库</span>
+                  </button>
+                  <button
                     class="mat-btn danger"
                     @click="deleteMaterial(mat.id, mat.filename)"
                   >删除</button>
@@ -1689,16 +1986,16 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount, watch , watchEffect } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
-import { MagicStick, Download, Delete, EditPen, Search, Setting, SwitchButton, Plus, DataAnalysis, Brush, Document, Timer, Star, RefreshRight, ArrowDown, User, Lock, ArrowLeft, ArrowRight, Loading, BellFilled } from '@element-plus/icons-vue'
+import { MagicStick, Download, Delete, EditPen, Search, Setting, SwitchButton, Plus, DataAnalysis, Brush, Document, DocumentChecked, Timer, Star, RefreshRight, ArrowDown, User, Lock, ArrowLeft, ArrowRight, Loading, BellFilled, Reading, Picture } from '@element-plus/icons-vue'
 import { getActiveAnnouncements } from '@/api/announcement'
 import templatesAPI from '@/api/templates'
-import pptAPI from '@/api/ppt'
+import pptAPI, { materialApi, templateApi } from '@/api/ppt'
 import materialAPI from '@/api/material'
-import authAPI from '@/api/auth'
+import authAPI, { apiClient } from '@/api/auth'
 import dayjs from 'dayjs'
 import MaterialBatchUpload from '@/components/MaterialBatchUpload.vue'
 
@@ -1916,8 +2213,305 @@ const onKeyPointBackspace = (itemIndex, kpIndex, event) => {
   }
 }
 
+// ---- 图片多模态生成状态（F04）----
+const imageFiles = ref([])             // [{ name, dataUrl, base64 }]
+const imageHint = ref('')
+const imageDropDragging = ref(false)
+const imageAnalyzing = ref(false)
+const imageAnalyzed = ref(false)
+const imageAnalysisResult = ref(null)  // { topic }
+const imageGenerating = ref(false)
+
+// ---- F10 风格迁移状态 ----
+const styleRefFile = ref(null)        // 上传的参考 .pptx File 对象
+const styleRefDragging = ref(false)
+const styleAnalyzing = ref(false)
+const styleSpec = ref(null)           // 后端返回的 style_spec 对象
+
+const handleStyleRefFileChange = (event) => {
+  const f = event.target.files?.[0]
+  if (!f) return
+  event.target.value = ''
+  if (!f.name.toLowerCase().endsWith('.pptx')) {
+    ElMessage.warning('仅支持 .pptx 格式的参考文件')
+    return
+  }
+  if (f.size > 50 * 1024 * 1024) {
+    ElMessage.warning('参考文件不能超过 50MB')
+    return
+  }
+  styleRefFile.value = f
+  styleSpec.value = null
+}
+
+const handleStyleRefDrop = (event) => {
+  styleRefDragging.value = false
+  const f = event.dataTransfer?.files?.[0]
+  if (!f) return
+  if (!f.name.toLowerCase().endsWith('.pptx')) {
+    ElMessage.warning('仅支持 .pptx 格式的参考文件')
+    return
+  }
+  styleRefFile.value = f
+  styleSpec.value = null
+}
+
+const clearStyleRef = () => {
+  styleRefFile.value = null
+  styleSpec.value = null
+}
+
+const doAnalyzeStyle = async () => {
+  if (!styleRefFile.value) return
+  styleAnalyzing.value = true
+  try {
+    const res = await pptAPI.analyzeStyle(styleRefFile.value)
+    styleSpec.value = res.data?.style_spec || null
+    if (!styleSpec.value) {
+      ElMessage.warning('风格提取结果为空，请尝试其他 PPTX 文件')
+    } else {
+      ElMessage.success('参考风格提取成功，可以开始生成了')
+    }
+  } catch (err) {
+    const msg = err.response?.data?.message || '风格分析失败，请确认文件格式正确'
+    ElMessage.error(msg)
+  } finally {
+    styleAnalyzing.value = false
+  }
+}
+
+/**
+ * 以风格迁移模式提交生成（强制 ai_native，注入 style_spec_json）
+ */
+const submitWithStyleRef = async () => {
+  if (!styleSpec.value) {
+    ElMessage.warning('请先分析参考 PPT 风格')
+    return
+  }
+  const topic = generateForm.value.topic?.trim()
+  if (!topic) {
+    ElMessage.warning('请在基础信息中填写 PPT 主题')
+    return
+  }
+  generating.value = true
+  generationProgress.value = 0
+  generationStage.value = '提交中'
+  generationFailed.value = false
+  generationTimedOut.value = false
+  try {
+    const payload = {
+      topic,
+      title: generateForm.value.title?.trim() || topic,
+      pages: generateForm.value.pages,
+      style: generateForm.value.style,
+      generate_mode: 'ai_native',
+      include_images: generateForm.value.includeImages,
+      include_charts: generateForm.value.includeCharts,
+      include_notes: generateForm.value.includeNotes,
+      model_id: generateForm.value.modelId || selectedModel.value || 'qwen-turbo',
+      template_id: generateForm.value.templateId || '',
+      style_spec_json: JSON.stringify(styleSpec.value),
+    }
+    const res = await pptAPI.generate(payload)
+    const data = res.data || {}
+    const requestId = data.requestId || data.id
+    if (!requestId) {
+      ElMessage.error('生成请求提交失败，请重试')
+      generating.value = false
+      return
+    }
+    ElMessage.success({ message: '风格迁移 PPT 生成已提交，请稍候…', duration: 4000, showClose: true })
+    activeGeneratePanel.value = 'generating'
+    generationStage.value = 'AI 创意分析'
+    generationProgress.value = 5
+
+    // Poll for completion
+    const maxWait = 10 * 60 * 1000
+    const start = Date.now()
+    const poll = setInterval(async () => {
+      if (Date.now() - start > maxWait) {
+        clearInterval(poll)
+        generationTimedOut.value = true
+        generating.value = false
+        ElMessage.warning('生成超时，请稍后在历史记录中查看结果')
+        return
+      }
+      try {
+        const statusRes = await pptAPI.getRequest(requestId)
+        const req = statusRes.data?.request
+        if (!req) return
+        if (req.status === 'completed') {
+          clearInterval(poll)
+          generating.value = false
+          generationProgress.value = 100
+          generationStage.value = '生成完成'
+          await store.dispatch('fetchPptHistory')
+          previewDownloadUrl.value = req.downloadUrl || ''
+          previewDownloadUrlPdf.value = req.downloadUrlPdf || ''
+          previewTitle.value = req.title || ''
+          previewFileUrl.value = buildPreviewFileUrl(resolveDownloadUrl(req))
+          previewRequestId.value = req.id || 0
+          if (req.id) await hydratePreviewFromRequest(req, { force: true })
+          activeGeneratePanel.value = 'preview'
+          ElMessage.success({ message: 'PPT 生成成功（风格迁移）！', duration: 5000, showClose: true })
+        } else if (req.status === 'failed') {
+          clearInterval(poll)
+          generating.value = false
+          generationFailed.value = true
+          generationStage.value = '生成失败'
+        } else if (req.progress) {
+          generationProgress.value = Math.min(req.progress, 95)
+          if (req.stage) generationStage.value = req.stage
+        }
+      } catch (_) {}
+    }, 3000)
+  } catch (err) {
+    generating.value = false
+    const msg = err.response?.data?.message || '提交失败，请重试'
+    ElMessage.error(msg)
+  }
+}
+
+const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const dataUrl = e.target.result
+    // Strip data URI prefix to get pure base64
+    const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl
+    resolve({ name: file.name, dataUrl, base64 })
+  }
+  reader.onerror = reject
+  reader.readAsDataURL(file)
+})
+
+const handleImageFiles = async (files) => {
+  const fileArr = Array.from(files).filter(f => f.type.startsWith('image/'))
+  const remaining = 5 - imageFiles.value.length
+  if (remaining <= 0) {
+    ElMessage.warning('最多上传 5 张图片')
+    return
+  }
+  const toAdd = fileArr.slice(0, remaining)
+  for (const f of toAdd) {
+    if (f.size > 10 * 1024 * 1024) {
+      ElMessage.warning(`图片 ${f.name} 超过 10MB，已跳过`)
+      continue
+    }
+    try {
+      const img = await readFileAsBase64(f)
+      imageFiles.value.push(img)
+    } catch {
+      ElMessage.error(`图片 ${f.name} 读取失败`)
+    }
+  }
+  imageAnalyzed.value = false
+  imageAnalysisResult.value = null
+}
+
+const handleImageFileChange = (event) => {
+  handleImageFiles(event.target.files)
+  event.target.value = ''
+}
+
+const handleImageDrop = (event) => {
+  imageDropDragging.value = false
+  handleImageFiles(event.dataTransfer.files)
+}
+
+const removeImageFile = (idx) => {
+  imageFiles.value.splice(idx, 1)
+  imageAnalyzed.value = false
+  imageAnalysisResult.value = null
+}
+
+const submitImageGenerate = async () => {
+  if (!imageFiles.value.length) {
+    ElMessage.warning('请先上传至少一张图片')
+    return
+  }
+  imageGenerating.value = true
+  try {
+    const payload = {
+      images: imageFiles.value.map(f => f.base64),
+      hint: imageHint.value.trim(),
+      pages: generateForm.value.pages,
+      style: generateForm.value.style,
+      include_images: generateForm.value.includeImages,
+      include_charts: generateForm.value.includeCharts,
+      include_notes: generateForm.value.includeNotes,
+      model_id: generateForm.value.modelId || selectedModel.value || 'qwen-turbo',
+      template_id: generateForm.value.templateId || ''
+    }
+    // Submit generate-from-image request (202 Accepted, async)
+    const res = await pptAPI.generateFromImage(payload)
+    const data = res.data || {}
+    const requestId = data.requestId
+    const derivedTopic = data.topic || ''
+
+    imageAnalyzed.value = true
+    imageAnalysisResult.value = { topic: derivedTopic }
+    ElMessage.success({ message: `图片分析完成，PPT 生成已提交（主题：${derivedTopic || '图片内容分析'}）`, duration: 5000, showClose: true })
+
+    if (!requestId) {
+      ElMessage.error('提交成功但未返回请求 ID，请前往历史记录查看')
+      return
+    }
+
+    // Poll until completed or failed
+    generating.value = true
+    generationStage.value = '图片分析 → AI 生成'
+    generationStep.value = '正在将图片内容转化为 PPT…'
+    generationProgress.value = 20
+
+    const pollInterval = 4000
+    const maxWait = 600000
+    const start = Date.now()
+
+    const poll = setInterval(async () => {
+      if (Date.now() - start > maxWait) {
+        clearInterval(poll)
+        generationTimedOut.value = true
+        generating.value = false
+        ElMessage.warning('生成超时，请稍后在历史记录中查看结果')
+        return
+      }
+      try {
+        const statusRes = await pptAPI.getRequest(requestId)
+        const req = statusRes.data?.request
+        if (!req) return
+        if (req.status === 'completed') {
+          clearInterval(poll)
+          generating.value = false
+          generationProgress.value = 100
+          generationStage.value = '生成完成'
+          await store.dispatch('fetchPptHistory')
+          previewDownloadUrl.value = req.downloadUrl || ''
+          previewDownloadUrlPdf.value = req.downloadUrlPdf || ''
+          previewTitle.value = req.title || ''
+          previewFileUrl.value = buildPreviewFileUrl(resolveDownloadUrl(req))
+          previewRequestId.value = req.id || 0
+          if (req.id) await hydratePreviewFromRequest(req, { force: true })
+          activeGeneratePanel.value = 'preview'
+          ElMessage.success({ message: 'PPT 生成成功！', duration: 5000, showClose: true })
+        } else if (req.status === 'failed') {
+          clearInterval(poll)
+          generating.value = false
+          generationFailed.value = true
+          generationFailReason.value = req.errorReason || 'PPT 生成失败，请重试'
+          ElMessage.error({ message: generationFailReason.value, duration: 0, showClose: true })
+        }
+      } catch (_) { /* network jitter, keep polling */ }
+    }, pollInterval)
+  } catch (e) {
+    const errMsg = e?.response?.data?.message || e?.message || '图片生成请求失败'
+    ElMessage.error(errMsg)
+  } finally {
+    imageGenerating.value = false
+  }
+}
+
 // ---- 文档材料相关状态 ----
-const generateSource = ref('manual')  // 'manual' | 'material'
+const generateSource = ref('manual')  // 'manual' | 'material' | 'image'
 const materialUploadFile = ref(null)
 const materialUploadProgress = ref(0)
 const materialUploading = ref(false)
@@ -1930,6 +2524,7 @@ const materialsLoading = ref(false)
 const materialDetailId = ref('')
 const materialDetailData = ref(null)
 const materialDetailVisible = ref(false)
+const ragIndexingId = ref('')  // 当前正在 RAG 索引的素材 ID
 
 // ---- 批量上传面板状态 ----
 const showBatchUpload = ref(false)
@@ -2203,10 +2798,20 @@ const resolveSection = (section) => {
 const activeMenu = ref(resolveSection(route.params.section))
 const sidebarCollapsed = ref(false)
 
+// 初始进入 generate 页时也拉取 RAG 状态和素材列表
+if (activeMenu.value === 'generate') {
+  fetchRagStatus()
+}
+
 watch(
   () => route.params.section,
   (section) => {
-    activeMenu.value = resolveSection(section)
+    const resolved = resolveSection(section)
+    activeMenu.value = resolved
+    if (resolved === 'generate') {
+      fetchRagStatus()
+      if (!materialsList.value.length) loadMaterialsList()
+    }
   }
 )
 
@@ -2302,8 +2907,90 @@ const generateForm = ref({
   modelId: '',
   templateId: '',
   materialId: '',
-  aiStylePrompt: ''
+  aiStylePrompt: '',
+  useKnowledge: false,
+  ragMaterialIds: []
 })
+
+// RAG 知识库状态
+const ragStatus = ref({ available: false, totalChunks: 0 })
+
+// ── AI 模板推荐（F07）────────────────────────────────────────────────────────
+const aiRecommendations = ref([])          // 推荐结果列表
+const aiRecommendLoading = ref(false)      // 正在请求中
+const aiRecommendDone = ref(false)         // 本次主题已请求过一次
+const aiRecommendAvailable = ref(true)     // 服务可用性（初始乐观）
+const aiRecImgFailed = ref({})             // 缩略图加载失败的模板 ID 集合
+
+let aiRecommendDebounceTimer = null
+
+/** 根据当前 topic 拉取 AI 推荐模板 */
+const fetchAiRecommendations = async (topic) => {
+  if (!topic || topic.trim().length < 2) {
+    aiRecommendations.value = []
+    aiRecommendDone.value = false
+    return
+  }
+  aiRecommendLoading.value = true
+  aiRecImgFailed.value = {}
+  try {
+    const res = await templateApi.recommend(topic.trim(), 5)
+    aiRecommendAvailable.value = res.data?.available ?? true
+    aiRecommendations.value = res.data?.recommendations ?? []
+    aiRecommendDone.value = true
+    // #region agent log
+    fetch('http://localhost:7242/ingest/e3507e7c-9c9f-4573-a855-7f640db78f02',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'post-fix-v3',location:'Main.vue:fetchAiRecommendations',message:'API response + resolved URLs',hypothesisId:'A,B',data:{count:aiRecommendations.value.length,resolvedUrls:aiRecommendations.value.map(r=>({id:r.templateId,raw:r.previewImage,resolved:resolvePreviewUrl(r.previewImage)}))},timestamp:Date.now()})}).catch(()=>{});
+    // 通过 apiClient 预加载推荐模板缩略图 blob（携带 ngrok-skip-browser-warning header）
+    for (const rec of aiRecommendations.value) {
+      if (rec.previewImage) loadImgBlob(rec.templateId, rec.previewImage)
+    }
+    // #region agent log probe (post-fix-v3: using apiClient blob)
+    if (aiRecommendations.value.length > 0) {
+      const rawProbe = resolvePreviewUrl(aiRecommendations.value[0].previewImage);
+      const probeUrl = rawProbe.startsWith('/api/') ? rawProbe.slice(4) : rawProbe;
+      apiClient.get(probeUrl, { responseType: 'blob' }).then(r => {
+        fetch('http://localhost:7242/ingest/e3507e7c-9c9f-4573-a855-7f640db78f02',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'post-fix-v3',location:'Main.vue:imgProbe',message:'apiClient blob probe',hypothesisId:'E',data:{url:probeUrl,type:r.data?.type,size:r.data?.size},timestamp:Date.now()})}).catch(()=>{})
+      }).catch(err => {
+        fetch('http://localhost:7242/ingest/e3507e7c-9c9f-4573-a855-7f640db78f02',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'post-fix-v3',location:'Main.vue:imgProbe:err',message:'apiClient blob probe failed',hypothesisId:'E',data:{url:probeUrl,error:String(err)},timestamp:Date.now()})}).catch(()=>{})
+      })
+    }
+    // #endregion
+  } catch (e) {
+    // #region agent log
+    fetch('http://localhost:7242/ingest/e3507e7c-9c9f-4573-a855-7f640db78f02',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Main.vue:fetchAiRecommendations:catch',message:'API call failed',hypothesisId:'A,B,C',data:{error:String(e)},timestamp:Date.now()})}).catch(()=>{})
+    // #endregion
+    aiRecommendations.value = []
+    aiRecommendDone.value = true
+  } finally {
+    aiRecommendLoading.value = false
+  }
+}
+
+/** topic 改变时防抖触发推荐（1.5s） */
+const onTopicChangeForRecommend = (val) => {
+  clearTimeout(aiRecommendDebounceTimer)
+  aiRecommendDone.value = false
+  aiRecommendations.value = []
+  if (!val || val.trim().length < 5) return
+  aiRecommendDebounceTimer = setTimeout(() => fetchAiRecommendations(val), 1500)
+}
+
+/** 点击推荐模板卡片 → 自动选中该模板并切换到模板模式 */
+const applyRecommendedTemplate = (templateId) => {
+  generateForm.value.templateId = templateId
+  generateForm.value.generateMode = 'template'
+}
+const fetchRagStatus = async () => {
+  try {
+    const res = await materialApi.ragStatus()
+    ragStatus.value = {
+      available: res.data?.available ?? false,
+      totalChunks: res.data?.total_chunks ?? 0
+    }
+  } catch {
+    ragStatus.value = { available: false, totalChunks: 0 }
+  }
+}
 
 watch(
   selectedModel,
@@ -2357,6 +3044,41 @@ const setTemplatePreviewFailed = (id) => {
   templatePreviewFailedIds.value = { ...templatePreviewFailedIds.value }
 }
 
+/**
+ * 将后端返回的 previewImage 路径解析为可直接用于 <img src> 的完整 URL。
+ */
+const resolvePreviewUrl = (rawPath) => {
+  if (!rawPath) return ''
+  return rawPath
+}
+
+/**
+ * 通过 apiClient（携带 ngrok-skip-browser-warning header）获取图片 blob URL。
+ * img 标签无法设置自定义 header，直接用相对路径在 ngrok 下会被拦截返回 HTML。
+ * 这里用 JS fetch 获取图片后转为 blob objectURL 再赋给 img src。
+ */
+const imgBlobCache = new Map()   // path → blobUrl
+const imgBlobSrcs = ref({})      // templateId → blobUrl（响应式，驱动模板更新）
+
+const loadImgBlob = async (templateId, path) => {
+  if (!path || imgBlobSrcs.value[templateId]) return
+  if (imgBlobCache.has(path)) {
+    imgBlobSrcs.value = { ...imgBlobSrcs.value, [templateId]: imgBlobCache.get(path) }
+    return
+  }
+  // apiClient.baseURL 已经是 /api，所以传给 apiClient 的路径需去掉 /api 前缀
+  const clientPath = path.startsWith('/api/') ? path.slice(4) : path
+  try {
+    const resp = await apiClient.get(clientPath, { responseType: 'blob' })
+    const blobUrl = URL.createObjectURL(resp.data)
+    imgBlobCache.set(path, blobUrl)
+    imgBlobSrcs.value = { ...imgBlobSrcs.value, [templateId]: blobUrl }
+  } catch {
+    // 加载失败时回退到直接路径，让 @error handler 处理
+    imgBlobSrcs.value = { ...imgBlobSrcs.value, [templateId]: path }
+  }
+}
+
 const styles = [
   { id: 'business', name: '商务' },
   { id: 'academic', name: '学术' },
@@ -2368,6 +3090,14 @@ const pptHistory = computed(() => store.getters.pptHistory)
 const historyLoading = computed(() => store.getters.historyLoading)
 const templates = computed(() => store.getters.templates || [])
 const templatesLoading = computed(() => store.getters.templatesLoading)
+
+// 模板列表加载完成后，批量通过 apiClient 预加载缩略图 blob
+watch(templates, (list) => {
+  for (const tpl of list) {
+    const path = tpl.previewImage || tpl.preview_image
+    if (path) loadImgBlob(tpl.id, path)
+  }
+}, { immediate: true })
 const selectedTemplate = computed(() => {
   return templates.value.find(item => item.id === generateForm.value.templateId) || null
 })
@@ -2691,6 +3421,13 @@ const resetGenerateForm = () => {
   outlineItems.value = []
   activeGeneratePanel.value = 'settings'
   generateSource.value = 'manual'
+  imageFiles.value = []
+  imageHint.value = ''
+  imageAnalyzed.value = false
+  imageAnalysisResult.value = null
+  styleRefFile.value = null
+  styleSpec.value = null
+  styleAnalyzing.value = false
 }
 
 const openGeneratePanel = () => {
@@ -2699,6 +3436,7 @@ const openGeneratePanel = () => {
   if (route.params.section !== 'generate') {
     router.push('/main/generate')
   }
+  fetchRagStatus()
   requestAnimationFrame(() => {
     const target = document.querySelector('.generate-section')
     if (target) {
@@ -2812,6 +3550,8 @@ const handleGenerate = async () => {
       })),
       materialId: generateForm.value.materialId || '',
       aiStylePrompt: generateForm.value.generateMode === 'ai_native' ? (generateForm.value.aiStylePrompt || '').trim() : '',
+      useKnowledge: !!generateForm.value.useKnowledge,
+      ragMaterialIds: generateForm.value.useKnowledge ? (generateForm.value.ragMaterialIds || []) : [],
       onProgress: ({ progress, stage, step }) => {
         applyRealProgress(progress, stage, step)
       }
@@ -3371,6 +4111,22 @@ const loadMaterialsList = async () => {
   }
 }
 
+const triggerRagIndex = async (id, filename) => {
+  if (ragIndexingId.value) return
+  ragIndexingId.value = id
+  try {
+    const res = await materialApi.ragIndex(id)
+    const chunks = res.data?.chunks ?? 0
+    ElMessage.success(`《${filename}》已加入知识库，共 ${chunks} 个知识块`)
+    await fetchRagStatus()
+  } catch (e) {
+    const msg = e?.response?.data?.message || e?.message || '知识库索引失败'
+    ElMessage.error(msg)
+  } finally {
+    ragIndexingId.value = ''
+  }
+}
+
 const deleteMaterial = async (id, filename) => {
   try {
     await ElMessageBox.confirm(`确定删除《${filename}》吗？`, '删除确认', {
@@ -3518,6 +4274,7 @@ watch(
   }
 )
 
+
 onBeforeUnmount(() => {
   stopMaterialPolling()
 })
@@ -3576,24 +4333,149 @@ const ensureSession = async () => {
   // 不再根据历史自动展示预览，预览仅在用户本次新生成 PPT 后显示
 }
 
-// 从 AI 助手跳转时读取 query params 预填生成表单
-const applyAssistantQueryParams = () => {
+// 从 AI 助手跳转时读取 query params 预填生成表单，并可选自动触发生成
+const applyAssistantQueryParams = async () => {
   const q = route.query
-  if (!q.topic && !q.pages && !q.style) return
-  if (q.topic) generateForm.value.topic = String(q.topic)
+  const hasAssistantParams = q.topic || q.pages || q.style || q.title || q.template_id || q.generate_mode
+  if (!hasAssistantParams) return
+
+  // 预填表单字段
+  if (q.title)  generateForm.value.title = String(q.title)
+  if (q.topic)  generateForm.value.topic = String(q.topic)
   if (q.pages) {
     const p = parseInt(q.pages, 10)
     if (!isNaN(p) && p > 0) generateForm.value.pages = p
   }
-  if (q.style) generateForm.value.style = String(q.style)
+  if (q.style)         generateForm.value.style        = String(q.style)
+  if (q.generate_mode) generateForm.value.generateMode = String(q.generate_mode)
+  if (q.template_id) {
+    generateForm.value.generateMode = 'template'
+    generateForm.value.templateId   = String(q.template_id)
+  }
+
+  // 若 title 为空则用 topic 前20字作为标题
+  if (!generateForm.value.title.trim() && generateForm.value.topic) {
+    generateForm.value.title = generateForm.value.topic.slice(0, 20).trim()
+  }
+
   // 清除 query params 避免刷新重复填充
   router.replace({ path: route.path })
+
+  // auto_generate=1：自动触发「生成大纲 → 生成PPT」完整流程
+  if (q.auto_generate === '1' && generateForm.value.topic.trim()) {
+    await nextTick()
+    autoGenerateFromAssistant()
+  }
+}
+
+// AI 助手驱动的自动生成流程（大纲 + PPT），进度实时推给助手面板
+const autoGenerateFromAssistant = async () => {
+  const pushProgress = (stage, step, progress, extra = {}) => {
+    store.commit('setAssistantGenProgress', { stage, step, progress, ...extra })
+  }
+
+  try {
+    // ── 阶段1：生成大纲 ──
+    pushProgress('生成大纲', '正在分析主题，生成PPT大纲…', 10)
+    const templateIdForOutline = generateForm.value.generateMode === 'template'
+      ? generateForm.value.templateId
+      : (templates.value[0]?.id || '')
+    const outlinePayload = {
+      title:        generateForm.value.title.trim(),
+      topic:        generateForm.value.topic.trim(),
+      pages:        generateForm.value.pages,
+      style:        generateForm.value.style,
+      modelId:      generateForm.value.modelId || selectedModel.value,
+      templateId:   templateIdForOutline,
+      generateMode: generateForm.value.generateMode,
+      materialId:   generateForm.value.materialId || ''
+    }
+    const outlineRes = await pptAPI.outline(outlinePayload)
+    const outline = Array.isArray(outlineRes.data?.outline) ? outlineRes.data.outline : []
+    outlineItems.value = outline.map(normalizeOutlineItem)
+    if (!outlineItems.value.length) {
+      pushProgress('生成失败', '大纲生成失败，请手动操作', 0, { failed: true })
+      return
+    }
+    pushProgress('提交生成', '大纲已就绪，正在提交PPT生成请求…', 25)
+
+    // ── 阶段2：生成PPT ──
+    const payload = {
+      title:               generateForm.value.title.trim(),
+      topic:               generateForm.value.topic.trim(),
+      pages:               generateForm.value.pages,
+      style:               generateForm.value.style,
+      generateMode:        generateForm.value.generateMode,
+      includeImages:       generateForm.value.includeImages,
+      includeCharts:       generateForm.value.includeCharts,
+      includeNotes:        generateForm.value.includeNotes,
+      enableSectionSlides: !!generateForm.value.enableSectionSlides,
+      sectionSlideInterval: Math.min(10, Math.max(2, generateForm.value.sectionSlideInterval || 4)),
+      themePreset:         generateForm.value.generateMode === 'style' ? (generateForm.value.themePreset || '').trim() : '',
+      modelId:             generateForm.value.modelId || selectedModel.value,
+      templateId:          generateForm.value.generateMode === 'template' ? generateForm.value.templateId : '',
+      outline:             outlineItems.value.map(item => ({
+        title:      item.title || '',
+        summary:    item.summary || '',
+        key_points: (item.keyPoints || []).filter(kp => kp.trim() !== '')
+      })),
+      materialId:   generateForm.value.materialId || '',
+      aiStylePrompt: generateForm.value.generateMode === 'ai_native' ? (generateForm.value.aiStylePrompt || '').trim() : '',
+      useKnowledge: !!generateForm.value.useKnowledge,
+      ragMaterialIds: generateForm.value.useKnowledge ? (generateForm.value.ragMaterialIds || []) : [],
+      onProgress: ({ progress, stage, step }) => {
+        // 将后端进度（0-100）映射到助手面板进度（25-95）
+        const mapped = Math.round(25 + (progress / 100) * 70)
+        pushProgress(stage || '生成中', step || '', Math.min(95, mapped))
+      }
+    }
+
+    const result = await store.dispatch('createPptRequest', payload)
+    if (result?.request) {
+      pushProgress('生成完成', 'PPT已成功生成！', 100, {
+        done:  true,
+        pptId: result.request.id,
+        title: result.request.title || generateForm.value.title
+      })
+    } else if (result?.timedOut && result?.requestId) {
+      // 超时但后台仍在生成：持续轮询直到完成
+      pushProgress('渲染文件', '文件生成中，请稍候…', 90)
+      const pollStart = Date.now()
+      const pollTimeout = 600000  // 额外轮询 10 分钟
+      while (Date.now() - pollStart < pollTimeout) {
+        await new Promise(r => setTimeout(r, 3000))
+        try {
+          const res = await pptAPI.getRequest(result.requestId)
+          const req = res.data?.request
+          if (!req) continue
+          if (req.status === 'completed') {
+            await store.dispatch('fetchPptHistory')
+            pushProgress('生成完成', 'PPT已成功生成！', 100, {
+              done:  true,
+              pptId: req.id,
+              title: req.title || generateForm.value.title
+            })
+            return
+          }
+          if (req.status === 'failed') {
+            pushProgress('生成失败', req.errorReason || 'PPT生成失败，请手动重试', 0, { failed: true })
+            return
+          }
+        } catch (_) { /* ignore poll errors */ }
+      }
+      pushProgress('生成失败', '等待超时，请前往历史记录查看结果', 0, { failed: true })
+    } else {
+      pushProgress('生成失败', 'PPT生成失败，请手动重试', 0, { failed: true })
+    }
+  } catch (e) {
+    pushProgress('生成失败', e?.message || 'PPT生成出错，请手动重试', 0, { failed: true })
+  }
 }
 
 watch(
   () => route.query,
   (q) => {
-    if (activeMenu.value === 'generate' && (q.topic || q.pages || q.style)) {
+    if (activeMenu.value === 'generate' && (q.topic || q.pages || q.style || q.title || q.template_id || q.generate_mode)) {
       applyAssistantQueryParams()
     }
   }
@@ -7139,6 +8021,7 @@ h4 {
 
 .generate-options {
   display: flex;
+  flex-wrap: wrap;
   gap: 20px;
 }
 
@@ -7147,6 +8030,73 @@ h4 {
   align-items: center;
   gap: 8px;
   cursor: pointer;
+}
+
+.option-checkbox--rag {
+  border: 1px dashed #7C3AED;
+  border-radius: 8px;
+  padding: 4px 10px;
+  background: #faf5ff;
+}
+
+.option-checkbox--rag input:disabled + span {
+  opacity: 0.5;
+}
+
+.rag-materials-selector {
+  margin-top: 12px;
+  padding: 12px 16px;
+  border: 1px solid #e9d5ff;
+  border-radius: 10px;
+  background: #faf5ff;
+}
+
+.rag-label {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  color: #6b21a8;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.rag-material-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.rag-material-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.rag-material-item:hover {
+  background: #ede9fe;
+}
+
+.rag-material-item.selected {
+  background: #f3e8ff;
+  border-color: #a855f7;
+}
+
+.rag-empty-hint {
+  font-size: 12px;
+  color: #94a3b8;
+  margin: 6px 0 0;
+}
+
+.text-muted {
+  color: #94a3b8;
 }
 
 .model-options {
@@ -7341,6 +8291,217 @@ h4 {
   background: #e0f2fe;
   color: #0369a1;
   font-weight: 600;
+}
+
+.source-tab--image.active {
+  border-color: #7C3AED;
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
+/* ── 图片多模态上传区（F04）────────────────────────────────────────── */
+.image-upload-area {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.image-drop-zone {
+  border: 2px dashed #a78bfa;
+  border-radius: 12px;
+  padding: 32px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: #64748b;
+  background: #faf5ff;
+}
+
+.image-drop-zone:hover,
+.image-drop-zone.is-dragging {
+  border-color: #7C3AED;
+  background: #f3e8ff;
+}
+
+.image-previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.image-thumb-card {
+  position: relative;
+  width: 100px;
+  border-radius: 10px;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.image-thumb {
+  width: 100px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 2px solid #e2e8f0;
+}
+
+.image-thumb-name {
+  font-size: 11px;
+  color: #64748b;
+  width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.image-thumb-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+.image-thumb-remove:hover {
+  background: #b91c1c;
+}
+
+.image-analyze-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: #f5f3ff;
+  border-radius: 10px;
+  color: #5b21b6;
+  font-size: 0.9rem;
+}
+
+.image-analysis-result {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.image-analysis-topic {
+  font-size: 0.9rem;
+  color: #166534;
+  margin: 0;
+}
+
+/* ── F10 风格迁移上传区 ─────────────────────────────────────────────────────── */
+.style-ref-area {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.style-drop-zone {
+  border: 2px dashed #67E8F9;
+  border-radius: 12px;
+  padding: 32px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: #64748b;
+  background: #ecfeff;
+}
+
+.style-drop-zone:hover,
+.style-drop-zone.is-dragging {
+  border-color: #0891B2;
+  background: #cffafe;
+}
+
+.style-drop-zone.has-file {
+  border-color: #0891B2;
+  background: #e0f7fa;
+}
+
+.source-tab--style.active {
+  border-color: #0891B2;
+  background: #ecfeff;
+  color: #0891B2;
+}
+
+.style-analyze-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: #f0fdfa;
+  border-radius: 10px;
+  color: #0f766e;
+  font-size: 0.9rem;
+}
+
+.style-spec-result {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.style-spec-header {
+  display: flex;
+  align-items: center;
+}
+
+.style-palette-preview {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.palette-swatch {
+  display: inline-block;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 2px solid rgba(0,0,0,0.08);
+  cursor: default;
+}
+
+.style-spec-meta {
+  font-size: 0.85rem;
+  color: #374151;
+}
+
+.style-spec-hint {
+  font-size: 0.82rem;
+  color: #6b7280;
+  margin: 0;
+  line-height: 1.5;
 }
 
 .material-upload-area {
@@ -8039,6 +9200,240 @@ h4 {
 
 .mat-btn.danger:hover {
   background: #fecaca;
+}
+
+.mat-btn.rag {
+  background: #ede9fe;
+  color: #7C3AED;
+}
+
+.mat-btn.rag:hover:not(:disabled) {
+  background: #ddd6fe;
+}
+
+.mat-btn.rag:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ===== F07 AI 触发提示条 ===== */
+.ai-trigger-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #6d28d9;
+  background: #faf5ff;
+  border: 1px dashed #c4b5fd;
+  border-radius: 8px;
+  padding: 7px 12px;
+  margin-top: 6px;
+  margin-bottom: 2px;
+}
+
+.ai-trigger-btn {
+  margin-left: auto;
+  background: #7c3aed;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 3px 12px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.ai-trigger-btn:hover {
+  background: #5b21b6;
+}
+
+/* ===== F07 AI 推荐模板 ===== */
+.ai-recommend-block {
+  margin-bottom: 18px;
+  background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);
+  border: 1.5px solid #c4b5fd;
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.ai-recommend-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.ai-recommend-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #5b21b6;
+}
+
+.ai-recommend-hint {
+  font-size: 0.8rem;
+  color: #7c3aed;
+  margin-left: auto;
+  animation: ai-pulse 1.2s ease-in-out infinite;
+}
+
+.ai-recommend-desc {
+  font-size: 0.78rem;
+  color: #9ca3af;
+  margin-left: 4px;
+}
+
+@keyframes ai-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+.ai-recommend-refresh {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid #7c3aed;
+  color: #7c3aed;
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.ai-recommend-refresh:hover {
+  background: #7c3aed;
+  color: white;
+}
+
+.ai-recommend-loading {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.ai-recommend-skeleton {
+  aspect-ratio: 3/4;
+  background: linear-gradient(90deg, #e9d5ff 25%, #ddd6fe 50%, #e9d5ff 75%);
+  background-size: 200% 100%;
+  border-radius: 10px;
+  animation: skeleton-shimmer 1.4s infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.ai-recommend-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.ai-recommend-card {
+  display: flex;
+  flex-direction: column;
+  background: white;
+  border: 1.5px solid #e9d5ff;
+  border-radius: 10px;
+  padding: 0;
+  cursor: pointer;
+  transition: all 0.18s;
+  position: relative;
+  overflow: hidden;
+}
+
+.ai-recommend-card:hover {
+  border-color: #7c3aed;
+  box-shadow: 0 3px 10px rgba(124,58,237,0.15);
+  transform: translateY(-2px);
+}
+
+.ai-recommend-card--selected {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 2px rgba(124,58,237,0.3);
+}
+
+.ai-recommend-thumb {
+  width: 100%;
+  aspect-ratio: 16/9;
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid #f3e8ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.ai-recommend-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ai-recommend-info {
+  padding: 7px 8px 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ai-recommend-name {
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: #1e1b4b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.ai-recommend-reason {
+  font-size: 0.72rem;
+  color: #6b7280;
+  margin-top: 3px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ai-recommend-score {
+  font-size: 0.68rem;
+  color: #7c3aed;
+  margin-top: 3px;
+  font-weight: 500;
+}
+
+.ai-recommend-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  background: #7c3aed;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+
+.ai-recommend-empty {
+  font-size: 0.82rem;
+  color: #9ca3af;
+  text-align: center;
+  padding: 8px 0;
 }
 
 /* ===== 材料详情弹窗 ===== */

@@ -78,4 +78,27 @@ int GetInt(MySQLConnectionPool& pool,
   }
 }
 
+bool SetBool(MySQLConnectionPool& pool,
+             const std::string&   key,
+             bool                 value) {
+  auto conn_guard = pool.GetConnection();
+  MYSQL* conn = conn_guard.Get();
+  if (!conn) {
+    Logger::Warn("SettingsReader::SetBool: DB connection unavailable for key=" + key);
+    return false;
+  }
+  std::string escaped_key(key.size() * 2 + 1, '\0');
+  unsigned long klen = mysql_real_escape_string(
+      conn, escaped_key.data(), key.c_str(), static_cast<unsigned long>(key.size()));
+  escaped_key.resize(klen);
+  const std::string val_str = value ? "true" : "false";
+  const std::string sql = "UPDATE system_settings SET value='" + val_str +
+                          "' WHERE `key`='" + escaped_key + "'";
+  if (mysql_query(conn, sql.c_str()) != 0) {
+    Logger::Warn("SettingsReader::SetBool: update failed: " + std::string(mysql_error(conn)));
+    return false;
+  }
+  return mysql_affected_rows(conn) > 0;
+}
+
 }  // namespace SettingsReader

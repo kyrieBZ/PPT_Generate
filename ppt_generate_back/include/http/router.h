@@ -4,14 +4,22 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 #include "http/http_types.h"
 #include "utils/string_utils.h"
 
+/**
+ * 路由处理结果：普通 HttpResponse 或 SSE 流 SseResponse。
+ * HttpServer::HandleClient 根据类型分别处理。
+ */
+using RouteResult = std::variant<HttpResponse, SseResponse>;
+
 class Router {
  public:
-  using Handler = std::function<HttpResponse(const HttpRequest&)>;
+  using Handler    = std::function<HttpResponse(const HttpRequest&)>;
+  using SseHandler = std::function<SseResponse(const HttpRequest&)>;
 
   /**
    * 全局中间件：在所有路由处理器之前调用。
@@ -21,8 +29,11 @@ class Router {
   using Middleware = std::function<std::optional<HttpResponse>(const HttpRequest&)>;
   void SetGlobalMiddleware(Middleware mw);
 
-  /** 精确路径注册 */
+  /** 精确路径注册（普通 JSON 响应） */
   void AddRoute(const std::string& method, const std::string& path, Handler handler);
+
+  /** 精确路径注册（SSE 流响应） */
+  void AddSseRoute(const std::string& method, const std::string& path, SseHandler handler);
 
   /**
    * 前缀路径注册：method + path 精确匹配失败时，
@@ -33,12 +44,13 @@ class Router {
                       const std::string& prefix,
                       Handler handler);
 
-  HttpResponse Handle(const HttpRequest& request) const;
+  RouteResult Handle(const HttpRequest& request) const;
 
  private:
   std::string BuildKey(const std::string& method, const std::string& path) const;
 
-  std::unordered_map<std::string, Handler> routes_;
+  std::unordered_map<std::string, Handler>    routes_;
+  std::unordered_map<std::string, SseHandler> sse_routes_;
 
   struct PrefixRoute {
     std::string key_prefix;  // lower(method) + ":" + prefix

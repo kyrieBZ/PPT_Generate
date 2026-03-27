@@ -1412,3 +1412,146 @@ std::vector<QwenClient::RerankResult> QwenClient::RerankWithReason(
     return {};
   }
 }
+
+bool QwenClient::AnalyzeImages(const std::vector<std::string>& images_base64,
+                               const std::string& user_hint,
+                               std::string& out_description,
+                               std::string& error_message) const {
+  if (images_base64.empty()) {
+    error_message = "未提供图片";
+    return false;
+  }
+  if (api_key_.empty()) {
+    error_message = "未配置通义千问API密钥";
+    return false;
+  }
+
+  // Qwen-VL multimodal API endpoint (DashScope compatible openai chat format)
+  constexpr const char* kQwenVlEndpoint =
+      "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+
+  // Build content array: image parts + text part
+  nlohmann::json content_arr = nlohmann::json::array();
+  for (const auto& img_b64 : images_base64) {
+    std::string data_uri = img_b64;
+    // Normalize: ensure data URI prefix (detect by checking for comma)
+    if (data_uri.find("data:") != 0) {
+      // Guess image format from base64 header bytes (JPEG starts /9j, PNG starts iVBOR)
+      std::string mime = "image/jpeg";
+      if (data_uri.size() >= 4 && data_uri.substr(0, 4) == "iVBO") {
+        mime = "image/png";
+      } else if (data_uri.size() >= 4 && data_uri.substr(0, 4) == "R0lG") {
+        mime = "image/gif";
+      } else if (data_uri.size() >= 4 && data_uri.substr(0, 4) == "UklG") {
+        mime = "image/webp";
+      }
+      data_uri = "data:" + mime + ";base64," + data_uri;
+    }
+    nlohmann::json img_part;
+    img_part["type"] = "image_url";
+    img_part["image_url"]["url"] = data_uri;
+    content_arr.push_back(std::move(img_part));
+  }
+
+  // System instruction: extract structured content from images for PPT generation
+  std::ostringstream sys_text;
+  sys_text << "你是一名专业的PPT内容分析师。用户会上传一张或多张图片，"
+           << "你需要分析图片内容并提取关键信息，以便用于生成PPT幻灯片。\n"
+           << "分析要求：\n"
+           << "1. 识别图片类型（数据表格/产品照片/手绘流程图/文字截图/场景图/其他）\n"
+           << "2. 提取核心内容：标题、关键数据、流程步骤、主要特征等\n"
+           << "3. 输出结构化的JSON，格式如下：\n"
+           << "{\n"
+           << "  \"image_type\": \"类型描述\",\n"
+           << "  \"main_topic\": \"图片主题/核心内容（<=30字）\",\n"
+           << "  \"description\": \"详细内容描述（100-300字）\",\n"
+           << "  \"key_points\": [\"要点1\", \"要点2\", ...],\n"
+           << "  \"data_items\": [{\"label\": \"名称\", \"value\": \"数值/内容\"},...],\n"
+           << "  \"suggested_slides\": [\n"
+           << "    {\"title\": \"建议幻灯片标题\", \"key_points\": [\"要点1\", \"要点2\"]}\n"
+           << "  ]\n"
+           << "}\n"
+           << "禁止输出除JSON以外的任何字符。";
+
+  nlohmann::json text_part;
+  text_part["type"] = "text";
+  std::string user_text_prompt = "请分析以上图片内容，提取关键信息。";
+  if (!user_hint.empty()) {
+    user_text_prompt += "用户补充说明：" + user_hint;
+  }
+  text_part["text"] = user_text_prompt;
+  content_arr.push_back(std::move(text_part));
+
+  nlohmann::json body;
+  body["model"] = "qwen-vl-plus";
+  body["messages"] = nlohmann::json::array();
+  nlohmann::json sys_msg;
+  sys_msg["role"] = "system";
+  sys_msg["content"] = sys_text.str();
+  body["messages"].push_back(std::move(sys_msg));
+  nlohmann::json user_msg;
+  user_msg["role"] = "user";
+  user_msg["content"] = std::move(content_arr);
+  body["messages"].push_back(std::move(user_msg));
+
+  const std::string payload = body.dump();
+
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    error_message = "无法初始化HTTP客户端";
+    return false;
+  }
+
+  struct curl_slist* headers = nullptr;
+  headers = curl_slist_append(headers, "Content-Type: application/json");
+  const std::string auth_header = "Authorization: Bearer " + api_key_;
+  headers = curl_slist_append(headers, auth_header.c_str());
+
+  std::string response_buffer;
+  curl_easy_setopt(curl, CURLOPT_URL, kQwenVlEndpoint);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(payload.size()));
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buffer);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds_ > 0 ? timeout_seconds_ : 120));
+  curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+
+  const CURLcode res = curl_easy_perform(curl);
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+
+  if (res != CURLE_OK) {
+    error_message = curl_easy_strerror(res);
+    return false;
+  }
+
+  try {
+    auto resp = nlohmann::json::parse(response_buffer);
+    // OpenAI-compatible response format
+    if (resp.contains("choices") && resp["choices"].is_array() && !resp["choices"].empty()) {
+      const auto& choice = resp["choices"][0];
+      if (choice.contains("message") && choice["message"].contains("content")) {
+        out_description = choice["message"]["content"].get<std::string>();
+        return true;
+      }
+    }
+    // Fallback: DashScope format
+    if (resp.contains("output")) {
+      const auto text = ExtractTextFromResponse(resp);
+      if (!text.empty()) {
+        out_description = text;
+        return true;
+      }
+    }
+    if (resp.contains("error") && resp["error"].contains("message")) {
+      error_message = resp["error"]["message"].get<std::string>();
+    } else {
+      error_message = "Qwen-VL 返回内容为空";
+    }
+    return false;
+  } catch (const std::exception& ex) {
+    error_message = std::string("响应解析失败: ") + ex.what();
+    return false;
+  }
+}

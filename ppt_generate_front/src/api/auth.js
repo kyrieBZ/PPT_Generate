@@ -63,19 +63,27 @@ apiClient.interceptors.request.use(
   }
 )
 
-// 响应拦截器：统一挂载 userMessage，401 清 token 并跳转，其它错误统一 ElMessage
+// 响应拦截器：统一挂载 userMessage，401 清 token 并跳转，503 由业务层自行处理，其它错误统一 ElMessage
 apiClient.interceptors.response.use(
   response => response,
   error => {
     const userMessage = getErrorMessage(error)
     error.userMessage = userMessage
 
-    if (error.response?.status === 401) {
+    const status = error.response?.status
+    if (status === 401) {
       localStorage.removeItem('token')
       sessionStorage.removeItem('token')
       const path = window.location.pathname
       if (path !== '/login' && path !== '/register') {
         window.location.href = '/login'
+      }
+    } else if (status === 503) {
+      // 维护模式：若用户已在受保护页面（非登录/注册页），重定向到登录页
+      // 登录页检测到 503 后会展示维护公告界面
+      const path = window.location.pathname
+      if (path !== '/login' && path !== '/register' && path !== '/home') {
+        window.location.href = '/login?maintenance=1'
       }
     } else {
       ElMessage.error(userMessage)

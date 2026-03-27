@@ -36,7 +36,8 @@ class AiNativePptService {
    *
    * @param on_progress  进度回调（可为 nullptr），每个子步骤完成时调用
    */
-  /** material_context: 当从文献生成时传入（参考材料关键信息+约束），非空时正文与图表数据必须严格来自该内容 */
+  /** material_context: 当从文献生成时传入（参考材料关键信息+约束），非空时正文与图表数据必须严格来自该内容
+   *  style_spec_json:  F10 风格迁移：参考 PPTX 的 StyleSpec JSON，非空时 AI 严格遵循其配色/字体/布局 */
   bool Generate(const std::string& topic,
                 const std::string& style,
                 int pages,
@@ -49,7 +50,8 @@ class AiNativePptService {
                 bool include_charts = false,
                 WanxiangImageClient* wanx_client = nullptr,
                 ProgressCallback on_progress = nullptr,
-                const std::string& material_context = "") const;
+                const std::string& material_context = "",
+                const std::string& style_spec_json = "") const;
 
  private:
   bool GenerateCreativeBrief(const std::string& topic,
@@ -57,7 +59,8 @@ class AiNativePptService {
                               int pages,
                               const std::string& ai_style_prompt,
                               std::string& out_brief_json,
-                              std::string& error) const;
+                              std::string& error,
+                              const std::string& style_spec_json = "") const;
 
   bool GenerateDesignSpec(const std::string& brief_json,
                            const std::string& outline_json,

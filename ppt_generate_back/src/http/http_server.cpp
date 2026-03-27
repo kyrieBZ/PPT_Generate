@@ -10,6 +10,7 @@
 #include <cstring>
 #include <sstream>
 #include <stdexcept>
+#include <variant>
 
 #include <nlohmann/json.hpp>
 
@@ -115,17 +116,25 @@ void HttpServer::HandleClient(int client_fd) {
     return;
   }
 
-  HttpResponse response;
+  RouteResult result;
   try {
-    response = router_.Handle(request);
+    result = router_.Handle(request);
   } catch (const std::exception& ex) {
     Logger::Error(std::string("Unhandled exception while processing request: ") + ex.what());
-    response.status_code = 500;
-    response.status_message = "Internal Server Error";
-    response.body = nlohmann::json{{"message", "Internal server error"}}.dump();
+    HttpResponse err;
+    err.status_code = 500;
+    err.status_message = "Internal Server Error";
+    err.body = nlohmann::json{{"message", "Internal server error"}}.dump();
+    SendResponse(client_fd, err);
+    ::close(client_fd);
+    return;
   }
 
-  SendResponse(client_fd, response);
+  if (std::holds_alternative<SseResponse>(result)) {
+    SendSseResponse(client_fd, std::get<SseResponse>(result));
+  } else {
+    SendResponse(client_fd, std::get<HttpResponse>(result));
+  }
   ::close(client_fd);
 }
 
@@ -261,6 +270,37 @@ bool SendAll(int fd, const char* buf, std::size_t len) {
   return true;
 }
 }  // namespace
+
+void HttpServer::SendSseResponse(int client_fd, const SseResponse& sse) {
+  // Build SSE-specific HTTP headers (no Content-Length; keep connection alive for streaming)
+  std::ostringstream hdr;
+  hdr << "HTTP/1.1 " << sse.status_code << " OK\r\n"
+      << "content-type: text/event-stream; charset=utf-8\r\n"
+      << "cache-control: no-cache\r\n"
+      << "connection: close\r\n"
+      << "access-control-allow-origin: *\r\n"
+      << "access-control-allow-headers: Content-Type, Authorization, ngrok-skip-browser-warning\r\n"
+      << "access-control-allow-methods: GET, POST, DELETE, OPTIONS, HEAD\r\n"
+      << "access-control-allow-private-network: true\r\n"
+      << "x-accel-buffering: no\r\n"   // disable nginx buffering if behind proxy
+      << "\r\n";
+
+  const auto hdr_str = hdr.str();
+  if (!SendAll(client_fd, hdr_str.data(), hdr_str.size())) return;
+
+  // Provide write callback to stream_fn
+  auto write_fn = [client_fd](const std::string& chunk) -> bool {
+    return SendAll(client_fd, chunk.data(), chunk.size());
+  };
+
+  if (sse.stream_fn) {
+    try {
+      sse.stream_fn(write_fn);
+    } catch (const std::exception& ex) {
+      Logger::Warn(std::string("SSE stream_fn threw: ") + ex.what());
+    }
+  }
+}
 
 void HttpServer::SendResponse(int client_fd, const HttpResponse& original) {
   HttpResponse response = original;

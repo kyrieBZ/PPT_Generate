@@ -9,7 +9,18 @@
         <p class="subtitle">基于GenAI的自动化PPT生成平台</p>
       </div>
       
+      <!-- 维护模式提示（登录时检测到 503 后展示） -->
+      <div v-if="isMaintenance" class="maintenance-notice">
+        <div class="maintenance-icon">🔧</div>
+        <h2 class="maintenance-title">系统维护中</h2>
+        <p class="maintenance-desc">系统当前正在维护升级，暂时无法登录。<br/>请稍后再试，给您带来不便深表歉意。</p>
+        <button class="maintenance-retry-btn" @click="isMaintenance = false; formError = ''">
+          重新尝试登录
+        </button>
+      </div>
+
       <el-form
+        v-else
         ref="loginFormRef"
         :model="form"
         :rules="rules"
@@ -173,6 +184,7 @@ const form = reactive({
 })
 
 const formError = ref('')
+const isMaintenance = ref(false)
 const loginFormRef = ref(null)
 const showResetDialog = ref(false)
 const resetFormRef = ref(null)
@@ -226,7 +238,15 @@ const resetRules = {
 let cooldownTimer = null
 
 onMounted(() => {
-  ElMessage.info('欢迎进入PPT自动生成系统，请登录继续')
+  // 检测是否因维护模式被重定向到登录页
+  const urlParams = new URLSearchParams(window.location.search)
+  if (urlParams.get('maintenance') === '1') {
+    isMaintenance.value = true
+    // 清除 URL 参数，避免刷新后仍显示维护界面（实际状态以后端为准）
+    window.history.replaceState({}, '', '/login')
+  } else {
+    ElMessage.info('欢迎进入PPT自动生成系统，请登录继续')
+  }
   const savedUsername = localStorage.getItem('rememberedUsername')
   const savedRemember = localStorage.getItem('rememberMe')
   if (savedRemember === 'true') {
@@ -271,18 +291,25 @@ const handleLogin = async () => {
     }
   } catch (error) {
     console.error('登录失败:', error)
-    const message = error.userMessage || error.response?.data?.message || '登录失败，请检查用户名和密码'
-    formError.value = message
-    if (message.includes('禁用')) {
-      ElMessage.error('账号已被禁用！')
-      await ElMessageBox.alert(
-        '请联系管理员处理：bk2898453810@gmail.com',
-        '账号已被禁用',
-        {
-          confirmButtonText: '我知道了',
-          type: 'warning'
-        }
-      )
+    const status = error.response?.status
+    if (status === 503) {
+      // 系统维护模式：显示全页维护提示
+      isMaintenance.value = true
+      formError.value = ''
+    } else {
+      const message = error.userMessage || error.response?.data?.message || '登录失败，请检查用户名和密码'
+      formError.value = message
+      if (message.includes('禁用')) {
+        ElMessage.error('账号已被禁用！')
+        await ElMessageBox.alert(
+          '请联系管理员处理：bk2898453810@gmail.com',
+          '账号已被禁用',
+          {
+            confirmButtonText: '我知道了',
+            type: 'warning'
+          }
+        )
+      }
     }
   } finally {
     loading.value = false
@@ -653,6 +680,62 @@ onBeforeUnmount(() => {
   color: var(--color-primary-hover);
   font-size: 0.9rem;
   margin: 0;
+}
+
+/* ── 维护模式提示 ─────────────────────────────────── */
+.maintenance-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 32px;
+  text-align: center;
+  animation: fadeIn 0.4s ease;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.maintenance-icon {
+  font-size: 52px;
+  margin-bottom: 16px;
+  animation: spin 4s linear infinite;
+}
+@keyframes spin {
+  0%   { transform: rotate(0deg); }
+  20%  { transform: rotate(-15deg); }
+  40%  { transform: rotate(15deg); }
+  60%  { transform: rotate(-10deg); }
+  80%  { transform: rotate(10deg); }
+  100% { transform: rotate(0deg); }
+}
+.maintenance-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #92400E;
+  margin: 0 0 12px;
+}
+.maintenance-desc {
+  font-size: 0.95rem;
+  color: #6B7280;
+  line-height: 1.7;
+  margin: 0 0 24px;
+}
+.maintenance-retry-btn {
+  background: linear-gradient(135deg, #F59E0B 0%, #D97706 100%);
+  color: #FFFFFF;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 24px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+}
+.maintenance-retry-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(245, 158, 11, 0.4);
 }
 
 @media (max-width: 768px) {

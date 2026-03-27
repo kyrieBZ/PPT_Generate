@@ -11,6 +11,10 @@ void Router::AddRoute(const std::string& method, const std::string& path, Handle
   routes_[BuildKey(method, path)] = std::move(handler);
 }
 
+void Router::AddSseRoute(const std::string& method, const std::string& path, SseHandler handler) {
+  sse_routes_[BuildKey(method, path)] = std::move(handler);
+}
+
 void Router::AddPrefixRoute(const std::string& method,
                              const std::string& prefix,
                              Handler handler) {
@@ -20,7 +24,7 @@ void Router::AddPrefixRoute(const std::string& method,
   prefix_routes_.push_back(std::move(pr));
 }
 
-HttpResponse Router::Handle(const HttpRequest& request) const {
+RouteResult Router::Handle(const HttpRequest& request) const {
   const auto method_lower = string_utils::ToLower(request.method);
   if (method_lower == "options") {
     HttpResponse response;
@@ -39,13 +43,19 @@ HttpResponse Router::Handle(const HttpRequest& request) const {
     }
   }
 
-  // 1. 精确匹配
   const auto key = BuildKey(method_lower, request.path);
+
+  // 1. SSE 精确匹配（优先于普通路由）
+  if (auto it = sse_routes_.find(key); it != sse_routes_.end()) {
+    return it->second(request);
+  }
+
+  // 2. 普通精确匹配
   if (auto it = routes_.find(key); it != routes_.end()) {
     return it->second(request);
   }
 
-  // 2. 前缀匹配（选最长前缀）
+  // 3. 前缀匹配（选最长前缀）
   const PrefixRoute* best = nullptr;
   for (const auto& pr : prefix_routes_) {
     if (key.size() >= pr.key_prefix.size() &&

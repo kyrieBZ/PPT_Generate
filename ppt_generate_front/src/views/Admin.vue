@@ -1353,6 +1353,19 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" :class="{ 'spin': tmplSyncing }"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
                 {{ tmplSyncing ? '同步中…' : '同步缩略图' }}
               </button>
+              <button
+                class="tmpl-refresh-btn tmpl-reindex-btn"
+                @click="doReindexTemplates"
+                :disabled="tmplReindexing"
+                title="将当前所有上架模板向量化，写入 AI 推荐索引（ppt_templates collection）"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" :class="{ 'spin': tmplReindexing }"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>
+                <span v-if="tmplReindexing">索引构建中…</span>
+                <span v-else-if="tmplReindexResult">
+                  已索引 {{ tmplReindexResult.indexed }} 个
+                </span>
+                <span v-else>重建 AI 推荐索引</span>
+              </button>
             </div>
 
             <!-- 骨架屏 -->
@@ -1908,7 +1921,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useStore } from 'vuex'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -1936,6 +1949,7 @@ import adminAPI from '@/api/admin'
 
 const store = useStore()
 const router = useRouter()
+const route = useRoute()
 
 const activeNav = ref('overview')
 const adminSidebarCollapsed = ref(false)
@@ -3633,6 +3647,45 @@ async function doSyncThumbnails() {
   }
 }
 
+// ── AI 推荐索引重建 ──────────────────────────────────────────────────────────
+const tmplReindexing = ref(false)
+const tmplReindexResult = ref(null)
+
+async function doReindexTemplates() {
+  try {
+    await ElMessageBox.confirm(
+      '将为模板库建立 AI 推荐向量索引（已上架的模板会被优先索引；如尚未上架任何模板则索引全部）。此操作会调用 Qwen Embedding API，产生少量费用，确认继续？',
+      '重建 AI 推荐索引',
+      { confirmButtonText: '开始重建', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  tmplReindexing.value = true
+  tmplReindexResult.value = null
+  try {
+    const res = await adminAPI.reindexTemplates()
+    const { indexed, total, active_filter, message } = res.data || {}
+    tmplReindexResult.value = { indexed: indexed ?? 0 }
+    ElMessage.success(message || `已成功索引 ${indexed} 个模板`)
+    // 若 active_filter=false，提示管理员先上架模板再重建索引
+    if (active_filter === false) {
+      ElMessage.warning('检测到模板管理中尚无上架记录，已对全部模板建立索引。建议先在模板管理中上架所需模板，再重建索引以精确推荐。')
+    } else if (total !== undefined && total !== indexed) {
+      ElMessage.warning(`部分模板嵌入失败：期望 ${total} 个，实际完成 ${indexed} 个`)
+    }
+  } catch (e) {
+    const msg = e?.response?.data?.message || e?.message || '索引构建失败'
+    if (msg.includes('503') || msg.includes('未启用')) {
+      ElMessage.warning('AI 推荐服务未启用（需配置 Qdrant + Qwen AI）')
+    } else {
+      ElMessage.error('索引构建失败：' + msg)
+    }
+  } finally {
+    tmplReindexing.value = false
+  }
+}
+
 function formatTmplDate(dateStr) {
   if (!dateStr) return '-'
   return dayjs(dateStr).format('YYYY/MM/DD HH:mm')
@@ -3962,11 +4015,48 @@ watch(
   }
 )
 
-onMounted(() => {
+// 处理 query 参数：?nav=materials&preview=<id>
+// 既在 onMounted 处理首次加载，也通过 watch 响应同组件内的路由变化
+const handleQueryParams = async (query) => {
+  const nav = query.nav
+  const previewId = query.preview
+  if (!nav && !previewId) return
+  if (nav) {
+    activeNav.value = nav
+    if (nav === 'materials') {
+      await loadMaterials(1)
+    }
+  }
+  if (previewId) {
+    await nextTick()
+    const row = materials.value.find(r => String(r.id) === String(previewId))
+    if (row) {
+      await openMaterialDrawer(row, 'preview')
+    } else {
+      // 列表分页未包含该条，直接用 id 调接口打开抽屉
+      await openMaterialDrawer({ id: previewId }, 'preview')
+    }
+    // 消费掉 preview query，避免刷新重复触发
+    router.replace({ path: '/admin', query: { nav: nav || 'materials' } })
+  }
+}
+
+// 监听 route.query 变化（同组件内路由变化时 onMounted 不重触发）
+watch(
+  () => route.query,
+  async (q) => {
+    if (currentUser.value?.isAdmin) {
+      await handleQueryParams(q)
+    }
+  }
+)
+
+onMounted(async () => {
   if (currentUser.value?.isAdmin) {
     store.dispatch('fetchAdminHistory').catch(() => {})
     loadMetrics()
     loadUsers()
+    await handleQueryParams(route.query)
   }
 })
 </script>
@@ -6877,6 +6967,8 @@ onMounted(() => {
 .tmpl-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .tmpl-sync-btn { color: #0369a1; border-color: #bae6fd; background: #f0f9ff; }
 .tmpl-sync-btn:hover:not(:disabled) { border-color: #38bdf8; color: #0284c7; background: #e0f2fe; }
+.tmpl-reindex-btn { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
+.tmpl-reindex-btn:hover:not(:disabled) { border-color: #7c3aed; color: #5b21b6; background: #ede9fe; }
 
 /* 骨架屏 */
 .tmpl-skeleton-grid {

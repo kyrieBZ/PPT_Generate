@@ -5,6 +5,7 @@
 #include "http/http_types.h"
 #include "services/auth_service.h"
 #include "services/audit_service.h"
+#include "services/knowledge_rag_service.h"
 #include "services/material_service.h"
 #include "utils/thread_pool.h"
 
@@ -15,7 +16,8 @@ class MaterialController {
                      std::shared_ptr<ThreadPool> thread_pool,
                      std::string qwen_api_key = {},
                      std::uint32_t qwen_timeout_sec = 60,
-                     std::shared_ptr<AuditService> audit_service = nullptr);
+                     std::shared_ptr<AuditService> audit_service = nullptr,
+                     std::shared_ptr<KnowledgeRagService> knowledge_rag_service = nullptr);
 
   /** POST /api/material/upload  — multipart/form-data */
   HttpResponse Upload(const HttpRequest& request);
@@ -71,6 +73,18 @@ class MaterialController {
   /** POST /api/material/notices/read — 用户标记通知已读，body: {"ids":[...]} 空数组=全部已读 */
   HttpResponse MarkNoticesRead(const HttpRequest& request);
 
+  /**
+   * POST /api/material/rag_index?id=xxx — 手动触发指定素材的 RAG 向量化索引
+   * 响应：{ "chunks": N, "material_id": "..." }
+   */
+  HttpResponse RagIndex(const HttpRequest& request);
+
+  /**
+   * GET /api/material/rag_status — 查询用户知识库索引状态
+   * 响应：{ "available": bool, "total_chunks": N }
+   */
+  HttpResponse RagStatus(const HttpRequest& request);
+
  private:
   std::shared_ptr<User> Authenticate(const HttpRequest& request, std::string& error) const;
 
@@ -80,4 +94,5 @@ class MaterialController {
   std::string                     qwen_api_key_;
   std::uint32_t                   qwen_timeout_sec_ = 60;
   std::shared_ptr<AuditService>   audit_service_;
+  std::shared_ptr<KnowledgeRagService> knowledge_rag_service_;
 };

@@ -242,7 +242,8 @@ bool AiNativePptService::GenerateCreativeBrief(const std::string& topic,
                                                 int pages,
                                                 const std::string& ai_style_prompt,
                                                 std::string& out_brief_json,
-                                                std::string& error) const {
+                                                std::string& error,
+                                                const std::string& style_spec_json) const {
   const std::string system_prompt =
       R"(你是一位专业的演示文稿视觉设计师。请分析演讲主题，输出一份创意简报（Creative Brief）。
 严格输出 JSON，不要有任何额外文字、注释或 markdown 代码块。)";
@@ -253,6 +254,15 @@ bool AiNativePptService::GenerateCreativeBrief(const std::string& topic,
   user_oss << "幻灯片数量：" << pages << "\n";
   if (!ai_style_prompt.empty()) {
     user_oss << "用户补充描述：" << ai_style_prompt << "\n";
+  }
+
+  // F10 风格迁移：将参考 PPTX 的 StyleSpec 注入 Prompt，要求 AI 严格继承其配色/字体
+  if (!style_spec_json.empty()) {
+    user_oss << "\n【风格迁移约束】用户上传了参考 PPT，请严格遵循以下视觉规格进行设计，"
+             << "在输出 JSON 的 palette 和 typography 字段中直接使用参考规格的值，不得自行修改颜色或字体：\n"
+             << style_spec_json << "\n"
+             << "特别注意：palette.primary、palette.background、palette.accent 必须与参考规格完全一致；"
+             << "typography.title_font 和 typography.body_font 必须与参考规格一致。\n";
   }
   user_oss << R"(
 请输出以下 JSON 格式：
@@ -836,7 +846,8 @@ bool AiNativePptService::Generate(const std::string& topic,
                                    bool include_charts,
                                    WanxiangImageClient* wanx_client,
                                    ProgressCallback on_progress,
-                                   const std::string& material_context) const {
+                                   const std::string& material_context,
+                                   const std::string& style_spec_json) const {
   if (!IsEnabled()) {
     error_message = "AiNativePptService: Qwen API key 未配置";
     return false;
@@ -850,13 +861,17 @@ bool AiNativePptService::Generate(const std::string& topic,
                + "，页数=" + std::to_string(pages)
                + "，include_images=" + (include_images ? "true" : "false")
                + "，include_charts=" + (include_charts ? "true" : "false")
-               + (material_context.empty() ? "" : "，使用文献约束"));
+               + (material_context.empty() ? "" : "，使用文献约束")
+               + (style_spec_json.empty() ? "" : "，使用风格迁移"));
 
   // Phase 1: 创意策划（进度 10%~25%）
-  if (on_progress) on_progress(10, "AI 创意分析", "正在分析主题，生成设计创意方案...");
+  if (on_progress) on_progress(10, "AI 创意分析", style_spec_json.empty()
+      ? "正在分析主题，生成设计创意方案..."
+      : "正在分析主题与参考风格，生成设计创意方案...");
   std::string brief_json;
   std::string phase1_error;
-  if (!GenerateCreativeBrief(effective_topic, style, pages, ai_style_prompt, brief_json, phase1_error)) {
+  if (!GenerateCreativeBrief(effective_topic, style, pages, ai_style_prompt,
+                              brief_json, phase1_error, style_spec_json)) {
     error_message = "Phase 1 失败: " + phase1_error;
     return false;
   }

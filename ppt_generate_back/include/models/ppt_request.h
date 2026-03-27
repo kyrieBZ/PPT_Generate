@@ -27,6 +27,12 @@ struct PptRequestInput {
   std::string material_id;
   /** 链路 3（ai_native）：用户自然语言风格描述，可选 */
   std::string ai_style_prompt;
+  /** RAG 知识库增强：是否启用知识库检索注入 */
+  bool use_knowledge = false;
+  /** RAG 知识库增强：指定参与检索的素材 ID 列表；为空表示检索用户所有已索引素材 */
+  std::vector<std::string> rag_material_ids;
+  /** F10 风格迁移：参考 PPTX 提取的 StyleSpec JSON 字符串（ai_native 链路注入）*/
+  std::string style_spec_json;
 
   static PptRequestInput FromJson(const nlohmann::json& data);
 };

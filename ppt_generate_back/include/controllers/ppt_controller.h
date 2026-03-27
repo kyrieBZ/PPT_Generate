@@ -11,6 +11,7 @@
 #include "http/http_types.h"
 #include "services/ai_search_service.h"
 #include "services/auth_service.h"
+#include "services/knowledge_rag_service.h"
 #include "services/material_service.h"
 #include "services/model_service.h"
 #include "services/ppt_service.h"
@@ -38,11 +39,14 @@ class PptController {
                 int redis_ttl_ppt_history = 300,
                 std::shared_ptr<MySQLConnectionPool> pool = nullptr,
                 std::shared_ptr<AiSearchService> ai_search_service = nullptr,
-                std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service = nullptr);
+                std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service = nullptr,
+                std::shared_ptr<KnowledgeRagService> knowledge_rag_service = nullptr);
 
   HttpResponse Generate(const HttpRequest& request);
   /** 轮询单条请求状态，用于异步生成后查询 completed/failed */
   HttpResponse GetRequestStatus(const HttpRequest& request);
+  /** SSE 流式推送 PPT 生成进度，直到 completed/failed 或超时 */
+  SseResponse StreamProgress(const HttpRequest& request);
   HttpResponse History(const HttpRequest& request);
   HttpResponse AdminHistory(const HttpRequest& request);
   HttpResponse AdminMetrics(const HttpRequest& request);
@@ -65,6 +69,12 @@ class PptController {
   HttpResponse UpdateStructure(const HttpRequest& request);
   HttpResponse RegenerateFromStructure(const HttpRequest& request);
 
+  /** POST /api/ppt/generate-from-image — 多模态：上传图片，AI 理解后生成 PPT */
+  HttpResponse GenerateFromImage(const HttpRequest& request);
+
+  /** POST /api/ppt/analyze-style — 风格迁移：上传参考 PPTX，分析并返回 StyleSpec JSON */
+  HttpResponse AnalyzeStyle(const HttpRequest& request);
+
  private:
   std::shared_ptr<User> Authenticate(const HttpRequest& request, std::string& error_message) const;
   std::uint64_t ParseId(const std::string& str) const;
@@ -85,6 +95,7 @@ class PptController {
   std::shared_ptr<MySQLConnectionPool> pool_;
   std::shared_ptr<AiSearchService>     ai_search_service_;
   std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service_;
+  std::shared_ptr<KnowledgeRagService> knowledge_rag_service_;
 
   /** 当前正在执行（已提交到线程池）的生成任务数 */
   mutable std::atomic<int> active_jobs_{0};

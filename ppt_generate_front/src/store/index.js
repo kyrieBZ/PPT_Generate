@@ -1,6 +1,6 @@
 import { createStore } from 'vuex'
 import authAPI, { setAuthToken } from '@/api/auth'
-import pptAPI from '@/api/ppt'
+import pptAPI, { watchPptProgress } from '@/api/ppt'
 import templatesAPI from '@/api/templates'
 import modelsAPI from '@/api/models'
 import adminAPI from '@/api/admin'
@@ -66,7 +66,14 @@ export default createStore({
       results: [],
       query: '',
       fallback: false
-    }
+    },
+    // AI 助手工具触发的跨组件状态
+    prefillGenerateParams: null,  // { topic, pageCount, style }
+    openMaterialUpload: false,    // 触发素材页打开上传面板
+    materialPreviewId: null,      // 触发素材页打开指定素材的预览弹窗
+    loginHint: null,              // 登录页预填用户名
+    // AI 助手驱动的 PPT 生成进度（Main.vue -> AiAssistant.vue）
+    assistantGenProgress: null    // null | { stage, step, progress(0-100), done, failed, pptId, title }
   },
   mutations: {
     setUser(state, user) {
@@ -130,6 +137,30 @@ export default createStore({
       if (Object.prototype.hasOwnProperty.call(state.loading, key)) {
         state.loading[key] = value
       }
+    },
+    // ── AI 助手工具触发的跨组件状态 ────────────────────
+    /** 助手触发生成时预填的参数，Main.vue 的 generate 子页监听此字段 */
+    setPrefillGenerateParams(state, params) {
+      state.prefillGenerateParams = params || null
+    },
+    clearPrefillGenerateParams(state) {
+      state.prefillGenerateParams = null
+    },
+    /** 助手触发打开素材上传面板，materials 子页监听此字段 */
+    setOpenMaterialUpload(state, value) {
+      state.openMaterialUpload = !!value
+    },
+    /** 助手触发打开指定素材的预览弹窗，materials 子页监听此字段 */
+    setMaterialPreview(state, materialId) {
+      state.materialPreviewId = materialId || null
+    },
+    /** 助手触发登录页预填用户名 */
+    setLoginHint(state, username) {
+      state.loginHint = username || null
+    },
+    /** Main.vue 向助手面板推送 PPT 生成进度 */
+    setAssistantGenProgress(state, progress) {
+      state.assistantGenProgress = progress || null
     },
     setAiSearchMode(state, mode) {
       state.aiSearch.mode = mode
@@ -287,6 +318,58 @@ export default createStore({
 
       if (onProgress) onProgress({ progress: 5, stage: '初始化', step: '正在提交生成请求...' })
 
+      // ── P4.1：优先使用 SSE 流式进度，降级到轮询 ──────────────────────────
+      const sseSupported = typeof EventSource !== 'undefined'
+
+      if (sseSupported) {
+        return new Promise((resolve) => {
+          const es = watchPptProgress(request.id, {
+            onProgress(data) {
+              if (onProgress) {
+                onProgress({
+                  progress: typeof data.progress === 'number' ? data.progress : Number(data.progress) || 0,
+                  stage: data.stage || '生成中',
+                  step: data.step || ''
+                })
+              }
+            },
+            async onDone(data) {
+              if (onProgress) onProgress({ progress: 100, stage: '生成完成', step: 'PPT 已成功生成！' })
+              await dispatch('fetchPptHistory')
+              // 从历史记录里找出最新这条的完整信息
+              try {
+                const res = await pptAPI.getRequest(request.id)
+                const req = res.data?.request
+                if (req) {
+                  resolve({ request: normalizeRequest(req), preview: null })
+                  return
+                }
+              } catch (_) {}
+              resolve({ request: { ...normalized, status: 'completed' }, preview: null })
+            },
+            async onFailed(data) {
+              await dispatch('fetchPptHistory')
+              const err = new Error(data.step || 'PPT 生成失败，请稍后重试')
+              err.isGenerationFailed = true
+              resolve(Promise.reject(err))
+            },
+            onTimeout() {
+              resolve({ timedOut: true, requestId: request.id })
+            },
+            onError() {
+              // SSE 连接失败，降级到轮询模式
+              resolve({ timedOut: true, requestId: request.id })
+            }
+          })
+          // 最长等待 10 分钟，SSE 超时后关闭（后端已控制，此处双保险）
+          setTimeout(() => {
+            es.close()
+            resolve({ timedOut: true, requestId: request.id })
+          }, 600000)
+        })
+      }
+
+      // ── 降级：轮询模式（浏览器不支持 SSE 时）────────────────────────────
       const pollIntervalMs = 2000
       const timeoutMs = 300000
       const start = Date.now()
@@ -298,7 +381,6 @@ export default createStore({
           if (!req) continue
           const status = req.status
 
-          // 上报进度（progress 从后端来的是字符串，需转数字；stage 是英文 key，需映射中文）
           const STAGE_LABELS = {
             init: '初始化', outline: '生成大纲', layout: '分析版式',
             slides: '生成内容', images: '配图生成', rendering: '渲染文件',

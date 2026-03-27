@@ -72,12 +72,14 @@ MaterialService::MaterialService(std::shared_ptr<MySQLConnectionPool> pool,
                                  MaterialConfig material_config,
                                  std::string qwen_api_key,
                                  std::string python_binary,
-                                 std::shared_ptr<FastDfsClient> fastdfs_client)
+                                 std::shared_ptr<FastDfsClient> fastdfs_client,
+                                 std::shared_ptr<KnowledgeRagService> knowledge_rag_service)
     : pool_(std::move(pool)),
       material_config_(std::move(material_config)),
       qwen_api_key_(std::move(qwen_api_key)),
       python_binary_(std::move(python_binary)),
-      fastdfs_client_(std::move(fastdfs_client)) {}
+      fastdfs_client_(std::move(fastdfs_client)),
+      knowledge_rag_service_(std::move(knowledge_rag_service)) {}
 
 bool MaterialService::CreateMaterial(std::uint64_t user_id,
                                      const std::string& filename,
@@ -333,6 +335,13 @@ bool MaterialService::DeleteMaterial(const std::string& material_id,
     std::error_code ec;
     std::filesystem::remove(mat.file_path, ec);
   }
+
+  // 同步删除 RAG 知识库中该素材的向量块
+  if (knowledge_rag_service_ && knowledge_rag_service_->IsAvailable()) {
+    std::string rag_err;
+    knowledge_rag_service_->RemoveMaterial(material_id, rag_err);
+  }
+
   return true;
 }
 
@@ -510,6 +519,72 @@ void MaterialService::RunExtraction(const std::string& material_id) {
   if (fastdfs_client_ && fastdfs_client_->IsEnabled()) {
     UploadToFastDfs(material_id, fastdfs_client_->config().delete_local_after_upload);
   }
+
+  // 提取完成后自动写入 RAG 知识库（若已配置 KnowledgeRagService）
+  if (knowledge_rag_service_ && knowledge_rag_service_->IsAvailable()) {
+    const int chunks = IndexMaterialToRag(material_id);
+    if (chunks >= 0) {
+      Logger::Info("MaterialService: RAG indexed " + std::to_string(chunks) +
+                   " chunks for material=" + material_id);
+    } else {
+      Logger::Warn("MaterialService: RAG indexing failed for material=" + material_id);
+    }
+  }
+}
+
+int MaterialService::IndexMaterialToRag(const std::string& material_id) {
+  if (!knowledge_rag_service_ || !knowledge_rag_service_->IsAvailable()) {
+    return -1;
+  }
+
+  // 查询素材（不限 user_id，内部调用）
+  auto conn_guard = pool_->GetConnection();
+  MYSQL* conn = conn_guard.Get();
+  if (!conn) {
+    Logger::Warn("MaterialService::IndexMaterialToRag: no DB connection for " + material_id);
+    return -1;
+  }
+
+  std::ostringstream q;
+  q << "SELECT id, user_id, filename, file_type, file_path, file_size, status, "
+    << "extract_result, error_msg, review_result, "
+    << "UNIX_TIMESTAMP(created_at), UNIX_TIMESTAMP(updated_at), "
+    << "IFNULL(fastdfs_file_id,''), IFNULL(fastdfs_url,''), IFNULL(storage_type,'local') "
+    << "FROM materials WHERE id = '" << material_id << "'";
+
+  if (mysql_query(conn, q.str().c_str()) != 0) {
+    Logger::Warn("MaterialService::IndexMaterialToRag: query failed for " + material_id);
+    return -1;
+  }
+  MYSQL_RES* res = mysql_store_result(conn);
+  if (!res) return -1;
+  MYSQL_ROW row = mysql_fetch_row(res);
+  if (!row) {
+    mysql_free_result(res);
+    Logger::Warn("MaterialService::IndexMaterialToRag: material not found: " + material_id);
+    return -1;
+  }
+  unsigned long* lengths = mysql_fetch_lengths(res);
+  Material mat = RowToMaterial(row, lengths);
+  mysql_free_result(res);
+
+  if (mat.status != "completed" || mat.extract_result.empty()) {
+    Logger::Warn("MaterialService::IndexMaterialToRag: material not ready: " + material_id +
+                 " status=" + mat.status);
+    return -1;
+  }
+
+  // 从 extract_result JSON 提取可索引文本
+  const std::string indexable_text =
+      KnowledgeRagService::BuildIndexableText(mat.extract_result);
+  if (indexable_text.empty()) {
+    Logger::Warn("MaterialService::IndexMaterialToRag: no indexable text for " + material_id);
+    return -1;
+  }
+
+  std::string rag_error;
+  return knowledge_rag_service_->IndexMaterial(
+      material_id, mat.user_id, indexable_text, mat.filename, rag_error);
 }
 
 std::vector<Material> MaterialService::AdminListMaterials(const AdminMaterialFilter& filter,
@@ -542,6 +617,21 @@ std::vector<Material> MaterialService::AdminListMaterials(const AdminMaterialFil
     }
     if (!safe_type.empty()) {
       where << " AND file_type = '" << safe_type << "'";
+    }
+  }
+  if (!filter.review_status.empty()) {
+    if (filter.review_status == "unreviewed") {
+      // 未审核：review_result 为空或 null
+      where << " AND (review_result IS NULL OR review_result = '')";
+    } else {
+      // pass / violation / unknown：从 JSON 提取 result 字段
+      std::string safe_rv;
+      for (char c : filter.review_status) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') safe_rv.push_back(c);
+      }
+      if (!safe_rv.empty()) {
+        where << " AND JSON_VALUE(review_result, '$.result') = '" << safe_rv << "'";
+      }
     }
   }
 

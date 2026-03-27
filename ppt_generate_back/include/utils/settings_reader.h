@@ -37,4 +37,13 @@ int GetInt(MySQLConnectionPool& pool,
            const std::string&   key,
            int                  default_value = 0);
 
+/**
+ * 写入布尔配置项（UPDATE system_settings SET value=... WHERE key=...）。
+ * 要求 key 已存在于表中（由 EnsureDefaultSettings 保证）。
+ * 返回 true 表示写入成功。
+ */
+bool SetBool(MySQLConnectionPool& pool,
+             const std::string&   key,
+             bool                 value);
+
 }  // namespace SettingsReader

@@ -1,12 +1,14 @@
 #include "services/ppt_service.h"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <sstream>
-#include <cstring>  // 添加cstring头文件
+#include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include <mysql/mysql.h>
-#include "logger.h"  // 添加日志头文件
+#include "logger.h"
 
 PptService::PptService(std::shared_ptr<MySQLConnectionPool> pool) : pool_(std::move(pool)) {}
 
@@ -662,6 +664,27 @@ bool PptService::DeleteRequest(std::uint64_t user_id,
   }
 
   return true;
+}
+
+int PptService::BatchDeleteRequests(std::uint64_t user_id,
+                                    const std::vector<std::uint64_t>& request_ids,
+                                    std::vector<std::uint64_t>& out_failed_ids,
+                                    std::string& error) {
+  if (request_ids.empty()) return 0;
+
+  int deleted_count = 0;
+  for (std::uint64_t rid : request_ids) {
+    std::string item_err;
+    if (DeleteRequest(user_id, rid, item_err)) {
+      ++deleted_count;
+    } else {
+      out_failed_ids.push_back(rid);
+    }
+  }
+  if (!out_failed_ids.empty()) {
+    error = "部分记录删除失败（共 " + std::to_string(out_failed_ids.size()) + " 条）";
+  }
+  return deleted_count;
 }
 
 bool PptService::GetRequest(std::uint64_t user_id,
@@ -1341,23 +1364,97 @@ bool PptService::GetInsights(InsightData& out, std::string& error) {
     }
   }
 
-  // ── 2. 热门主题关键词（取 topic 字段前 10 个字作为短语，GROUP BY 统计） ──
-  //    简单策略：截取 topic 前 20 字作为 key，取频次 TOP 20
+  // ── 2. 热门关键词（从 topic 字段提取真正的关键词，C++ 分词 + 停用词过滤）──
   {
-    MYSQL_RES* res = nullptr;
-    if (!run("SELECT LEFT(TRIM(topic), 20) AS kw, COUNT(*) AS cnt "
-             "FROM ppt_requests WHERE topic <> '' "
-             "GROUP BY kw ORDER BY cnt DESC LIMIT 20",
-             res)) return false;
-    if (res) {
-      MYSQL_ROW row;
-      while ((row = mysql_fetch_row(res))) {
-        TopicKeyword tk;
-        tk.keyword = row[0] ? row[0] : "";
-        tk.count   = row[1] ? std::stoi(row[1]) : 0;
-        if (!tk.keyword.empty()) out.top_topics.push_back(std::move(tk));
+    std::vector<std::string> raw_topics;
+    std::string topics_err;
+    GetAllTopics(raw_topics, 500, topics_err);
+
+    // 中文停用词表（高频无意义词）
+    static const std::unordered_set<std::string> kStopWords = {
+        "的", "了", "和", "是", "在", "有", "与", "及", "或", "等",
+        "对", "对于", "关于", "基于", "用于", "以", "为", "从", "到",
+        "一个", "一种", "一份", "一套", "一篇", "这个", "这种",
+        "如何", "怎么", "什么", "哪些", "为什么", "如何",
+        "分析", "研究", "介绍", "概述", "总结", "探讨", "方案",
+        "报告", "报告书", "手册", "指南", "文档", "文件", "说明",
+        "ppt", "PPT", "presentation", "slide", "slides",
+        "the", "a", "an", "of", "in", "on", "at", "to", "for",
+        "and", "or", "with", "by", "from", "that", "this",
+    };
+
+    // 辅助函数：按标点/空格拆分 UTF-8 字符串为词/短语
+    // 策略：按空格/标点分割，保留 2-12 字符（约1-6个汉字）的有意义片段
+    auto split_keywords = [&](const std::string& text, std::vector<std::string>& out_kws) {
+      std::string cur;
+      auto flush = [&]() {
+        // 去掉首尾空格
+        size_t s = 0, e = cur.size();
+        while (s < e && (unsigned char)cur[s] <= 0x20) ++s;
+        while (e > s && (unsigned char)cur[e-1] <= 0x20) --e;
+        std::string w = cur.substr(s, e - s);
+        // 长度过滤：至少2字节（1个汉字），最多24字节（约8个汉字）
+        if (w.size() >= 2 && w.size() <= 24 && kStopWords.find(w) == kStopWords.end()) {
+          out_kws.push_back(w);
+        }
+        cur.clear();
+      };
+      // 分隔符（ASCII 标点 + 常见全角标点 UTF-8 字节序列）
+      // 全角逗号 \xe3\x80\x81, 句号 \xe3\x80\x82, ！\xef\xbc\x81 等用字节前缀检测
+      size_t i = 0;
+      while (i < text.size()) {
+        unsigned char c = (unsigned char)text[i];
+        bool is_sep = false;
+        if (c < 0x80) {
+          // ASCII: 空格/标点做分隔
+          if (c <= 0x20 || c == ',' || c == '.' || c == '!' || c == '?' ||
+              c == ';' || c == ':' || c == '(' || c == ')' || c == '[' ||
+              c == ']' || c == '/' || c == '\\' || c == '"' || c == '\'' ||
+              c == '-' || c == '_' || c == '+' || c == '=' || c == '*') {
+            is_sep = true;
+          }
+          if (is_sep) { flush(); ++i; }
+          else { cur += text[i++]; }
+        } else if (c == 0xE3 && i+2 < text.size()) {
+          // U+3000-U+303F 中文标点区（e3 80 xx）
+          unsigned char c2 = (unsigned char)text[i+1];
+          if (c2 == 0x80) { flush(); i += 3; }
+          else { cur += text[i++]; cur += text[i++]; cur += text[i++]; }
+        } else if (c == 0xEF && i+2 < text.size()) {
+          // 全角字符区（ef bc xx, ef bd xx）
+          unsigned char c2 = (unsigned char)text[i+1];
+          if (c2 == 0xBC || c2 == 0xBD) { flush(); i += 3; }
+          else { cur += text[i++]; cur += text[i++]; cur += text[i++]; }
+        } else {
+          // 其他 UTF-8 多字节（汉字等），全部追加
+          int len = 1;
+          if      ((c & 0xE0) == 0xC0) len = 2;
+          else if ((c & 0xF0) == 0xE0) len = 3;
+          else if ((c & 0xF8) == 0xF0) len = 4;
+          for (int k = 0; k < len && i < text.size(); ++k) cur += text[i++];
+        }
       }
-      mysql_free_result(res);
+      flush();
+    };
+
+    // 统计词频
+    std::unordered_map<std::string, int> freq;
+    for (const auto& topic : raw_topics) {
+      std::vector<std::string> kws;
+      split_keywords(topic, kws);
+      for (const auto& kw : kws) freq[kw]++;
+    }
+
+    // 按频次降序，取 Top 20
+    std::vector<std::pair<std::string, int>> sorted_kws(freq.begin(), freq.end());
+    std::sort(sorted_kws.begin(), sorted_kws.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (size_t n = 0; n < std::min<size_t>(20, sorted_kws.size()); ++n) {
+      if (sorted_kws[n].second < 1) break;
+      TopicKeyword tk;
+      tk.keyword = sorted_kws[n].first;
+      tk.count   = sorted_kws[n].second;
+      out.top_topics.push_back(std::move(tk));
     }
   }
 

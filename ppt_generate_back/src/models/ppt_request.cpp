@@ -108,6 +108,29 @@ PptRequestInput PptRequestInput::FromJson(const nlohmann::json& data) {
   input.theme_preset = ReadString(data, "themePreset", "theme_preset");
   input.material_id = ReadString(data, "materialId", "material_id");
   input.ai_style_prompt = ReadString(data, "aiStylePrompt", "ai_style_prompt");
+  input.use_knowledge = ReadBool(data, "useKnowledge", "use_knowledge", false);
+  // 解析 ragMaterialIds / rag_material_ids 数组
+  for (const char* key : {"ragMaterialIds", "rag_material_ids"}) {
+    if (const auto it = data.find(key); it != data.end() && it->is_array()) {
+      for (const auto& elem : *it) {
+        if (elem.is_string()) {
+          input.rag_material_ids.push_back(elem.get<std::string>());
+        }
+      }
+      break;
+    }
+  }
+  // style_spec_json: accept either a JSON object (serialise it) or a string
+  for (const char* key : {"styleSpecJson", "style_spec_json", "styleSpec", "style_spec"}) {
+    if (const auto it = data.find(key); it != data.end()) {
+      if (it->is_string()) {
+        input.style_spec_json = it->get<std::string>();
+      } else if (it->is_object()) {
+        input.style_spec_json = it->dump();
+      }
+      break;
+    }
+  }
   input.pages = std::clamp(input.pages, 1, 50);
   return input;
 }

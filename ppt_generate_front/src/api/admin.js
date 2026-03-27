@@ -257,5 +257,14 @@ export default {
    */
   templateSyncStatus(templateId) {
     return apiClient.get('/admin/templates/sync_status', { params: { templateId } })
+  },
+
+  /**
+   * 重建模板 AI 推荐向量索引（F07）
+   * 只对当前上架中的模板建立 Qdrant 向量索引
+   * 返回 { indexed, total_active, message }
+   */
+  reindexTemplates() {
+    return apiClient.post('/admin/templates/reindex')
   }
 }

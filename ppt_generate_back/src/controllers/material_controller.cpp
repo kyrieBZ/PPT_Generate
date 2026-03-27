@@ -173,13 +173,15 @@ MaterialController::MaterialController(std::shared_ptr<AuthService>    auth_serv
                                        std::shared_ptr<ThreadPool>      thread_pool,
                                        std::string                      qwen_api_key,
                                        std::uint32_t                    qwen_timeout_sec,
-                                       std::shared_ptr<AuditService>    audit_service)
+                                       std::shared_ptr<AuditService>    audit_service,
+                                       std::shared_ptr<KnowledgeRagService> knowledge_rag_service)
     : auth_service_(std::move(auth_service)),
       material_service_(std::move(material_service)),
       thread_pool_(std::move(thread_pool)),
       qwen_api_key_(std::move(qwen_api_key)),
       qwen_timeout_sec_(qwen_timeout_sec > 0 ? qwen_timeout_sec : 60),
-      audit_service_(std::move(audit_service)) {}
+      audit_service_(std::move(audit_service)),
+      knowledge_rag_service_(std::move(knowledge_rag_service)) {}
 
 std::shared_ptr<User> MaterialController::Authenticate(const HttpRequest& request,
                                                         std::string& error) const {
@@ -1147,4 +1149,76 @@ HttpResponse MaterialController::MarkNoticesRead(const HttpRequest& request) {
     return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
   }
   return HttpResponse::Json(200, {{"message", "已标记为已读"}});
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// RAG 知识库接口
+
+HttpResponse MaterialController::RagIndex(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED",
+                                             error.empty() ? "Unauthorized" : error));
+  }
+
+  std::string material_id;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    material_id = it->second;
+  }
+  if (material_id.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_MISSING_PARAM", "缺少 id 参数"));
+  }
+
+  if (!knowledge_rag_service_ || !knowledge_rag_service_->IsAvailable()) {
+    return HttpResponse::Json(503, ErrorJson("ERR_RAG_UNAVAILABLE",
+                                             "RAG 知识库服务不可用（Qdrant 或 Qwen Embedding 未启用）"));
+  }
+
+  // 权限验证：确认素材属于该用户
+  Material mat;
+  std::string mat_error;
+  if (!material_service_->GetMaterial(material_id, user->id, mat, mat_error)) {
+    return HttpResponse::Json(404, ErrorJson("ERR_NOT_FOUND", "素材不存在或无权访问"));
+  }
+  if (mat.status != "completed" || mat.extract_result.empty()) {
+    return HttpResponse::Json(422, ErrorJson("ERR_NOT_READY",
+                                             "素材尚未提取完成，无法建立知识库索引"));
+  }
+
+  const int chunks = material_service_->IndexMaterialToRag(material_id);
+  if (chunks < 0) {
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "RAG 索引写入失败"));
+  }
+
+  return HttpResponse::Json(200, {
+    {"material_id", material_id},
+    {"chunks",      chunks},
+    {"message",     "知识库索引成功，共 " + std::to_string(chunks) + " 个知识块"}
+  });
+}
+
+HttpResponse MaterialController::RagStatus(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED",
+                                             error.empty() ? "Unauthorized" : error));
+  }
+
+  const bool available = knowledge_rag_service_ && knowledge_rag_service_->IsAvailable();
+  int total_chunks = 0;
+  if (available) {
+    std::string count_err;
+    total_chunks = knowledge_rag_service_->CountUserChunks(user->id, count_err);
+    if (total_chunks < 0) total_chunks = 0;
+  }
+
+  return HttpResponse::Json(200, {
+    {"available",    available},
+    {"total_chunks", total_chunks},
+    {"message",      available
+        ? "知识库服务可用，您共有 " + std::to_string(total_chunks) + " 个知识块"
+        : "知识库服务未启用（需配置 Qdrant + Qwen AI 检索）"}
+  });
 }

@@ -92,6 +92,15 @@ class QwenClient {
       int top_k,
       const std::string& model = "qwen-plus") const;
 
+  // Analyze images using Qwen-VL multimodal API and extract structured content
+  // images_base64: list of base64-encoded image data strings (with or without data URI prefix)
+  // out_description: extracted structured description for PPT generation
+  // Returns true on success
+  bool AnalyzeImages(const std::vector<std::string>& images_base64,
+                     const std::string& user_hint,
+                     std::string& out_description,
+                     std::string& error_message) const;
+
  private:
   std::string api_key_;
   std::uint32_t timeout_seconds_;

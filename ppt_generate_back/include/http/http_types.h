@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 
@@ -82,5 +83,35 @@ struct HttpResponse {
     headers["access-control-allow-origin"] = "*";
     headers["access-control-allow-headers"] = "Content-Type, Authorization, ngrok-skip-browser-warning";
     headers["access-control-allow-methods"] = "GET, POST, DELETE, OPTIONS, HEAD";
+    // Chrome Private Network Access: allow requests from public pages (e.g. ngrok) to localhost
+    headers["access-control-allow-private-network"] = "true";
+  }
+};
+
+/**
+ * SSE (Server-Sent Events) 流式响应描述符。
+ * HttpServer 检测到路由返回此类型时，保持 TCP 连接打开，
+ * 将 auth_headers 和 CORS 头发送后调用 stream_fn，
+ * stream_fn 通过 write_fn 向客户端逐块写入 SSE 事件。
+ *
+ * SSE 事件格式：
+ *   data: <json>\n\n
+ *
+ * stream_fn 应在生成完毕后返回（连接随后关闭）。
+ */
+struct SseResponse {
+  int status_code = 200;
+  // stream_fn 通过此回调写入原始字节；返回 false 表示客户端已断开
+  using WriteFn = std::function<bool(const std::string&)>;
+  // 实际流逻辑：blocking，直到流结束
+  std::function<void(WriteFn)> stream_fn;
+
+  /** 构造辅助：将 JSON 对象格式化为单条 SSE data 行 */
+  static std::string MakeEvent(const nlohmann::json& payload,
+                               const std::string& event_name = "") {
+    std::string out;
+    if (!event_name.empty()) out += "event: " + event_name + "\n";
+    out += "data: " + payload.dump() + "\n\n";
+    return out;
   }
 };

@@ -35,6 +35,8 @@
 #include "services/material_service.h"
 #include "services/template_service.h"
 #include "services/ai_search_service.h"
+#include "services/knowledge_rag_service.h"
+#include "services/template_recommend_service.h"
 #include "services/audit_service.h"
 #include "services/qdrant_client.h"
 #include "services/template_manager_service.h"
@@ -186,9 +188,57 @@ int main(int argc, char* argv[]) {
     auto audit_service = std::make_shared<AuditService>(pool);
 
     std::string qwen_key = config.providers().qwen_api_key;
+
+    // ── RAG 知识库服务（可选，依赖 AI 检索的 Qdrant + QwenClient）─────────────
+    std::shared_ptr<KnowledgeRagService> knowledge_rag_service;
+    if (config.ai_search().enabled && qdrant_client && qwen_client) {
+      try {
+        const std::string qdrant_base_url =
+            "http://" + config.ai_search().qdrant_host + ":" +
+            std::to_string(config.ai_search().qdrant_port);
+        knowledge_rag_service = std::make_shared<KnowledgeRagService>(
+            qdrant_client, qwen_client, qdrant_base_url,
+            500,   // chunk_size
+            50,    // chunk_overlap
+            config.ai_search().embedding_dimension);
+        std::string rag_err;
+        if (knowledge_rag_service->EnsureCollection(rag_err)) {
+          Logger::Info("KnowledgeRagService initialized (collection=user_knowledge)");
+        } else {
+          Logger::Warn("KnowledgeRagService: EnsureCollection failed: " + rag_err);
+          knowledge_rag_service.reset();
+        }
+      } catch (const std::exception& e) {
+        Logger::Warn(std::string("KnowledgeRagService init failed, disabled: ") + e.what());
+        knowledge_rag_service.reset();
+      }
+    }
+
+    // ── 模板智能推荐服务（可选，依赖 AI 检索的 Qdrant + QwenClient）────────────
+    std::shared_ptr<TemplateRecommendService> tmpl_recommend_service;
+    if (config.ai_search().enabled && qwen_client && !config.providers().qwen_api_key.empty()) {
+      try {
+        const std::string qdrant_base_url =
+            "http://" + config.ai_search().qdrant_host + ":" +
+            std::to_string(config.ai_search().qdrant_port);
+        tmpl_recommend_service = std::make_shared<TemplateRecommendService>(
+            qwen_client, qdrant_base_url, config.ai_search().embedding_dimension);
+        std::string tr_err;
+        if (tmpl_recommend_service->EnsureCollection(tr_err)) {
+          Logger::Info("TemplateRecommendService initialized (collection=ppt_templates)");
+        } else {
+          Logger::Warn("TemplateRecommendService: EnsureCollection failed: " + tr_err);
+          tmpl_recommend_service.reset();
+        }
+      } catch (const std::exception& e) {
+        Logger::Warn(std::string("TemplateRecommendService init failed, disabled: ") + e.what());
+        tmpl_recommend_service.reset();
+      }
+    }
+
     auto material_service = std::make_shared<MaterialService>(
         pool, config.material(), qwen_key, config.generation().python_binary,
-        fastdfs_client);
+        fastdfs_client, knowledge_rag_service);
 
     // ── MongoDB（可选）──────────────────────────────────────────────────────
     std::shared_ptr<MongoClient> mongo_client;
@@ -209,7 +259,10 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    auto assistant_service = std::make_shared<AssistantService>(qwen_key, 30, mongo_client);
+    auto assistant_service = std::make_shared<AssistantService>(
+        qwen_key, 30, mongo_client, pool,
+        ppt_service, material_service, tmpl_mgr_service, template_service,
+        ai_search_service);
 
     // 将 Qwen 配置注入 GenerationConfig，供 AI 原生链路使用
     GenerationConfig gen_config = config.generation();
@@ -223,7 +276,8 @@ int main(int argc, char* argv[]) {
     MaterialController material_controller(auth_service, material_service, thread_pool,
                                            config.providers().qwen_api_key,
                                            config.providers().qwen_timeout_seconds,
-                                           audit_service);
+                                           audit_service,
+                                           knowledge_rag_service);
     PptController ppt_controller(auth_service,
                                  ppt_service,
                                  model_service,
@@ -239,8 +293,10 @@ int main(int argc, char* argv[]) {
                                  config.redis().ttl_ppt_history,
                                  pool,
                                  ai_search_service,
-                                 tmpl_fastdfs_service);
-    TemplateController template_controller(template_service, tmpl_mgr_service, tmpl_fastdfs_service);
+                                 tmpl_fastdfs_service,
+                                 knowledge_rag_service);
+    TemplateController template_controller(template_service, tmpl_mgr_service,
+                                           tmpl_fastdfs_service, tmpl_recommend_service);
     ModelController model_controller(model_service);
     AnnouncementController announcement_controller(auth_service, pool, audit_service);
     AuditController audit_controller(auth_service, audit_service);
@@ -313,8 +369,18 @@ int main(int argc, char* argv[]) {
     router.AddRoute("POST", "/api/ppt/generate", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Generate(request);
     });
+    router.AddRoute("POST", "/api/ppt/generate-from-image", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.GenerateFromImage(request);
+    });
+    router.AddRoute("POST", "/api/ppt/analyze-style", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.AnalyzeStyle(request);
+    });
     router.AddRoute("GET", "/api/ppt/request", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.GetRequestStatus(request);
+    });
+    // SSE 流式进度推送（P4.1）
+    router.AddSseRoute("GET", "/api/ppt/progress/stream", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.StreamProgress(request);
     });
 
     router.AddRoute("GET", "/api/ppt/history", [&ppt_controller](const HttpRequest& request) {
@@ -397,6 +463,14 @@ int main(int argc, char* argv[]) {
     router.AddRoute("GET", "/api/templates/preview", [&template_controller](const HttpRequest& request) {
       return template_controller.Preview(request);
     });
+    // F07：AI 智能模板推荐
+    router.AddRoute("POST", "/api/templates/recommend", [&template_controller](const HttpRequest& request) {
+      return template_controller.Recommend(request);
+    });
+    // 管理员：全量重建模板向量索引
+    router.AddRoute("POST", "/api/admin/templates/reindex", [&template_controller](const HttpRequest& request) {
+      return template_controller.ReindexTemplates(request);
+    });
 
     router.AddRoute("GET", "/api/models", [&model_controller](const HttpRequest& request) {
       return model_controller.List(request);
@@ -443,6 +517,13 @@ int main(int argc, char* argv[]) {
     });
     router.AddRoute("POST", "/api/material/notices/read", [&material_controller](const HttpRequest& request) {
       return material_controller.MarkNoticesRead(request);
+    });
+    // RAG 知识库接口
+    router.AddRoute("POST", "/api/material/rag_index", [&material_controller](const HttpRequest& request) {
+      return material_controller.RagIndex(request);
+    });
+    router.AddRoute("GET", "/api/material/rag_status", [&material_controller](const HttpRequest& request) {
+      return material_controller.RagStatus(request);
     });
 
     // ── 公告管理 ──────────────────────────────────────────────────────────────
@@ -602,10 +683,12 @@ int main(int argc, char* argv[]) {
 
     // ── 全局中间件：维护模式拦截 ─────────────────────────────────────────────
     // 放行：OPTIONS、/api/health、/api/auth/login、所有 /api/admin/* 端点
-    router.SetGlobalMiddleware([&pool](const HttpRequest& req) -> std::optional<HttpResponse> {
+    // /api/auth/login 放行但在 AuthController::Login 内部区分：普通用户→503，管理员→正常登录
+    // 已登录管理员（JWT is_admin=true）的所有请求放行，确保管理员能通过 AI 助手关闭维护模式
+    router.SetGlobalMiddleware([&pool, &auth_service](const HttpRequest& req) -> std::optional<HttpResponse> {
       const bool is_admin_path  = req.path.size() >= 11 &&
                                   req.path.substr(0, 11) == "/api/admin/";
-      const bool is_passthrough = req.path == "/api/health"                       ||
+      const bool is_always_open = req.path == "/api/health"                       ||
                                   req.path == "/api/auth/login"                  ||
                                   req.path == "/api/auth/password/reset/request" ||
                                   req.path == "/api/auth/password/reset/confirm" ||
@@ -613,15 +696,29 @@ int main(int argc, char* argv[]) {
                                   req.path == "/api/templates/preview"           ||
                                   req.path == "/api/templates/file"              ||
                                   is_admin_path;
-      if (is_passthrough) return std::nullopt;
+      if (is_always_open) return std::nullopt;
 
       const bool in_maintenance = SettingsReader::GetBool(*pool, "maintenance_mode", false);
-      if (in_maintenance) {
-        return HttpResponse::Json(503, nlohmann::json{
-            {"code",    "ERR_MAINTENANCE"},
-            {"message", "系统正在维护中，请稍后再试。如有疑问请联系管理员。"}});
+      if (!in_maintenance) return std::nullopt;
+
+      // 维护模式下：检查请求是否携带管理员 JWT，管理员可放行
+      const auto& headers = req.headers;
+      auto it = headers.find("authorization");
+      if (it != headers.end()) {
+        const std::string& auth_header = it->second;
+        if (auth_header.size() > 7 && auth_header.substr(0, 7) == "Bearer ") {
+          const std::string token = auth_header.substr(7);
+          std::string err;
+          auto user = auth_service->GetUserFromToken(token, err);
+          if (user && user->is_admin) {
+            return std::nullopt;  // 管理员放行
+          }
+        }
       }
-      return std::nullopt;
+
+      return HttpResponse::Json(503, nlohmann::json{
+          {"code",    "ERR_MAINTENANCE"},
+          {"message", "系统正在维护中，请稍后再试。如有疑问请联系管理员。"}});
     });
 
     HttpServer server(config.server(), router);

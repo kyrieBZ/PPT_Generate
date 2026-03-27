@@ -94,6 +94,13 @@ class PptService {
   // Delete a PPT generation request record
   bool DeleteRequest(std::uint64_t user_id, std::uint64_t request_id, std::string& error);
 
+  // Batch delete PPT records (user can only delete their own; admin can pass user_id=0 to skip check)
+  // Returns the count of successfully deleted records; failed ids are collected in out_failed_ids
+  int BatchDeleteRequests(std::uint64_t user_id,
+                          const std::vector<std::uint64_t>& request_ids,
+                          std::vector<std::uint64_t>& out_failed_ids,
+                          std::string& error);
+
   // Get a single PPT generation request
   bool GetRequest(std::uint64_t user_id, std::uint64_t request_id, PptRequest& out_request, std::string& error);
 

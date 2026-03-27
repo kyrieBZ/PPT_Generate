@@ -24,6 +24,7 @@
 #include "models/outline_item.h"
 #include "models/slide_content.h"
 #include "services/ai_native_ppt_service.h"
+#include "services/knowledge_rag_service.h"
 #include "services/material_service.h"
 #include "services/template_fastdfs_service.h"
 #include "utils/ppt_metrics.h"
@@ -1128,6 +1129,7 @@ struct PptGenerationJob {
   std::string template_id;
   std::shared_ptr<MaterialService> material_service;
   std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service;
+  std::shared_ptr<KnowledgeRagService> knowledge_rag_service;
 };
 
 std::filesystem::path BuildStructurePath(const GenerationConfig& config,
@@ -1504,10 +1506,30 @@ void DoActualGeneration(
     }
   }
 
-  // Build enriched topic that includes material context
-  const std::string enriched_topic = material_context.empty()
+  // Build RAG knowledge context if use_knowledge is enabled
+  std::string rag_context;
+  if (input.use_knowledge && job.knowledge_rag_service &&
+      job.knowledge_rag_service->IsAvailable()) {
+    // 检索与主题最相关的知识块（Top-5）
+    const auto chunks = job.knowledge_rag_service->Retrieve(
+        input.topic, job.user_id, input.rag_material_ids, 5);
+    if (!chunks.empty()) {
+      rag_context = KnowledgeRagService::FormatChunksAsContext(chunks);
+      Logger::Info("DoActualGeneration: RAG retrieved " + std::to_string(chunks.size()) +
+                   " chunks for topic=" + input.topic);
+    } else {
+      Logger::Info("DoActualGeneration: RAG enabled but no relevant chunks found for " + input.topic);
+    }
+  }
+
+  // Build enriched topic that includes material context and/or RAG context
+  std::string combined_context;
+  if (!material_context.empty()) combined_context += material_context + "\n";
+  if (!rag_context.empty())      combined_context += rag_context + "\n";
+
+  const std::string enriched_topic = combined_context.empty()
       ? input.topic
-      : material_context + "\n请基于以上内容，为主题「" + input.topic + "」生成结构清晰的PPT大纲。";
+      : combined_context + "\n请基于以上内容，为主题「" + input.topic + "」生成结构清晰的PPT大纲。";
 
   std::vector<SlideContent> slides;
   std::string qwen_error;
@@ -1688,7 +1710,8 @@ void DoActualGeneration(
         input.include_charts,
         wanx_client.get(),
         ai_progress_cb,
-        material_context);
+        material_context,
+        input.style_spec_json);
 
     if (!gen_ok) {
       const std::string fallback_reason = generate_error;
@@ -1851,7 +1874,8 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
                            int redis_ttl_ppt_history,
                            std::shared_ptr<MySQLConnectionPool> pool,
                            std::shared_ptr<AiSearchService> ai_search_service,
-                           std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service)
+                           std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service,
+                           std::shared_ptr<KnowledgeRagService> knowledge_rag_service)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
@@ -1867,7 +1891,8 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
       redis_ttl_ppt_history_(redis_ttl_ppt_history),
       pool_(std::move(pool)),
       ai_search_service_(std::move(ai_search_service)),
-      tmpl_fastdfs_service_(std::move(tmpl_fastdfs_service)) {}
+      tmpl_fastdfs_service_(std::move(tmpl_fastdfs_service)),
+      knowledge_rag_service_(std::move(knowledge_rag_service)) {}
 
 HttpResponse PptController::Generate(const HttpRequest& request) {
   std::string error;
@@ -1997,6 +2022,7 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     job.template_id = template_info_opt->id;
     job.material_service = material_service_;
     job.tmpl_fastdfs_service = tmpl_fastdfs_service_;
+    job.knowledge_rag_service = knowledge_rag_service_;
 
     // Redis：初始化生成状态 Hash
     if (redis_) {
@@ -3496,11 +3522,11 @@ HttpResponse PptController::BatchDownload(const HttpRequest& request) {
     }
   }
 
-  // 返回 JSON，前端凭 token 通过 GET /api/ppt/batch_zip 直接下载
+  // 返回轻量 JSON token，前端再用浏览器原生 GET 下载（避免通过 XHR/Proxy 传输大文件）
   nlohmann::json result;
-  result["download_url"] = "/api/ppt/batch_zip?token=" + token;
-  result["filename"]     = zip_filename;
-  result["size"]         = zip_size;
+  result["token"]    = token;
+  result["filename"] = zip_filename;
+  result["size"]     = static_cast<long long>(zip_size);
   return HttpResponse::Json(200, result);
 }
 
@@ -3570,9 +3596,628 @@ HttpResponse PptController::BatchDownloadFile(const HttpRequest& request) {
   HttpResponse resp;
   resp.status_code    = 200;
   resp.status_message = "OK";
-  resp.headers["Content-Type"]        = "application/zip";
-  resp.headers["Content-Disposition"] = "attachment; filename=\"" + zip_filename + "\"";
-  resp.headers["Content-Length"]      = std::to_string(body.size());
+  resp.headers["content-type"]        = "application/zip";
+  resp.headers["content-disposition"] = "attachment; filename=\"" + zip_filename + "\"";
+  resp.headers["content-length"]      = std::to_string(body.size());
   resp.body = std::move(body);
   return resp;
+}
+
+// ── SSE 流式进度推送 ──────────────────────────────────────────────────────────
+// GET /api/ppt/requests/{id}/progress/stream
+// 建立 SSE 连接，每隔 ~800ms 推送一次当前进度事件，直到 completed/failed 或超时(10min)。
+// 前端通过 EventSource 订阅，无需轮询。
+SseResponse PptController::StreamProgress(const HttpRequest& request) {
+  // 先鉴权（SSE handler 内部需要同步完成，不能后台异步）
+  std::string auth_error;
+  auto user = Authenticate(request, auth_error);
+
+  // 解析请求 ID
+  std::uint64_t request_id = 0;
+  if (auto it = request.query_params.find("id"); it != request.query_params.end()) {
+    request_id = ParseId(it->second);
+  }
+
+  // 捕获必要的共享指针供 lambda 使用
+  auto redis   = redis_;
+  auto ppt_svc = ppt_service_;
+  auto pool    = pool_;
+  auto gen_cfg = generation_config_;
+  auto s3      = s3_client_;
+
+  SseResponse sse;
+
+  if (!user || request_id == 0) {
+    // 鉴权失败：发送一个 error 事件后立即结束流
+    sse.stream_fn = [auth_error, request_id](SseResponse::WriteFn write) {
+      nlohmann::json err = {
+          {"type",    "error"},
+          {"code",    request_id == 0 ? "INVALID_ID" : "UNAUTHORIZED"},
+          {"message", auth_error.empty() ? "Invalid request" : auth_error}
+      };
+      write(SseResponse::MakeEvent(err, "error"));
+    };
+    return sse;
+  }
+
+  const std::uint64_t uid = user->id;
+
+  sse.stream_fn = [request_id, uid, redis, ppt_svc, pool, gen_cfg, s3]
+                  (SseResponse::WriteFn write) {
+    constexpr int kPollIntervalMs  = 800;   // 轮询间隔（毫秒）
+    constexpr int kMaxTimeoutSec   = 600;   // 最长等待 10 分钟
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(kMaxTimeoutSec);
+
+    // 发送心跳注释，告知客户端连接已建立
+    if (!write(": connected\n\n")) return;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+      nlohmann::json evt;
+      bool terminal = false;
+
+      // 优先从 Redis 读取进度（性能最优）
+      if (redis) {
+        const std::string sk = "ppt:status:" + std::to_string(request_id);
+        auto fields = redis->HGetAll(sk);
+        if (!fields.empty()) {
+          const std::string& st = fields.count("status") ? fields.at("status") : "";
+          const int prog = fields.count("progress")
+                           ? [&]{ try { return std::stoi(fields.at("progress")); }
+                                  catch (...) { return 0; } }()
+                           : 0;
+          evt = {
+              {"type",     "progress"},
+              {"status",   st},
+              {"progress", prog},
+              {"stage",    fields.count("stage") ? fields.at("stage") : ""},
+              {"step",     fields.count("step")  ? fields.at("step")  : ""}
+          };
+          if (st == "completed" || st == "failed") {
+            terminal = true;
+            // 对 completed 补充 ppt_id
+            if (st == "completed") {
+              evt["ppt_id"] = request_id;
+              evt["type"]   = "done";
+            } else {
+              evt["type"] = "failed";
+            }
+          }
+        }
+      }
+
+      // Redis 未命中或终态需要读 MySQL 获取完整记录
+      if (evt.empty() || evt.value("status", "") == "completed" ||
+          evt.value("status", "") == "failed") {
+        PptRequest ppt_req;
+        std::string db_err;
+        if (ppt_svc && ppt_svc->GetRequest(uid, request_id, ppt_req, db_err)) {
+          const std::string& st = ppt_req.status;
+          if (st == "completed") {
+            evt = {
+                {"type",     "done"},
+                {"status",   "completed"},
+                {"progress", 100},
+                {"stage",    "生成完成"},
+                {"step",     "PPT 已成功生成！"},
+                {"ppt_id",   request_id},
+                {"title",    ppt_req.title}
+            };
+            terminal = true;
+          } else if (st == "failed") {
+            evt = {
+                {"type",    "failed"},
+                {"status",  "failed"},
+                {"progress", 0},
+                {"stage",   "生成失败"},
+                {"step",    "PPT 生成失败，请重试"}
+            };
+            terminal = true;
+          } else if (evt.empty()) {
+            // 仍在进行中，读进度文件
+            evt = {
+                {"type",     "progress"},
+                {"status",   st},
+                {"progress", 10},
+                {"stage",    "初始化"},
+                {"step",     ""}
+            };
+            if (!redis) {
+              const std::string prog_path = gen_cfg.output_dir + "/progress/" +
+                                            std::to_string(request_id) + ".json";
+              std::ifstream pf(prog_path);
+              if (pf.good()) {
+                try {
+                  std::string ps((std::istreambuf_iterator<char>(pf)),
+                                  std::istreambuf_iterator<char>());
+                  auto pj = nlohmann::json::parse(ps);
+                  if (pj.contains("progress")) evt["progress"] = pj["progress"];
+                  if (pj.contains("stage"))    evt["stage"]    = pj["stage"];
+                  if (pj.contains("step"))     evt["step"]     = pj["step"];
+                } catch (...) {}
+              }
+            }
+          }
+        } else if (evt.empty()) {
+          // 请求不存在
+          nlohmann::json err = {{"type", "error"}, {"code", "NOT_FOUND"}, {"message", "请求不存在"}};
+          write(SseResponse::MakeEvent(err, "error"));
+          return;
+        }
+      }
+
+      if (!evt.empty()) {
+        const std::string event_name = evt.value("type", "progress");
+        if (!write(SseResponse::MakeEvent(evt, event_name))) return;
+        if (terminal) return;
+      }
+
+      // 等待下一轮（分段 sleep，每 100ms 检查一次，以便快速响应连接断开）
+      for (int i = 0; i < kPollIntervalMs / 100; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (std::chrono::steady_clock::now() >= deadline) break;
+      }
+    }
+
+    // 超时：发送 timeout 事件
+    nlohmann::json timeout_evt = {
+        {"type",    "timeout"},
+        {"message", "等待超时，请前往历史记录查看结果"}
+    };
+    write(SseResponse::MakeEvent(timeout_evt, "timeout"));
+  };
+
+  return sse;
+}
+
+HttpResponse PptController::GenerateFromImage(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  if (!qwen_client_ || !qwen_client_->IsEnabled()) {
+    return HttpResponse::Json(503, ErrorJson("ERR_SERVICE_UNAVAILABLE", "AI 服务未配置，请联系管理员"));
+  }
+
+  // ── 解析请求体 ────────────────────────────────────────────────────────────
+  nlohmann::json body;
+  try {
+    body = nlohmann::json::parse(request.body);
+  } catch (...) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "请求体 JSON 格式错误"));
+  }
+
+  // 提取 images 数组（base64 编码）
+  if (!body.contains("images") || !body["images"].is_array() || body["images"].empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "缺少 images 字段，请提供 base64 编码的图片数组"));
+  }
+
+  std::vector<std::string> images_base64;
+  for (const auto& img : body["images"]) {
+    if (!img.is_string()) continue;
+    const auto s = img.get<std::string>();
+    if (s.empty()) continue;
+    // 每张图片 base64 大小上限 10MB（base64 字符数 ≈ 原始字节数 * 4/3）
+    if (s.size() > 14 * 1024 * 1024) {
+      return HttpResponse::Json(413, ErrorJson("ERR_PAYLOAD_TOO_LARGE", "单张图片不能超过 10MB"));
+    }
+    images_base64.push_back(s);
+  }
+  if (images_base64.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "images 数组为空或格式不正确"));
+  }
+  if (images_base64.size() > 5) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "最多同时上传 5 张图片"));
+  }
+
+  // 可选参数
+  const std::string user_hint = body.value("hint", "");
+  const std::string topic_override = body.value("topic", "");
+  const int pages = std::max(1, std::min(body.value("pages", 10), 30));
+  const std::string style = body.value("style", "business");
+  const bool include_images = body.value("include_images", true);
+  const bool include_charts = body.value("include_charts", true);
+  const bool include_notes = body.value("include_notes", false);
+  const std::string model_id = body.value("model_id", "qwen-turbo");
+  const std::string template_id_param = body.value("template_id", "");
+
+  // ── Step 1：调用 Qwen-VL 分析图片 ────────────────────────────────────────
+  Logger::Info("GenerateFromImage: analyzing " + std::to_string(images_base64.size()) +
+               " image(s) for user=" + user->username);
+
+  std::string image_description;
+  std::string analyze_error;
+  if (!qwen_client_->AnalyzeImages(images_base64, user_hint, image_description, analyze_error)) {
+    Logger::Warn("GenerateFromImage: image analysis failed: " + analyze_error);
+    return HttpResponse::Json(502, ErrorJson("ERR_IMAGE_ANALYSIS_FAILED",
+        "图片分析失败：" + analyze_error));
+  }
+
+  // ── Step 2：从分析结果提取 topic 和 outline ────────────────────────────────
+  std::string derived_topic = topic_override;
+  std::string material_context;
+
+  // 尝试解析 JSON 分析结果
+  std::string json_desc = image_description;
+  // 去除 markdown 代码块
+  {
+    auto fence = json_desc.find("```");
+    if (fence != std::string::npos) {
+      auto nl = json_desc.find('\n', fence);
+      if (nl != std::string::npos) {
+        auto end_fence = json_desc.rfind("```");
+        if (end_fence != std::string::npos && end_fence > nl) {
+          json_desc = json_desc.substr(nl + 1, end_fence - nl - 1);
+        }
+      }
+    }
+    // 截取 { ... }
+    auto obj_start = json_desc.find('{');
+    auto obj_end = json_desc.rfind('}');
+    if (obj_start != std::string::npos && obj_end != std::string::npos && obj_end > obj_start) {
+      json_desc = json_desc.substr(obj_start, obj_end - obj_start + 1);
+    }
+  }
+
+  std::vector<OutlineItem> outline;
+  try {
+    auto desc_json = nlohmann::json::parse(json_desc);
+    if (derived_topic.empty()) {
+      derived_topic = desc_json.value("main_topic", "");
+    }
+    material_context = image_description;
+
+    // 提取 suggested_slides 作为大纲
+    if (desc_json.contains("suggested_slides") && desc_json["suggested_slides"].is_array()) {
+      for (const auto& s : desc_json["suggested_slides"]) {
+        if (!s.is_object()) continue;
+        OutlineItem item;
+        item.title = s.value("title", "");
+        item.page_type = "content";
+        if (s.contains("key_points") && s["key_points"].is_array()) {
+          for (const auto& kp : s["key_points"]) {
+            if (kp.is_string()) item.key_points.push_back(kp.get<std::string>());
+          }
+        }
+        if (!item.title.empty()) outline.push_back(std::move(item));
+      }
+    }
+
+    // 拼接 description 和 key_points 为 material_context
+    std::ostringstream ctx;
+    ctx << "【图片分析结果】\n";
+    if (!desc_json.value("description", "").empty()) {
+      ctx << desc_json["description"].get<std::string>() << "\n";
+    }
+    if (desc_json.contains("key_points") && desc_json["key_points"].is_array()) {
+      ctx << "关键要点：\n";
+      for (const auto& kp : desc_json["key_points"]) {
+        if (kp.is_string()) ctx << "- " << kp.get<std::string>() << "\n";
+      }
+    }
+    if (desc_json.contains("data_items") && desc_json["data_items"].is_array()) {
+      ctx << "关键数据：\n";
+      for (const auto& di : desc_json["data_items"]) {
+        if (!di.is_object()) continue;
+        ctx << "- " << di.value("label", "") << ": " << di.value("value", "") << "\n";
+      }
+    }
+    material_context = ctx.str();
+  } catch (...) {
+    // 解析失败，将原始文本作为 material_context
+    material_context = "【图片分析结果】\n" + image_description;
+  }
+
+  if (derived_topic.empty()) {
+    derived_topic = topic_override.empty() ? "图片内容分析" : topic_override;
+  }
+
+  // 限制 material_context 长度
+  if (material_context.size() > 8000) {
+    material_context.resize(8000);
+  }
+
+  // ── Step 3：组装 PptRequestInput，走标准生成链路 ─────────────────────────
+  PptRequestInput input;
+  input.title = topic_override.empty() ? derived_topic : topic_override;
+  if (input.title.size() > 100) input.title.resize(100);
+  // 将图片分析内容注入 topic，作为 material_context 注入 AI Prompt
+  input.topic = derived_topic + "\n\n参考材料关键信息：\n" + material_context;
+  input.pages = pages;
+  input.style = style;
+  input.include_images = include_images;
+  input.include_charts = include_charts;
+  input.include_notes = include_notes;
+  input.model_id = model_id;
+  input.outline = std::move(outline);
+
+  // 选择模板
+  std::string template_id = template_id_param;
+  if (template_id.empty()) {
+    const auto& templates = template_service_->GetAll();
+    if (!templates.empty()) {
+      template_id = templates.front().id;
+    }
+  }
+
+  // 获取 model name
+  std::string model_name = model_id;
+  if (auto m = model_service_->FindById(model_id)) {
+    model_name = m->name;
+  }
+
+  // 获取 template name
+  std::string template_name;
+  if (auto t = template_service_->FindById(template_id)) {
+    template_name = t->name;
+  }
+
+  // 创建数据库记录
+  PptRequest ppt_request;
+  std::string create_error;
+  if (!ppt_service_->CreateRequest(input, user->id, model_name, template_name, ppt_request, create_error)) {
+    Logger::Error("GenerateFromImage: CreateRequest failed: " + create_error);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "创建生成记录失败：" + create_error));
+  }
+
+  // 构建 GenerationJob 并异步提交
+  PptGenerationJob job;
+  job.ppt_request = ppt_request;
+  job.input = std::move(input);
+  job.user_id = user->id;
+  job.user_email = user->email;
+  job.template_id = template_id;
+  job.material_service = material_service_;
+  job.tmpl_fastdfs_service = tmpl_fastdfs_service_;
+  job.knowledge_rag_service = nullptr;  // 图片模式不走 RAG 知识库
+
+  const auto req_id = ppt_request.id;
+  active_jobs_.fetch_add(1, std::memory_order_relaxed);
+
+  auto captured_job        = std::move(job);
+  auto captured_ppt_svc    = ppt_service_;
+  auto captured_tmpl_svc   = template_service_;
+  auto captured_qwen       = qwen_client_;
+  auto captured_s3         = s3_client_;
+  auto captured_wanx       = wanx_client_;
+  auto captured_gen_cfg    = generation_config_;
+  auto captured_redis      = redis_;
+  auto captured_ai_search  = ai_search_service_;
+  auto captured_pool       = thread_pool_;
+  auto captured_fastdfs    = tmpl_fastdfs_service_;
+  auto* active_jobs_ptr    = &active_jobs_;
+  const int ttl_status     = redis_ttl_ppt_status_;
+
+  thread_pool_->EnqueueDetached([
+      captured_job = std::move(captured_job),
+      captured_ppt_svc, captured_tmpl_svc, captured_qwen, captured_s3,
+      captured_wanx, captured_gen_cfg, captured_redis,
+      captured_ai_search, captured_pool, captured_fastdfs,
+      active_jobs_ptr, ttl_status
+  ]() mutable {
+    DoActualGeneration(captured_job, captured_ppt_svc, captured_tmpl_svc,
+                       captured_qwen, captured_s3, captured_wanx,
+                       captured_gen_cfg, captured_redis, ttl_status,
+                       captured_ai_search, captured_pool, captured_fastdfs);
+    active_jobs_ptr->fetch_sub(1, std::memory_order_relaxed);
+  });
+
+  Logger::Info("GenerateFromImage: queued request_id=" + std::to_string(req_id) +
+               " topic=" + derived_topic +
+               " pages=" + std::to_string(pages));
+
+  nlohmann::json result = {
+      {"message", "图片分析完成，PPT 生成已提交"},
+      {"requestId", req_id},
+      {"topic", derived_topic},
+      {"pages", pages},
+      {"status", "processing"}
+  };
+  return HttpResponse::Json(202, result);
+}
+
+// ---------------------------------------------------------------------------
+// F10: PPT 风格迁移 — 上传参考 PPTX，分析并返回 StyleSpec JSON
+// POST /api/ppt/analyze-style
+// Content-Type: multipart/form-data  (field: file, .pptx)
+// ---------------------------------------------------------------------------
+HttpResponse PptController::AnalyzeStyle(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED",
+        error.empty() ? "Unauthorized" : error));
+  }
+
+  // ── 解析 multipart/form-data ──────────────────────────────────────────────
+  const auto content_type = request.Header("content-type");
+  if (content_type.find("multipart/form-data") == std::string::npos) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST",
+        "Expected multipart/form-data"));
+  }
+
+  // Extract boundary
+  const std::string boundary_key = "boundary=";
+  const auto bp = content_type.find(boundary_key);
+  if (bp == std::string::npos) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST",
+        "Missing multipart boundary"));
+  }
+  std::string boundary = content_type.substr(bp + boundary_key.size());
+  {
+    auto semi = boundary.find(';');
+    if (semi != std::string::npos) boundary.resize(semi);
+    // strip quotes
+    if (!boundary.empty() && boundary.front() == '"') {
+      boundary = boundary.substr(1);
+      auto q = boundary.find('"');
+      if (q != std::string::npos) boundary.resize(q);
+    }
+    // trim whitespace
+    while (!boundary.empty() && (boundary.front() == ' ' || boundary.front() == '\t')) boundary.erase(boundary.begin());
+    while (!boundary.empty() && (boundary.back() == ' ' || boundary.back() == '\t')) boundary.pop_back();
+  }
+  if (boundary.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Empty boundary"));
+  }
+
+  // Simple multipart parser: find file part
+  const std::string& body = request.body;
+  const std::string delim = "--" + boundary;
+  std::string file_data;
+  std::string orig_filename;
+
+  std::size_t pos = 0;
+  while (pos < body.size()) {
+    const auto dp = body.find(delim, pos);
+    if (dp == std::string::npos) break;
+    std::size_t after = dp + delim.size();
+    if (after + 1 < body.size() && body[after] == '-' && body[after+1] == '-') break;
+    if (after < body.size() && body[after] == '\r') ++after;
+    if (after < body.size() && body[after] == '\n') ++after;
+
+    const auto hdr_end = body.find("\r\n\r\n", after);
+    if (hdr_end == std::string::npos) break;
+    const std::string hdrs = body.substr(after, hdr_end - after);
+    const std::size_t data_start = hdr_end + 4;
+    const auto next = body.find("\r\n" + delim, data_start);
+    const std::size_t data_end = (next == std::string::npos) ? body.size() : next;
+
+    // Check if this part has a filename
+    const std::string fn_key = "filename=\"";
+    const auto fn_pos = hdrs.find(fn_key);
+    if (fn_pos != std::string::npos) {
+      const auto fn_start = fn_pos + fn_key.size();
+      const auto fn_end = hdrs.find('"', fn_start);
+      if (fn_end != std::string::npos) {
+        orig_filename = hdrs.substr(fn_start, fn_end - fn_start);
+        file_data = body.substr(data_start, data_end - data_start);
+      }
+    }
+    pos = (next == std::string::npos) ? body.size() : next + 2;
+  }
+
+  if (file_data.empty() || orig_filename.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST",
+        "未找到上传文件，请以 multipart/form-data 格式上传 .pptx 文件"));
+  }
+
+  // Validate extension
+  std::string ext;
+  const auto dot = orig_filename.rfind('.');
+  if (dot != std::string::npos) {
+    ext = orig_filename.substr(dot + 1);
+    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (ext != "pptx") {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST",
+        "仅支持 .pptx 格式的参考文件"));
+  }
+
+  // File size limit: 50 MB
+  if (file_data.size() > 50ULL * 1024 * 1024) {
+    return HttpResponse::Json(413, ErrorJson("ERR_PAYLOAD_TOO_LARGE",
+        "上传文件不能超过 50MB"));
+  }
+
+  // ── 写入临时文件 ──────────────────────────────────────────────────────────
+  const std::filesystem::path tmp_dir =
+      std::filesystem::path(generation_config_.output_dir) / "tmp" / "style_ref";
+  std::error_code ec;
+  std::filesystem::create_directories(tmp_dir, ec);
+
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  const std::string tmp_filename =
+      "styleref_" + std::to_string(user->id) + "_" + std::to_string(now_ms) + ".pptx";
+  const std::filesystem::path tmp_path = tmp_dir / tmp_filename;
+
+  {
+    std::ofstream ofs(tmp_path, std::ios::binary);
+    if (!ofs.is_open()) {
+      Logger::Error("AnalyzeStyle: cannot write temp file: " + tmp_path.string());
+      return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
+    }
+    ofs.write(file_data.data(), static_cast<std::streamsize>(file_data.size()));
+  }
+
+  // ── 调用 Python 分析脚本 ──────────────────────────────────────────────────
+  if (generation_config_.python_binary.empty()) {
+    std::filesystem::remove(tmp_path, ec);
+    return HttpResponse::Json(503, ErrorJson("ERR_SERVICE_UNAVAILABLE",
+        "Python 环境未配置，无法执行风格分析"));
+  }
+
+  // Derive script path from template_analyzer_script (same scripts/ directory)
+  std::filesystem::path script_path =
+      std::filesystem::path(generation_config_.template_analyzer_script)
+          .parent_path() / "analyze_style.py";
+  if (!std::filesystem::exists(script_path)) {
+    // Fallback: search relative to cwd
+    script_path = std::filesystem::path("scripts") / "analyze_style.py";
+  }
+  if (!std::filesystem::exists(script_path)) {
+    std::filesystem::remove(tmp_path, ec);
+    Logger::Error("AnalyzeStyle: analyze_style.py not found at " + script_path.string());
+    return HttpResponse::Json(503, ErrorJson("ERR_SERVICE_UNAVAILABLE",
+        "风格分析脚本未找到，请联系管理员"));
+  }
+
+  // Redirect stdout to a temp output file so we can read it
+  const std::filesystem::path out_path =
+      tmp_dir / ("styleout_" + std::to_string(now_ms) + ".json");
+
+  std::ostringstream cmd;
+  cmd << '"' << generation_config_.python_binary << '"'
+      << " \"" << script_path.string() << "\""
+      << " --input \"" << tmp_path.string() << "\""
+      << " > \"" << out_path.string() << "\""
+      << " 2>/dev/null";
+
+  const int ret = std::system(cmd.str().c_str());
+
+  // Clean up temp PPTX regardless
+  std::filesystem::remove(tmp_path, ec);
+
+  if (ret != 0) {
+    std::filesystem::remove(out_path, ec);
+    Logger::Warn("AnalyzeStyle: script exited with code " + std::to_string(ret));
+    return HttpResponse::Json(422, ErrorJson("ERR_STYLE_ANALYSIS_FAILED",
+        "风格分析失败，请确认上传的文件是有效的 PPTX 格式"));
+  }
+
+  // Read output JSON
+  nlohmann::json style_spec;
+  {
+    std::ifstream ifs(out_path);
+    if (!ifs.is_open()) {
+      std::filesystem::remove(out_path, ec);
+      return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", kInternalErrorMessage));
+    }
+    try {
+      ifs >> style_spec;
+    } catch (...) {
+      std::filesystem::remove(out_path, ec);
+      return HttpResponse::Json(422, ErrorJson("ERR_STYLE_ANALYSIS_FAILED",
+          "风格分析结果解析失败，请尝试其他文件"));
+    }
+  }
+  std::filesystem::remove(out_path, ec);
+
+  // Check for script-level error
+  if (style_spec.contains("error") && style_spec["error"].is_string()) {
+    return HttpResponse::Json(422, ErrorJson("ERR_STYLE_ANALYSIS_FAILED",
+        style_spec["error"].get<std::string>()));
+  }
+
+  Logger::Info("AnalyzeStyle: success for user=" + user->username +
+               " file=" + orig_filename);
+
+  return HttpResponse::Json(200, {
+      {"message", "风格分析成功"},
+      {"style_spec", style_spec},
+      {"filename", orig_filename}
+  });
 }

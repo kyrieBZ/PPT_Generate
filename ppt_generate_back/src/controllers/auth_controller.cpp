@@ -73,6 +73,15 @@ HttpResponse AuthController::Login(const HttpRequest& request) {
       return HttpResponse::Json(401, ErrorJson("ERR_AUTH_LOGIN_FAILED", error.empty() ? "Login failed" : error));
     }
 
+    // 普通用户在维护模式下禁止登录；管理员始终可以登录以便解除维护
+    if (!user.is_admin && pool_) {
+      const bool in_maintenance = SettingsReader::GetBool(*pool_, "maintenance_mode", false);
+      if (in_maintenance) {
+        return HttpResponse::Json(503, ErrorJson("ERR_MAINTENANCE",
+            "系统正在维护中，请稍后再试。如有疑问请联系管理员。"));
+      }
+    }
+
     return HttpResponse::Json(200, {{"token", token}, {"user", UserJson(user)}});
   } catch (const std::exception& ex) {
     Logger::Error(std::string("Failed to parse login request: ") + ex.what());

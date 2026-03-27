@@ -40,6 +40,23 @@ export default defineConfig(({ mode }) => {
       open: true,
       allowedHosts: serverAllowedHosts,
       proxy: {
+        // SSE 流式进度端点（P4.1）：独立代理项，禁用超时和缓冲
+        '/api/ppt/progress/stream': {
+          target: 'http://127.0.0.1:8080',
+          changeOrigin: true,
+          secure: false,
+          ws: false,
+          // SSE 连接最长 10 分钟（600s），须大于后端超时
+          timeout: 660000,
+          proxyTimeout: 660000,
+          selfHandleResponse: false,
+          configure(proxy) {
+            proxy.on('proxyRes', (proxyRes) => {
+              // 禁止代理层压缩 SSE 响应，确保事件实时推送
+              delete proxyRes.headers['content-encoding']
+            })
+          }
+        },
         '/api': {
           target: 'http://127.0.0.1:8080',
           changeOrigin: true,
@@ -47,6 +64,15 @@ export default defineConfig(({ mode }) => {
           // 模板上传时需要 LibreOffice 转换 + FastDFS 上传，耗时较长，延长超时至 5 分钟
           timeout: 300000,
           proxyTimeout: 300000,
+          // 大文件响应（如批量下载 ZIP）用流式转发，不在 Node.js 层缓冲整个响应体
+          selfHandleResponse: false,
+          configure(proxy) {
+            // 给所有转发到后端的请求添加 ngrok-skip-browser-warning header，
+            // 确保经过 ngrok 代理的 img/fetch 请求不被 ngrok 拦截为 HTML 警告页
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.setHeader('ngrok-skip-browser-warning', 'true')
+            })
+          }
         },
       }
     },

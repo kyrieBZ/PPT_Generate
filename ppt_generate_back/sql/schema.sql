@@ -97,6 +97,16 @@ CREATE TABLE IF NOT EXISTS material_deletion_notices (
   INDEX idx_notice_user_read (user_id, is_read)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='管理员删除素材通知';
 
+-- RAG 知识库功能说明：
+-- 素材向量化索引状态由 Qdrant（user_knowledge collection）维护，无需 MySQL 额外字段。
+-- 若需在 materials 表追踪索引状态，可执行如下迁移（可选）：
+-- ALTER TABLE materials
+--   ADD COLUMN rag_indexed    TINYINT(1)      NOT NULL DEFAULT 0  COMMENT 'RAG 向量化是否完成',
+--   ADD COLUMN rag_indexed_at TIMESTAMP       NULL DEFAULT NULL   COMMENT 'RAG 索引时间',
+--   ADD INDEX  idx_materials_rag (rag_indexed);
+--
+-- 上述字段当前实现中未使用（索引状态由 Qdrant count API 查询），若扩展可自行迁移。
+
 -- 系统公告表
 CREATE TABLE IF NOT EXISTS announcements (
   id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
