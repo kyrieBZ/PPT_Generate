@@ -72,6 +72,9 @@ class PptController {
   /** POST /api/ppt/generate-from-image — 多模态：上传图片，AI 理解后生成 PPT */
   HttpResponse GenerateFromImage(const HttpRequest& request);
 
+  /** POST /api/ppt/analyze-image — 仅分析图片内容，返回结构化结果（topic/slides/data），不触发 PPT 生成 */
+  HttpResponse AnalyzeImage(const HttpRequest& request);
+
   /** POST /api/ppt/analyze-style — 风格迁移：上传参考 PPTX，分析并返回 StyleSpec JSON */
   HttpResponse AnalyzeStyle(const HttpRequest& request);
 

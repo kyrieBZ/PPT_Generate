@@ -62,7 +62,17 @@ export default {
   },
 
   /**
-   * 多模态图片生成 PPT（F04）
+   * 仅分析图片内容，返回结构化结果（topic/slides/data_items），不触发 PPT 生成
+   * @param {Object}   payload
+   * @param {string[]} payload.images  Base64 编码的图片数组
+   * @param {string}   payload.hint    用户补充说明（可选）
+   */
+  analyzeImage(payload) {
+    return apiClient.post('/ppt/analyze-image', payload, { timeout: 120000 })
+  },
+
+  /**
+   * 多模态图片生成 PPT（F04，保留备用）
    * @param {Object} payload
    * @param {string[]} payload.images  Base64 编码的图片数组（不含 data URI 前缀亦可）
    * @param {string}   payload.hint    用户补充说明（可选）

@@ -12,6 +12,32 @@
 
 namespace {
 
+/** Replace invalid UTF-8 bytes with U+FFFD so nlohmann::json::dump() never throws. */
+std::string ToSafeUtf8(const std::string& input) {
+  static const unsigned char kRepl[] = {0xEF, 0xBF, 0xBD};
+  std::string out;
+  out.reserve(input.size());
+  const unsigned char* p   = reinterpret_cast<const unsigned char*>(input.data());
+  const unsigned char* end = p + input.size();
+  while (p < end) {
+    unsigned char b = *p++;
+    if (b <= 0x7F) { out.push_back(static_cast<char>(b)); continue; }
+    int extra = 0;
+    if      (b >= 0xC2 && b <= 0xDF) extra = 1;
+    else if (b >= 0xE0 && b <= 0xEF) extra = 2;
+    else if (b >= 0xF0 && b <= 0xF4) extra = 3;
+    else { out.append(reinterpret_cast<const char*>(kRepl), 3); continue; }
+    if (p + extra > end) { out.append(reinterpret_cast<const char*>(kRepl), 3); break; }
+    bool ok = true;
+    for (int i = 0; i < extra; ++i)
+      if ((p[i] & 0xC0) != 0x80) { ok = false; break; }
+    if (!ok) { out.append(reinterpret_cast<const char*>(kRepl), 3); continue; }
+    out.push_back(static_cast<char>(b));
+    for (int i = 0; i < extra; ++i) out.push_back(static_cast<char>(*p++));
+  }
+  return out;
+}
+
 // 将 chunk_id 字符串稳定地映射为 Qdrant 所需的 uint64 数值 ID。
 // 格式：material_id__chunk_N  → 取 material_id 后 8 位 + chunk_index 低 8 位拼成 32 位数。
 // 为避免碰撞，使用 FNV-1a 64-bit hash。
@@ -164,13 +190,14 @@ int KnowledgeRagService::IndexMaterial(const std::string& material_id,
     return -1;
   }
 
+  const std::string safe_filename = ToSafeUtf8(filename);
   int success_count = 0;
   for (int i = 0; i < static_cast<int>(chunks.size()); ++i) {
-    const std::string& chunk_text = chunks[i];
-    if (chunk_text.empty()) continue;
+    const std::string safe_chunk = ToSafeUtf8(chunks[i]);
+    if (safe_chunk.empty()) continue;
 
     // 向量化
-    const auto embedding = qwen_client_->GetEmbedding(chunk_text);
+    const auto embedding = qwen_client_->GetEmbedding(safe_chunk);
     if (embedding.empty()) {
       Logger::Warn("KnowledgeRagService::IndexMaterial: embedding failed for chunk " +
                    std::to_string(i) + " of " + material_id);
@@ -194,8 +221,8 @@ int KnowledgeRagService::IndexMaterial(const std::string& material_id,
         {"material_id", material_id},
         {"user_id",     user_id},
         {"chunk_index", i},
-        {"chunk_text",  chunk_text.substr(0, 1000)},  // Qdrant payload 截断
-        {"filename",    filename}
+        {"chunk_text",  safe_chunk.substr(0, 1000)},
+        {"filename",    safe_filename}
       }}
     };
 

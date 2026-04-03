@@ -33,6 +33,10 @@ struct PptRequestInput {
   std::vector<std::string> rag_material_ids;
   /** F10 风格迁移：参考 PPTX 提取的 StyleSpec JSON 字符串（ai_native 链路注入）*/
   std::string style_spec_json;
+  /** F04 图片来源：上传图片的 base64 数组，用于产品图截取等 */
+  std::vector<std::string> image_data;
+  /** F04 图片来源：图片分析结果 JSON 字符串，用于图表绘制时的真实数据 */
+  std::string image_analysis_json;
 
   static PptRequestInput FromJson(const nlohmann::json& data);
 };

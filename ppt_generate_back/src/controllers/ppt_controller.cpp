@@ -722,11 +722,95 @@ std::string BuildSafeImagePrompt(const SlideContent& slide, const std::string& t
   return base + " 插画 场景图";
 }
 
+/** 将 base64 字符串（去掉 data URI 前缀）解码并写入文件，返回是否成功 */
+static bool SaveBase64ToFile(const std::string& b64, const std::string& path) {
+  // 去除 data URI 前缀（如 "data:image/jpeg;base64,"）
+  const std::string* src = &b64;
+  std::string stripped;
+  const auto comma_pos = b64.find(',');
+  if (comma_pos != std::string::npos) {
+    stripped = b64.substr(comma_pos + 1);
+    src = &stripped;
+  }
+
+  // Base64 解码表
+  static const int kDecTable[256] = {
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
+    52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+    -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+    15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+    -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+    41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+  };
+
+  std::string decoded;
+  decoded.reserve((src->size() / 4) * 3 + 4);
+  int buf = 0, bits = 0;
+  for (unsigned char c : *src) {
+    if (c == '=' || c == '\n' || c == '\r') continue;
+    int v = kDecTable[c];
+    if (v < 0) continue;
+    buf = (buf << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      decoded.push_back(static_cast<char>((buf >> bits) & 0xFF));
+    }
+  }
+
+  std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+  if (!ofs) return false;
+  ofs.write(decoded.data(), static_cast<std::streamsize>(decoded.size()));
+  return ofs.good();
+}
+
+/** 判断幻灯片标题是否与产品介绍相关 */
+static bool IsProductSlide(const std::string& title) {
+  static const std::vector<std::string> kProductKeywords = {
+    "产品", "介绍", "功能", "特性", "规格", "参数", "外观", "展示", "特点",
+    "product", "feature", "spec", "introduction", "overview"
+  };
+  std::string lower_title = title;
+  std::transform(lower_title.begin(), lower_title.end(), lower_title.begin(),
+                 [](unsigned char c) { return static_cast<unsigned char>(std::tolower(c)); });
+  for (const auto& kw : kProductKeywords) {
+    if (lower_title.find(kw) != std::string::npos) return true;
+  }
+  return false;
+}
+
 void AttachImagesWithWanxiangAndUnsplash(const GenerationConfig& config,
                                          WanxiangImageClient* wanx_client,
                                          std::vector<SlideContent>& slides,
                                          std::uint64_t request_id,
-                                         const std::string& topic) {
+                                         const std::string& topic,
+                                         const std::vector<std::string>& product_images_b64 = {}) {
+  // 预先保存产品图到临时文件（每张图片只保存一次）
+  std::vector<std::string> saved_product_image_paths;
+  if (!product_images_b64.empty()) {
+    for (std::size_t pi = 0; pi < product_images_b64.size(); ++pi) {
+      const std::string prod_img_path = config.image_dir + "/prod_" +
+          std::to_string(request_id) + "_" + std::to_string(pi) + ".jpg";
+      if (SaveBase64ToFile(product_images_b64[pi], prod_img_path)) {
+        saved_product_image_paths.push_back(prod_img_path);
+        Logger::Info("AttachImages: saved product image " + std::to_string(pi) +
+                     " to " + prod_img_path);
+      } else {
+        Logger::Warn("AttachImages: failed to save product image " + std::to_string(pi));
+      }
+    }
+  }
+
   for (std::size_t i = 0; i < slides.size(); ++i) {
     auto& slide = slides[i];
     if (slide.image_prompts.empty()) {
@@ -741,6 +825,13 @@ void AttachImagesWithWanxiangAndUnsplash(const GenerationConfig& config,
     }
 
     bool has_any_image = !slide.image_paths.empty() || !slide.image_urls.empty();
+
+    // 若当前幻灯片是产品介绍类且有产品图，直接使用用户上传的产品图
+    if (!has_any_image && !saved_product_image_paths.empty() && IsProductSlide(slide.title)) {
+      slide.image_paths.push_back(saved_product_image_paths[0]);
+      has_any_image = true;
+      Logger::Info("AttachImages: used product image for product slide: " + slide.title);
+    }
 
     if (!has_any_image && wanx_client && wanx_client->IsEnabled()) {
       const auto safe_prompt = BuildSafeImagePrompt(slide, topic);
@@ -1522,10 +1613,57 @@ void DoActualGeneration(
     }
   }
 
-  // Build enriched topic that includes material context and/or RAG context
+  // Build image analysis context if image_analysis_json is provided (from image source flow)
+  std::string image_analysis_context;
+  nlohmann::json image_analysis_parsed;
+  bool has_image_analysis = false;
+  if (!input.image_analysis_json.empty()) {
+    try {
+      image_analysis_parsed = nlohmann::json::parse(input.image_analysis_json);
+      has_image_analysis = true;
+      std::ostringstream img_ctx;
+      img_ctx << "【图片内容分析结果】\n";
+      if (image_analysis_parsed.contains("description") && !image_analysis_parsed["description"].get<std::string>().empty()) {
+        img_ctx << "图片描述：" << image_analysis_parsed["description"].get<std::string>() << "\n";
+      }
+      if (image_analysis_parsed.contains("key_points") && image_analysis_parsed["key_points"].is_array()) {
+        img_ctx << "关键要点：";
+        for (const auto& kp : image_analysis_parsed["key_points"]) {
+          if (kp.is_string()) img_ctx << kp.get<std::string>() << "；";
+        }
+        img_ctx << "\n";
+      }
+      bool has_real_data = image_analysis_parsed.contains("data_items") &&
+                           image_analysis_parsed["data_items"].is_array() &&
+                           !image_analysis_parsed["data_items"].empty();
+      if (has_real_data) {
+        img_ctx << "图片中的数据（请用于图表，禁止使用其他数字）：\n";
+        for (const auto& di : image_analysis_parsed["data_items"]) {
+          if (di.is_object()) {
+            img_ctx << "  - " << di.value("label", "") << ": " << di.value("value", "") << "\n";
+          }
+        }
+        // 当没有真实数据时，禁止生成图表
+        img_ctx << "【约束】若某页包含图表(chart_data)，所有数据必须来自以上「图片中的数据」，禁止编造。\n";
+      } else {
+        // 没有真实数据时，告知AI不要生成图表
+        img_ctx << "【约束】图片中未识别到数值型数据，请勿在任何幻灯片中生成图表(chart_data)。\n";
+      }
+      if (image_analysis_parsed.contains("has_product_image") && image_analysis_parsed["has_product_image"].get<bool>()) {
+        img_ctx << "【产品图】图片中包含产品照片，在产品介绍相关的幻灯片中可使用此产品图片。\n";
+      }
+      image_analysis_context = img_ctx.str();
+      Logger::Info("DoActualGeneration: image analysis context injected, len=" + std::to_string(image_analysis_context.size()));
+    } catch (...) {
+      Logger::Warn("DoActualGeneration: failed to parse image_analysis_json");
+    }
+  }
+
+  // Build enriched topic that includes material context and/or RAG context and/or image analysis
   std::string combined_context;
   if (!material_context.empty()) combined_context += material_context + "\n";
   if (!rag_context.empty())      combined_context += rag_context + "\n";
+  if (!image_analysis_context.empty()) combined_context += image_analysis_context + "\n";
 
   const std::string enriched_topic = combined_context.empty()
       ? input.topic
@@ -1659,11 +1797,61 @@ void DoActualGeneration(
     }
   }
 
+  // 图片来源模式下校验图表数据：
+  // 若图片分析结果中没有任何 data_items，则清除所有图表（防止 AI 编造数据）
+  // 若有 data_items，则校验图表标签是否与图片数据匹配
+  if (has_image_analysis && input.include_charts) {
+    bool has_real_data = image_analysis_parsed.contains("data_items") &&
+                         image_analysis_parsed["data_items"].is_array() &&
+                         !image_analysis_parsed["data_items"].empty();
+    if (!has_real_data) {
+      // 没有真实数据：清除所有图表
+      for (auto& s : slides) {
+        if (s.chart_data.has_value()) {
+          Logger::Warn("DoActualGeneration: 图片分析无数据，清除编造图表，标题=" + s.title);
+          s.chart_data = std::nullopt;
+        }
+      }
+    } else {
+      // 有真实数据：校验图表标签是否在图片数据中出现
+      std::vector<std::string> image_data_labels;
+      for (const auto& di : image_analysis_parsed["data_items"]) {
+        if (di.is_object()) {
+          image_data_labels.push_back(di.value("label", ""));
+        }
+      }
+      for (auto& s : slides) {
+        if (!s.chart_data.has_value() || s.chart_data->items.empty()) continue;
+        bool any_unmatched = false;
+        for (const auto& item : s.chart_data->items) {
+          bool found = false;
+          for (const std::string& lbl : image_data_labels) {
+            if (!lbl.empty() && (lbl.find(item.label) != std::string::npos ||
+                                  item.label.find(lbl) != std::string::npos)) {
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            any_unmatched = true;
+            break;
+          }
+        }
+        if (any_unmatched) {
+          Logger::Warn("DoActualGeneration: 清除未在图片数据中匹配的图表，标题=" + s.title);
+          s.chart_data = std::nullopt;
+        }
+      }
+    }
+  }
+
   // ai_native 模式图片由 AiNativePptService 内部处理，此处跳过
   if (!is_ai_native && input.include_images) {
     WriteProgress(progress_path, 60, "配图生成", "正在为幻灯片搜索和生成配图...");
     redis_set_progress("processing", "60", "images");
-    AttachImagesWithWanxiangAndUnsplash(generation_config, wanx_client.get(), slides, ppt_request.id, input.topic);
+    // 若来自图片来源且有产品图，传入 image_data 供产品介绍页使用
+    const std::vector<std::string>& product_imgs = input.image_data;
+    AttachImagesWithWanxiangAndUnsplash(generation_config, wanx_client.get(), slides, ppt_request.id, input.topic, product_imgs);
   }
 
   WriteProgress(progress_path, 80, "渲染文件", "正在将内容渲染为 PPT 文件...");
@@ -2068,7 +2256,6 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
                            redis, ttl_status, ai_search_svc, tp, tmpl_fastdfs_svc);
       } catch (const std::exception& ex) {
         Logger::Error(std::string("DoActualGeneration unhandled exception: ") + ex.what());
-        // 确保前端能感知：将状态写为 failed
         if (ppt_svc) {
           std::string upd_err;
           ppt_svc->UpdateRequestOutput(job.ppt_request.id, job.user_id, "", "failed", upd_err);
@@ -3770,6 +3957,166 @@ SseResponse PptController::StreamProgress(const HttpRequest& request) {
   return sse;
 }
 
+HttpResponse PptController::AnalyzeImage(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED", error.empty() ? "Unauthorized" : error));
+  }
+
+  if (!qwen_client_ || !qwen_client_->IsEnabled()) {
+    return HttpResponse::Json(503, ErrorJson("ERR_SERVICE_UNAVAILABLE", "AI 服务未配置，请联系管理员"));
+  }
+
+  nlohmann::json body;
+  try {
+    body = nlohmann::json::parse(request.body);
+  } catch (...) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "请求体 JSON 格式错误"));
+  }
+
+  if (!body.contains("images") || !body["images"].is_array() || body["images"].empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "缺少 images 字段，请提供 base64 编码的图片数组"));
+  }
+
+  std::vector<std::string> images_base64;
+  for (const auto& img : body["images"]) {
+    if (!img.is_string()) continue;
+    const auto s = img.get<std::string>();
+    if (s.empty()) continue;
+    if (s.size() > 14 * 1024 * 1024) {
+      return HttpResponse::Json(413, ErrorJson("ERR_PAYLOAD_TOO_LARGE", "单张图片不能超过 10MB"));
+    }
+    images_base64.push_back(s);
+  }
+  if (images_base64.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "images 数组为空或格式不正确"));
+  }
+  if (images_base64.size() > 5) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "最多同时上传 5 张图片"));
+  }
+
+  const std::string user_hint = body.value("hint", "");
+
+  Logger::Info("AnalyzeImage: analyzing " + std::to_string(images_base64.size()) +
+               " image(s) for user=" + user->username);
+
+  std::string image_description;
+  std::string analyze_error;
+  if (!qwen_client_->AnalyzeImages(images_base64, user_hint, image_description, analyze_error)) {
+    Logger::Warn("AnalyzeImage: image analysis failed: " + analyze_error);
+    return HttpResponse::Json(502, ErrorJson("ERR_IMAGE_ANALYSIS_FAILED", "图片分析失败：" + analyze_error));
+  }
+
+  // 解析 JSON 分析结果
+  std::string json_desc = image_description;
+  {
+    auto fence = json_desc.find("```");
+    if (fence != std::string::npos) {
+      auto nl = json_desc.find('\n', fence);
+      if (nl != std::string::npos) {
+        auto end_fence = json_desc.rfind("```");
+        if (end_fence != std::string::npos && end_fence > nl) {
+          json_desc = json_desc.substr(nl + 1, end_fence - nl - 1);
+        }
+      }
+    }
+    auto obj_start = json_desc.find('{');
+    auto obj_end = json_desc.rfind('}');
+    if (obj_start != std::string::npos && obj_end != std::string::npos && obj_end > obj_start) {
+      json_desc = json_desc.substr(obj_start, obj_end - obj_start + 1);
+    }
+  }
+
+  // 清洗原始字符串，确保合法 UTF-8（Qwen-VL 偶尔返回截断的多字节字符）
+  const std::string safe_image_description = ToSafeJsonString(image_description);
+  const std::string safe_json_desc = ToSafeJsonString(json_desc);
+
+  nlohmann::json result;
+  result["raw"] = safe_image_description;
+
+  try {
+    auto desc_json = nlohmann::json::parse(safe_json_desc);
+    result["image_type"]      = ToSafeJsonString(desc_json.value("image_type", ""));
+    result["main_topic"]      = ToSafeJsonString(desc_json.value("main_topic", ""));
+    result["description"]     = ToSafeJsonString(desc_json.value("description", ""));
+
+    // key_points：逐项清洗
+    nlohmann::json kp_arr = nlohmann::json::array();
+    if (desc_json.contains("key_points") && desc_json["key_points"].is_array()) {
+      for (const auto& kp : desc_json["key_points"]) {
+        if (kp.is_string()) kp_arr.push_back(ToSafeJsonString(kp.get<std::string>()));
+      }
+    }
+    result["key_points"] = kp_arr;
+
+    // data_items：逐项清洗
+    nlohmann::json di_arr = nlohmann::json::array();
+    if (desc_json.contains("data_items") && desc_json["data_items"].is_array()) {
+      for (const auto& di : desc_json["data_items"]) {
+        if (di.is_object()) {
+          nlohmann::json item;
+          item["label"] = ToSafeJsonString(di.value("label", ""));
+          item["value"] = ToSafeJsonString(di.value("value", ""));
+          di_arr.push_back(item);
+        }
+      }
+    }
+    result["data_items"] = di_arr;
+
+    // suggested_slides：逐项清洗
+    nlohmann::json ss_arr = nlohmann::json::array();
+    if (desc_json.contains("suggested_slides") && desc_json["suggested_slides"].is_array()) {
+      for (const auto& s : desc_json["suggested_slides"]) {
+        if (s.is_object()) {
+          nlohmann::json slide;
+          slide["title"] = ToSafeJsonString(s.value("title", ""));
+          nlohmann::json skps = nlohmann::json::array();
+          if (s.contains("key_points") && s["key_points"].is_array()) {
+            for (const auto& skp : s["key_points"]) {
+              if (skp.is_string()) skps.push_back(ToSafeJsonString(skp.get<std::string>()));
+            }
+          }
+          slide["key_points"] = skps;
+          ss_arr.push_back(slide);
+        }
+      }
+    }
+    result["suggested_slides"] = ss_arr;
+
+    // 推荐页数：suggested_slides 数量 + 2（封面 + 总结），最少 5，最多 20
+    int suggested_pages = static_cast<int>(result["suggested_slides"].size()) + 2;
+    suggested_pages = std::max(5, std::min(suggested_pages, 20));
+    result["suggested_pages"] = suggested_pages;
+
+    // 判断是否含有可用图表数据
+    bool has_chart_data = !di_arr.empty();
+    result["has_chart_data"] = has_chart_data;
+
+    // 判断图片类型是否包含产品图
+    std::string img_type = result.value("image_type", "");
+    bool has_product_image = (img_type.find("产品") != std::string::npos ||
+                               img_type.find("product") != std::string::npos ||
+                               img_type.find("照片") != std::string::npos);
+    result["has_product_image"] = has_product_image;
+  } catch (...) {
+    result["image_type"]      = "";
+    result["main_topic"]      = "";
+    result["description"]     = safe_image_description;
+    result["key_points"]      = nlohmann::json::array();
+    result["data_items"]      = nlohmann::json::array();
+    result["suggested_slides"] = nlohmann::json::array();
+    result["suggested_pages"] = 10;
+    result["has_chart_data"]  = false;
+    result["has_product_image"] = false;
+  }
+
+  nlohmann::json resp;
+  resp["success"] = true;
+  resp["analysis"] = std::move(result);
+  return HttpResponse::Json(200, resp);
+}
+
 HttpResponse PptController::GenerateFromImage(const HttpRequest& request) {
   std::string error;
   auto user = Authenticate(request, error);
@@ -4173,7 +4520,11 @@ HttpResponse PptController::AnalyzeStyle(const HttpRequest& request) {
   cmd << '"' << generation_config_.python_binary << '"'
       << " \"" << script_path.string() << "\""
       << " --input \"" << tmp_path.string() << "\""
-      << " > \"" << out_path.string() << "\""
+      << " --slides 3";
+  if (!generation_config_.qwen_api_key.empty()) {
+    cmd << " --api-key \"" << generation_config_.qwen_api_key << "\"";
+  }
+  cmd << " > \"" << out_path.string() << "\""
       << " 2>/dev/null";
 
   const int ret = std::system(cmd.str().c_str());

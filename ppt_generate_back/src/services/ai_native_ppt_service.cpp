@@ -258,11 +258,42 @@ bool AiNativePptService::GenerateCreativeBrief(const std::string& topic,
 
   // F10 风格迁移：将参考 PPTX 的 StyleSpec 注入 Prompt，要求 AI 严格继承其配色/字体
   if (!style_spec_json.empty()) {
-    user_oss << "\n【风格迁移约束】用户上传了参考 PPT，请严格遵循以下视觉规格进行设计，"
-             << "在输出 JSON 的 palette 和 typography 字段中直接使用参考规格的值，不得自行修改颜色或字体：\n"
-             << style_spec_json << "\n"
-             << "特别注意：palette.primary、palette.background、palette.accent 必须与参考规格完全一致；"
-             << "typography.title_font 和 typography.body_font 必须与参考规格一致。\n";
+    // 尝试解析出具体颜色值以在 prompt 中显式列出，避免 AI 忽略嵌套 JSON
+    std::string style_palette_hint;
+    std::string style_typography_hint;
+    try {
+      auto spec = nlohmann::json::parse(style_spec_json);
+      if (spec.contains("palette")) {
+        const auto& p = spec["palette"];
+        style_palette_hint =
+          std::string("  primary=")    + p.value("primary",    "") +
+          " secondary="  + p.value("secondary",  "") +
+          " accent="     + p.value("accent",     "") +
+          " background=" + p.value("background", "") +
+          " text_dark="  + p.value("text_dark",  "") +
+          " text_light=" + p.value("text_light", "");
+      }
+      if (spec.contains("typography")) {
+        const auto& t = spec["typography"];
+        style_typography_hint =
+          std::string("  title_font=") + t.value("title_font", "") +
+          " body_font="  + t.value("body_font",  "") +
+          " title_size=" + std::to_string(t.value("title_size", 36)) +
+          " body_size="  + std::to_string(t.value("body_size",  18));
+      }
+    } catch (...) {}
+
+    user_oss << "\n【风格迁移约束 - 必须严格执行】用户上传了参考 PPT，以下是从该 PPT 提取的精确视觉规格：\n"
+             << style_spec_json << "\n\n"
+             << "你在输出时必须：\n"
+             << "1. palette 的 6 个字段直接复制参考规格的值，一个字符都不能改\n"
+             << "2. typography 的 title_font 和 body_font 直接复制参考规格的值\n";
+    if (!style_palette_hint.empty()) {
+      user_oss << "参考配色快速核对：\n" << style_palette_hint << "\n";
+    }
+    if (!style_typography_hint.empty()) {
+      user_oss << "参考字体快速核对：\n" << style_typography_hint << "\n";
+    }
   }
   user_oss << R"(
 请输出以下 JSON 格式：
@@ -411,9 +442,34 @@ bool AiNativePptService::GenerateDesignSpec(const std::string& brief_json,
       batch_outline.push_back(outline_arr[i]);
     }
 
+    // 从 palette 提取具体颜色值用于 prompt 示例，让 AI 直接使用不再猜测
+    std::string pal_primary, pal_secondary, pal_accent, pal_bg, pal_text_dark, pal_text_light;
+    try {
+      const auto& pal = design_spec["palette"];
+      pal_primary    = pal.value("primary",    "#1E3A5F");
+      pal_secondary  = pal.value("secondary",  "#2D6A4F");
+      pal_accent     = pal.value("accent",     "#F4A261");
+      pal_bg         = pal.value("background", "#F8F9FA");
+      pal_text_dark  = pal.value("text_dark",  "#0D1B2A");
+      pal_text_light = pal.value("text_light", "#FFFFFF");
+    } catch (...) {
+      pal_primary    = "#1E3A5F";
+      pal_secondary  = "#2D6A4F";
+      pal_accent     = "#F4A261";
+      pal_bg         = "#F8F9FA";
+      pal_text_dark  = "#0D1B2A";
+      pal_text_light = "#FFFFFF";
+    }
+
     std::ostringstream user_oss;
     user_oss << "演讲主题：" << topic << "\n\n";
-    user_oss << "全局配色：" << palette_summary << "\n";
+    user_oss << "【严格遵守的配色规格】\n"
+             << "  primary（主色，用于深色背景/标题栏/装饰块）：" << pal_primary << "\n"
+             << "  secondary（辅助色，用于副标题栏/色条）：" << pal_secondary << "\n"
+             << "  accent（强调色，用于高亮图标/图表/装饰点）：" << pal_accent << "\n"
+             << "  background（内容页背景色）：" << pal_bg << "\n"
+             << "  text_dark（浅色背景上的文字颜色）：" << pal_text_dark << "\n"
+             << "  text_light（深色背景上的文字颜色）：" << pal_text_light << "\n\n";
     user_oss << "全局字体：" << typo_summary << "\n";
     user_oss << "视觉母题：" << design_spec.value("motif", "minimal_lines") << "\n\n";
     user_oss << "本批幻灯片大纲（共 " << (batch_end - batch_start) << " 张）：\n"
@@ -425,12 +481,12 @@ bool AiNativePptService::GenerateDesignSpec(const std::string& brief_json,
              << "    \"layout_type\": \"hero_title\",\n"
              << "    \"title\": \"__TITLE__\",\n"
              << "    \"subtitle\": \"\",\n"
-             << "    \"background_color\": \"#xxxxxx\",\n"
+             << "    \"background_color\": \"" << pal_primary << "\",\n"
              << "    \"image_prompt\": \"English description or empty string\",\n"
              << "    \"notes\": \"\",\n"
              << "    \"elements\": [\n"
-             << "      { \"type\": \"shape\", \"shape\": \"rect\", \"x\": 0, \"y\": 0, \"w\": 13.33, \"h\": 7.5, \"fill\": \"#xxxxxx\" },\n"
-             << "      { \"type\": \"text\", \"content\": \"__TITLE__\", \"x\": 1, \"y\": 2, \"w\": 11, \"h\": 2, \"font_size\": 44, \"bold\": true, \"color\": \"#ffffff\", \"align\": \"left\" }\n"
+             << "      { \"type\": \"shape\", \"shape\": \"rect\", \"x\": 0, \"y\": 0, \"w\": 13.33, \"h\": 7.5, \"fill\": \"" << pal_primary << "\" },\n"
+             << "      { \"type\": \"text\", \"content\": \"__TITLE__\", \"x\": 1, \"y\": 2, \"w\": 11, \"h\": 2, \"font_size\": 44, \"bold\": true, \"color\": \"" << pal_text_light << "\", \"align\": \"left\" }\n"
              << "    ]\n"
              << "  }\n"
              << "]\n\n"
@@ -439,10 +495,16 @@ bool AiNativePptService::GenerateDesignSpec(const std::string& brief_json,
              << "2. 元素顺序：背景形状 -> 装饰形状 -> 图片/图表 -> 文字\n"
              << "3. 正文字号>=14，标题字号>=28\n"
              << "4. 每张幻灯片至少 1 个 shape 元素\n"
-             << "5. index=0 和最后一张使用深色背景（primary 色）\n"
-             << "6. 文字占位符：标题用 __TITLE__，副标题用 __SUBTITLE__，正文用 __BODY__\n"
-             << "7. bullets 格式：{\"type\":\"bullets\",\"items\":[\"__BULLET_0__\",\"__BULLET_1__\"],\"x\":...,\"y\":...,\"w\":...,\"h\":...,\"font_size\":16,\"color\":\"#...\"}\n"
-             << "8. 只输出 JSON 数组，不要包含 design_spec 字段\n";
+             << "5. 封面（index=0）和结尾页：background_color=" << pal_primary
+             <<    "，所有形状 fill 使用 primary 或 secondary，文字 color 使用 text_light=" << pal_text_light << "\n"
+             << "6. 内容页：background_color=" << pal_bg
+             <<    "，标题文字 color=" << pal_text_dark
+             <<    "，装饰色条 fill=" << pal_secondary
+             <<    "，强调元素 fill=" << pal_accent << "\n"
+             << "7. 【颜色铁律】所有 fill 和 color 字段只能从上述 6 个配色规格中选取，禁止使用任何未列出的颜色\n"
+             << "8. 文字占位符：标题用 __TITLE__，副标题用 __SUBTITLE__，正文用 __BODY__\n"
+             << "9. bullets 格式：{\"type\":\"bullets\",\"items\":[\"__BULLET_0__\",\"__BULLET_1__\"],\"x\":...,\"y\":...,\"w\":...,\"h\":...,\"font_size\":16,\"color\":\"" << pal_text_dark << "\"}\n"
+             << "10. 只输出 JSON 数组，不要包含 design_spec 字段\n";
 
     if (include_images) {
       user_oss << "9. 【图片规则】内容页（非封面/结尾）可以包含 image 元素，格式：\n"
@@ -514,6 +576,7 @@ bool AiNativePptService::GenerateDesignSpec(const std::string& brief_json,
   result["design_spec"] = design_spec;
   result["slides"]      = all_slides;
   out_spec_json = result.dump(2);
+
   return true;
 }
 

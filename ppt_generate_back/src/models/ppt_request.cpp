@@ -131,6 +131,36 @@ PptRequestInput PptRequestInput::FromJson(const nlohmann::json& data) {
       break;
     }
   }
+  // image_data: base64 图片数组（来自图片来源流程）
+  for (const char* key : {"imageData", "image_data"}) {
+    if (const auto it = data.find(key); it != data.end() && it->is_array()) {
+      for (const auto& elem : *it) {
+        if (elem.is_string()) {
+          const auto s = elem.get<std::string>();
+          // 限制每张图片大小（14MB base64 ≈ 10MB 原始）
+          if (s.size() <= 14 * 1024 * 1024) {
+            input.image_data.push_back(s);
+          }
+        }
+      }
+      // 最多 5 张
+      if (input.image_data.size() > 5) {
+        input.image_data.resize(5);
+      }
+      break;
+    }
+  }
+  // image_analysis_json: 图片分析结果 JSON 字符串
+  for (const char* key : {"imageAnalysisJson", "image_analysis_json"}) {
+    if (const auto it = data.find(key); it != data.end()) {
+      if (it->is_string()) {
+        input.image_analysis_json = it->get<std::string>();
+      } else if (it->is_object()) {
+        input.image_analysis_json = it->dump();
+      }
+      break;
+    }
+  }
   input.pages = std::clamp(input.pages, 1, 50);
   return input;
 }

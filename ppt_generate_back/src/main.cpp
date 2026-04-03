@@ -372,6 +372,9 @@ int main(int argc, char* argv[]) {
     router.AddRoute("POST", "/api/ppt/generate-from-image", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.GenerateFromImage(request);
     });
+    router.AddRoute("POST", "/api/ppt/analyze-image", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.AnalyzeImage(request);
+    });
     router.AddRoute("POST", "/api/ppt/analyze-style", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.AnalyzeStyle(request);
     });
