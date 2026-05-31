@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <thread>
 #include <fcntl.h>
 #include <unistd.h>
 #include <filesystem>
@@ -18,12 +19,17 @@
 
 #include <curl/curl.h>
 #include <mysql/mysql.h>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/buffer.h>
 
 #include "http/http_types.h"
 #include "logger.h"
 #include "models/outline_item.h"
 #include "models/slide_content.h"
 #include "services/ai_native_ppt_service.h"
+#include "services/image_material_service.h"
 #include "services/knowledge_rag_service.h"
 #include "services/material_service.h"
 #include "services/template_fastdfs_service.h"
@@ -145,6 +151,151 @@ std::string SanitizeFilenamePart(const std::string& value, std::size_t max_len) 
     result.resize(max_len);
   }
   return result;
+}
+
+std::string TrimString(const std::string& value) {
+  const auto start = value.find_first_not_of(" \t\r\n");
+  if (start == std::string::npos) {
+    return {};
+  }
+  const auto end = value.find_last_not_of(" \t\r\n");
+  return value.substr(start, end - start + 1);
+}
+
+std::string ShellQuote(const std::string& value) {
+  std::string quoted = "'";
+  for (char ch : value) {
+    if (ch == '\'') {
+      quoted += "'\"'\"'";
+    } else {
+      quoted.push_back(ch);
+    }
+  }
+  quoted.push_back('\'');
+  return quoted;
+}
+
+std::string NormalizeXfyunTheme(const std::string& theme) {
+  static const std::unordered_map<std::string, std::string> kThemeMap = {
+      {"auto", "auto"},
+      {"purple", "purple"},
+      {"green", "green"},
+      {"lightblue", "lightblue"},
+      {"blue", "blue"},
+      {"taupe", "taupe"},
+      {"telecomRed", "telecomRed"},
+      {"telecomGreen", "telecomGreen"},
+      {"business", "blue"},
+      {"tech", "blue"},
+      {"creative", "purple"},
+      {"education", "green"},
+      {"minimal", "taupe"},
+  };
+  const auto normalized = TrimString(theme);
+  const auto it = kThemeMap.find(normalized);
+  return it == kThemeMap.end() ? "auto" : it->second;
+}
+
+std::string BuildXfyunPrompt(const std::string& query,
+                             const std::string& title,
+                             int requested_pages) {
+  std::ostringstream oss;
+  if (!TrimString(title).empty()) {
+    oss << "PPT标题：" << TrimString(title) << "\n";
+  }
+  oss << TrimString(query);
+  if (requested_pages > 0) {
+    oss << "\n\n硬性要求：请输出 " << requested_pages
+        << " 页左右的 PPT，并尽量严格控制最终页数接近 " << requested_pages << " 页。";
+  }
+  return oss.str();
+}
+
+std::filesystem::path ResolveGenerationScriptPath(const GenerationConfig& config,
+                                                  const std::string& script_name) {
+  const std::filesystem::path script(script_name);
+  const std::filesystem::path cwd_candidate = std::filesystem::path("scripts") / script;
+  if (std::filesystem::exists(cwd_candidate)) {
+    return cwd_candidate;
+  }
+
+  const std::array<std::string, 4> anchors = {
+      config.template_analyzer_script,
+      config.builder_script,
+      config.pptxgen_builder_script,
+      config.ai_native_builder_script,
+  };
+  for (const auto& anchor : anchors) {
+    if (anchor.empty()) continue;
+    const std::filesystem::path candidate =
+        std::filesystem::path(anchor).parent_path() / script;
+    if (std::filesystem::exists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return cwd_candidate;
+}
+
+bool RunPptxSanitizer(const GenerationConfig& config,
+                      const std::string& pptx_path,
+                      const std::string& title,
+                      int& out_slide_count,
+                      std::string& error) {
+  out_slide_count = 0;
+  if (config.python_binary.empty()) {
+    error = "未配置 python_binary，无法清洗 PPT";
+    return false;
+  }
+
+  const std::filesystem::path script_path =
+      ResolveGenerationScriptPath(config, "sanitize_pptx.py");
+  std::error_code ec;
+  if (!std::filesystem::exists(script_path, ec) || ec) {
+    error = "未找到 PPT 清洗脚本: " + script_path.string();
+    return false;
+  }
+
+  const std::string tmp_output = pptx_path + ".sanitize.json";
+  std::ostringstream cmd;
+  cmd << ShellQuote(config.python_binary)
+      << " " << ShellQuote(script_path.string())
+      << " --input " << ShellQuote(pptx_path)
+      << " --title " << ShellQuote(title)
+      << " --author " << ShellQuote("PPT Generate System")
+      << " --company " << ShellQuote("PPT Generate System")
+      << " > " << ShellQuote(tmp_output)
+      << " 2>&1";
+
+  const int ret = std::system(cmd.str().c_str());
+  std::string output;
+  {
+    std::ifstream f(tmp_output);
+    if (f.is_open()) {
+      std::ostringstream ss;
+      ss << f.rdbuf();
+      output = ss.str();
+    }
+    std::filesystem::remove(tmp_output, ec);
+  }
+
+  if (ret != 0) {
+    error = output.empty() ? "清洗脚本执行失败" : TrimString(output);
+    return false;
+  }
+
+  try {
+    auto parsed = nlohmann::json::parse(TrimString(output));
+    if (parsed.contains("error") && parsed["error"].is_string()) {
+      error = parsed["error"].get<std::string>();
+      return false;
+    }
+    out_slide_count = parsed.value("slide_count", 0);
+    return true;
+  } catch (const std::exception& ex) {
+    error = std::string("清洗结果解析失败: ") + ex.what();
+    return false;
+  }
 }
 
 std::uint64_t FileMtimeSeconds(const std::filesystem::path& path) {
@@ -1221,6 +1372,7 @@ struct PptGenerationJob {
   std::shared_ptr<MaterialService> material_service;
   std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service;
   std::shared_ptr<KnowledgeRagService> knowledge_rag_service;
+  std::shared_ptr<ImageMaterialService> image_material_service;
 };
 
 std::filesystem::path BuildStructurePath(const GenerationConfig& config,
@@ -1849,6 +2001,35 @@ void DoActualGeneration(
   if (!is_ai_native && input.include_images) {
     WriteProgress(progress_path, 60, "配图生成", "正在为幻灯片搜索和生成配图...");
     redis_set_progress("processing", "60", "images");
+
+    // 混合配图策略：优先从用户图片素材库中检索匹配的图片，不足部分再用 LLM 生成
+    if (job.image_material_service && job.image_material_service->IsAvailable()) {
+      int matched = 0;
+      for (auto& slide : slides) {
+        // 跳过已有图片的幻灯片，或不需要图片的布局
+        if (!slide.image_paths.empty() || !slide.image_urls.empty()) continue;
+        if (slide.image_prompts.empty() && slide.title.empty()) continue;
+
+        const std::string query = slide.title.empty()
+            ? (slide.image_prompts.empty() ? input.topic : slide.image_prompts.front())
+            : slide.title;
+
+        const auto results = job.image_material_service->Search(
+            query, job.user_id, input.image_material_ids, 1, 0.60);
+
+        if (!results.empty() && !results.front().storage_path.empty()) {
+          slide.image_paths.push_back(results.front().storage_path);
+          ++matched;
+          Logger::Info("MixedImage: matched user image for slide [" + slide.title +
+                       "] score=" + std::to_string(results.front().score));
+        }
+      }
+      if (matched > 0) {
+        Logger::Info("MixedImage: pre-attached " + std::to_string(matched) +
+                     " user images, remaining will use LLM generation");
+      }
+    }
+
     // 若来自图片来源且有产品图，传入 image_data 供产品介绍页使用
     const std::vector<std::string>& product_imgs = input.image_data;
     AttachImagesWithWanxiangAndUnsplash(generation_config, wanx_client.get(), slides, ppt_request.id, input.topic, product_imgs);
@@ -2063,7 +2244,8 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
                            std::shared_ptr<MySQLConnectionPool> pool,
                            std::shared_ptr<AiSearchService> ai_search_service,
                            std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service,
-                           std::shared_ptr<KnowledgeRagService> knowledge_rag_service)
+                           std::shared_ptr<KnowledgeRagService> knowledge_rag_service,
+                           std::shared_ptr<ImageMaterialService> image_material_service)
     : auth_service_(std::move(auth_service)),
       ppt_service_(std::move(ppt_service)),
       model_service_(std::move(model_service)),
@@ -2080,7 +2262,8 @@ PptController::PptController(std::shared_ptr<AuthService> auth_service,
       pool_(std::move(pool)),
       ai_search_service_(std::move(ai_search_service)),
       tmpl_fastdfs_service_(std::move(tmpl_fastdfs_service)),
-      knowledge_rag_service_(std::move(knowledge_rag_service)) {}
+      knowledge_rag_service_(std::move(knowledge_rag_service)),
+      image_material_service_(std::move(image_material_service)) {}
 
 HttpResponse PptController::Generate(const HttpRequest& request) {
   std::string error;
@@ -2158,6 +2341,7 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     }
 
     std::string template_id;
+    bool explicit_template_selected = false;
     const bool use_style_only = (input.generate_mode == "style");
     if (use_style_only) {
       const auto& templates = template_service_->GetAll();
@@ -2167,8 +2351,10 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     } else {
       if (auto it = request.query_params.find("template"); it != request.query_params.end() && !it->second.empty()) {
         template_id = it->second;
+        explicit_template_selected = true;
       } else if (!input.template_id.empty()) {
         template_id = input.template_id;
+        explicit_template_selected = true;
       }
     }
 
@@ -2186,8 +2372,9 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
       return HttpResponse::Json(400, ErrorJson("ERR_PPT_INVALID_TEMPLATE", "Invalid template"));
     }
 
-    input.template_id = template_info_opt->id;
-    std::string display_template_name = template_info_opt->name;
+    const std::string effective_template_id = template_info_opt->id;
+    input.template_id = explicit_template_selected ? effective_template_id : "";
+    std::string display_template_name = explicit_template_selected ? template_info_opt->name : "-";
     if (use_style_only) {
       static const std::unordered_map<std::string, std::string> kStyleNames = {
           {"business", "商务"}, {"academic", "学术"}, {"creative", "创意"}, {"minimal", "简约"}};
@@ -2207,10 +2394,11 @@ HttpResponse PptController::Generate(const HttpRequest& request) {
     job.input = input;
     job.user_id = user->id;
     job.user_email = user->email;
-    job.template_id = template_info_opt->id;
+    job.template_id = effective_template_id;
     job.material_service = material_service_;
     job.tmpl_fastdfs_service = tmpl_fastdfs_service_;
     job.knowledge_rag_service = knowledge_rag_service_;
+    job.image_material_service = image_material_service_;
 
     // Redis：初始化生成状态 Hash
     if (redis_) {
@@ -2815,6 +3003,21 @@ HttpResponse PptController::Outline(const HttpRequest& request) {
         }
       } else {
         Logger::Warn("Outline: material not found: " + input.material_id + " err=" + mat_error);
+      }
+    }
+
+    if (input.use_knowledge && knowledge_rag_service_ &&
+        knowledge_rag_service_->IsAvailable()) {
+      const auto chunks = knowledge_rag_service_->Retrieve(
+          input.topic, user->id, input.rag_material_ids, 5);
+      if (!chunks.empty()) {
+        const auto rag_context = KnowledgeRagService::FormatChunksAsContext(chunks);
+        enriched_topic += "\n\n【知识库参考资料】\n" + rag_context +
+                          "\n【约束】优先依据以上素材知识库生成大纲，不得编造超出素材的信息。";
+        Logger::Info("Outline: RAG retrieved " + std::to_string(chunks.size()) +
+                     " chunks for topic=" + input.topic);
+      } else {
+        Logger::Info("Outline: RAG enabled but no relevant chunks found for " + input.topic);
       }
     }
 
@@ -4282,6 +4485,7 @@ HttpResponse PptController::GenerateFromImage(const HttpRequest& request) {
 
   // 选择模板
   std::string template_id = template_id_param;
+  const bool explicit_template_selected = !template_id_param.empty();
   if (template_id.empty()) {
     const auto& templates = template_service_->GetAll();
     if (!templates.empty()) {
@@ -4296,10 +4500,14 @@ HttpResponse PptController::GenerateFromImage(const HttpRequest& request) {
   }
 
   // 获取 template name
-  std::string template_name;
+  std::string template_name = "-";
   if (auto t = template_service_->FindById(template_id)) {
-    template_name = t->name;
+    if (explicit_template_selected) {
+      template_name = t->name;
+    }
   }
+
+  input.template_id = explicit_template_selected ? template_id : "";
 
   // 创建数据库记录
   PptRequest ppt_request;
@@ -4307,6 +4515,22 @@ HttpResponse PptController::GenerateFromImage(const HttpRequest& request) {
   if (!ppt_service_->CreateRequest(input, user->id, model_name, template_name, ppt_request, create_error)) {
     Logger::Error("GenerateFromImage: CreateRequest failed: " + create_error);
     return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "创建生成记录失败：" + create_error));
+  }
+
+  // 解析可选的 RAG 和图片素材参数
+  {
+    const bool use_knowledge = body.value("use_knowledge", false);
+    input.use_knowledge = use_knowledge;
+    if (const auto it = body.find("rag_material_ids"); it != body.end() && it->is_array()) {
+      for (const auto& elem : *it) {
+        if (elem.is_string()) input.rag_material_ids.push_back(elem.get<std::string>());
+      }
+    }
+    if (const auto it = body.find("image_material_ids"); it != body.end() && it->is_array()) {
+      for (const auto& elem : *it) {
+        if (elem.is_string()) input.image_material_ids.push_back(elem.get<std::string>());
+      }
+    }
   }
 
   // 构建 GenerationJob 并异步提交
@@ -4318,7 +4542,8 @@ HttpResponse PptController::GenerateFromImage(const HttpRequest& request) {
   job.template_id = template_id;
   job.material_service = material_service_;
   job.tmpl_fastdfs_service = tmpl_fastdfs_service_;
-  job.knowledge_rag_service = nullptr;  // 图片模式不走 RAG 知识库
+  job.knowledge_rag_service = knowledge_rag_service_;
+  job.image_material_service = image_material_service_;
 
   const auto req_id = ppt_request.id;
   active_jobs_.fetch_add(1, std::memory_order_relaxed);
@@ -4363,6 +4588,407 @@ HttpResponse PptController::GenerateFromImage(const HttpRequest& request) {
       {"status", "processing"}
   };
   return HttpResponse::Json(202, result);
+}
+
+// ---------------------------------------------------------------------------
+// BZ_PPT 生成 — 真正的 PPT 文件生成接口
+// POST /api/ppt/xfyun_ppt
+// Body: { "query": "...", "theme": "auto", "language": "cn",
+//         "is_card_note": false, "is_figure": false }
+// ---------------------------------------------------------------------------
+
+// ── BZ_PPT 鉴权与 HTTP 工具（文件内部匿名 namespace 补充）──────────
+
+static std::string XfyunBytesToHex(const unsigned char* data, std::size_t len) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out(len * 2, '\0');
+  for (std::size_t i = 0; i < len; ++i) {
+    out[i * 2]     = kHex[(data[i] >> 4) & 0x0F];
+    out[i * 2 + 1] = kHex[data[i] & 0x0F];
+  }
+  return out;
+}
+
+static std::string XfyunMd5Hex(const std::string& s) {
+  unsigned char digest[EVP_MAX_MD_SIZE]; unsigned int dlen = 0;
+  EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+  EVP_DigestInit_ex(ctx, EVP_md5(), nullptr);
+  EVP_DigestUpdate(ctx, s.data(), s.size());
+  EVP_DigestFinal_ex(ctx, digest, &dlen);
+  EVP_MD_CTX_free(ctx);
+  return XfyunBytesToHex(digest, dlen);
+}
+
+static std::string XfyunHmacSha1B64(const std::string& key, const std::string& data) {
+  unsigned char digest[EVP_MAX_MD_SIZE]; unsigned int dlen = 0;
+  HMAC(EVP_sha1(),
+       key.data(),  static_cast<int>(key.size()),
+       reinterpret_cast<const unsigned char*>(data.data()),
+       static_cast<int>(data.size()),
+       digest, &dlen);
+  BIO* b64 = BIO_push(BIO_new(BIO_f_base64()), BIO_new(BIO_s_mem()));
+  BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+  BIO_write(b64, digest, static_cast<int>(dlen));
+  BIO_flush(b64);
+  BUF_MEM* p = nullptr; BIO_get_mem_ptr(b64, &p);
+  std::string result(p->data, p->length);
+  BIO_free_all(b64);
+  return result;
+}
+
+static std::string XfyunSignature(const std::string& app_id,
+                                   const std::string& secret, long ts) {
+  return XfyunHmacSha1B64(secret, XfyunMd5Hex(app_id + std::to_string(ts)));
+}
+
+// curl helpers for iFlytek API (returns response body; sets http_code)
+static std::string XfyunDoPost(const std::string& url,
+                                const std::string& app_id,
+                                const std::string& secret,
+                                const std::string& body,
+                                long& http_code, long timeout_s = 30) {
+  CURL* c = curl_easy_init(); if (!c) return {};
+  long ts = static_cast<long>(std::time(nullptr));
+  auto sig = XfyunSignature(app_id, secret, ts);
+
+  struct curl_slist* hdrs = nullptr;
+  hdrs = curl_slist_append(hdrs, "Content-Type: application/json;charset=UTF-8");
+  hdrs = curl_slist_append(hdrs, ("appId: " + app_id).c_str());
+  hdrs = curl_slist_append(hdrs, ("timestamp: " + std::to_string(ts)).c_str());
+  hdrs = curl_slist_append(hdrs, ("signature: " + sig).c_str());
+
+  std::string resp;
+  auto wcb = [](void* p, size_t s, size_t n, void* u) -> size_t {
+    static_cast<std::string*>(u)->append(static_cast<char*>(p), s*n); return s*n;
+  };
+  curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
+  curl_easy_setopt(c, CURLOPT_POSTFIELDS, body.c_str());
+  curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+  curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, +wcb);
+  curl_easy_setopt(c, CURLOPT_WRITEDATA, &resp);
+  curl_easy_setopt(c, CURLOPT_TIMEOUT, timeout_s);
+  curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
+  curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+  curl_easy_perform(c);
+  curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
+  curl_slist_free_all(hdrs); curl_easy_cleanup(c);
+  return resp;
+}
+
+static std::string XfyunDoGet(const std::string& url,
+                               const std::string& app_id,
+                               const std::string& secret,
+                               long& http_code, long timeout_s = 15) {
+  CURL* c = curl_easy_init(); if (!c) return {};
+  long ts = static_cast<long>(std::time(nullptr));
+  auto sig = XfyunSignature(app_id, secret, ts);
+
+  struct curl_slist* hdrs = nullptr;
+  hdrs = curl_slist_append(hdrs, ("appId: " + app_id).c_str());
+  hdrs = curl_slist_append(hdrs, ("timestamp: " + std::to_string(ts)).c_str());
+  hdrs = curl_slist_append(hdrs, ("signature: " + sig).c_str());
+
+  std::string resp;
+  auto wcb = [](void* p, size_t s, size_t n, void* u) -> size_t {
+    static_cast<std::string*>(u)->append(static_cast<char*>(p), s*n); return s*n;
+  };
+  curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
+  curl_easy_setopt(c, CURLOPT_HTTPGET, 1L);
+  curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, +wcb);
+  curl_easy_setopt(c, CURLOPT_WRITEDATA, &resp);
+  curl_easy_setopt(c, CURLOPT_TIMEOUT, timeout_s);
+  curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
+  curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+  curl_easy_perform(c);
+  curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
+  curl_slist_free_all(hdrs); curl_easy_cleanup(c);
+  return resp;
+}
+
+HttpResponse PptController::XfyunPptGenerate(const HttpRequest& request) {
+  std::string error;
+  auto user = Authenticate(request, error);
+  if (!user) {
+    return HttpResponse::Json(401, ErrorJson("ERR_UNAUTHORIZED",
+        error.empty() ? "Unauthorized" : error));
+  }
+
+  if (generation_config_.xfyun_app_id.empty() || generation_config_.xfyun_api_secret.empty()) {
+    return HttpResponse::Json(503, ErrorJson("ERR_XFYUN_NOT_CONFIGURED",
+        "BZ_PPT 服务未配置，请联系管理员"));
+  }
+
+  // ── 解析请求体 ──────────────────────────────────────────────────────────
+  std::string query;
+  std::string title;
+  std::string theme    = "auto";
+  std::string language = "cn";
+  int page_count       = 0;
+  bool is_card_note    = false;
+  bool is_figure       = false;
+
+  try {
+    if (request.body.find('\0') != std::string::npos) {
+      return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "Invalid JSON"));
+    }
+    auto body = nlohmann::json::parse(request.body);
+    query        = body.value("query", "");
+    title        = body.value("title", "");
+    theme        = body.value("theme", "auto");
+    language     = body.value("language", "cn");
+    page_count   = body.value("page_count", 0);
+    is_card_note = body.value("is_card_note", false);
+    is_figure    = body.value("is_figure", false);
+  } catch (const std::exception& ex) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST",
+        std::string("JSON parse error: ") + ex.what()));
+  }
+
+  if (query.empty()) {
+    return HttpResponse::Json(400, ErrorJson("ERR_BAD_REQUEST", "query 不能为空"));
+  }
+  if (query.size() > 8000) query.resize(8000);
+  if (title.size() > 100) title.resize(100);
+  page_count = std::max(0, std::min(page_count, 30));
+  theme = NormalizeXfyunTheme(theme);
+  const std::string provider_query = BuildXfyunPrompt(query, title, page_count);
+
+  // ── 创建数据库记录 ───────────────────────────────────────────────────────
+  // 按 UTF-8 字符边界截断标题，避免切断多字节汉字产生非法字节序列
+  auto Utf8TruncateBytes = [](const std::string& s, size_t max_bytes) -> std::string {
+    if (s.size() <= max_bytes) return s;
+    size_t pos = max_bytes;
+    // 向前回退直到落在 UTF-8 字符起始字节（非续字节 0x80-0xBF）
+    while (pos > 0 && (static_cast<unsigned char>(s[pos]) & 0xC0) == 0x80) --pos;
+    return s.substr(0, pos);
+  };
+
+  PptRequestInput input;
+  input.title       = title.empty() ? Utf8TruncateBytes(query, 80) : Utf8TruncateBytes(title, 80);
+  input.topic       = query;
+  input.pages       = page_count > 0 ? page_count : 10;
+  input.style       = theme;
+  input.generate_mode = "xfyun";
+
+  PptRequest ppt_request;
+  std::string create_error;
+  if (!ppt_service_->CreateRequest(input, user->id, "BZ_PPT", "BZ_PPT",
+                                   ppt_request, create_error)) {
+    Logger::Error("XfyunPptGenerate: CreateRequest failed: " + create_error);
+    return HttpResponse::Json(500, ErrorJson("ERR_INTERNAL", "创建生成记录失败"));
+  }
+
+  const auto req_id = ppt_request.id;
+  const auto redis_key = "ppt:status:" + std::to_string(req_id);
+  if (redis_) {
+    redis_->HMSet(redis_key, {{"status", "queued"}, {"progress", "0"}, {"stage", "init"}});
+    redis_->Expire(redis_key, redis_ttl_ppt_status_);
+    redis_->Del("ppt:history:user:" + std::to_string(user->id));
+  }
+
+  // ── 异步生成 ─────────────────────────────────────────────────────────────
+  auto ppt_svc      = ppt_service_;
+  auto s3           = s3_client_;
+  auto redis        = redis_;
+  auto gen_cfg      = generation_config_;
+  int  ttl_status   = redis_ttl_ppt_status_;
+  auto* active_ptr  = &active_jobs_;
+  active_jobs_.fetch_add(1, std::memory_order_relaxed);
+
+  thread_pool_->EnqueueDetached([
+      req_id, user_id = user->id, query = provider_query, theme, language,
+      is_card_note, is_figure,
+      ppt_svc, s3, redis, gen_cfg, ttl_status, ppt_request, input, active_ptr
+  ]() mutable {
+
+    auto set_progress = [&](const std::string& status, const std::string& prog,
+                             const std::string& stage) {
+      if (redis) {
+        redis->HMSet("ppt:status:" + std::to_string(req_id),
+                     {{"status", status}, {"progress", prog}, {"stage", stage}});
+        redis->Expire("ppt:status:" + std::to_string(req_id), ttl_status);
+      }
+    };
+
+    // ── Step 1：提交生成任务 ──────────────────────────────────────────────
+    set_progress("processing", "5", "submitting");
+    Logger::Info("XfyunPptGenerate: submitting task, req_id=" + std::to_string(req_id));
+
+    const std::string create_url = gen_cfg.xfyun_ppt_base_url + "/api/aippt/create";
+    nlohmann::json create_body;
+    create_body["query"]        = query;
+    create_body["theme"]        = theme;
+    create_body["language"]     = language;
+    create_body["is_card_note"] = is_card_note;
+    create_body["is_figure"]    = is_figure;
+
+    long http_code = 0;
+    const std::string create_resp = XfyunDoPost(create_url,
+        gen_cfg.xfyun_app_id, gen_cfg.xfyun_api_secret,
+        create_body.dump(), http_code, 30);
+
+
+    if (http_code < 200 || http_code >= 300) {
+      Logger::Error("XfyunPptGenerate: create HTTP " + std::to_string(http_code) +
+                    " body=" + create_resp.substr(0, 300));
+      std::string e; ppt_svc->UpdateRequestOutput(req_id, user_id, "", "failed", e);
+      set_progress("failed", "0", "error");
+      active_ptr->fetch_sub(1, std::memory_order_relaxed);
+      return;
+    }
+
+    std::string sid;
+    try {
+      auto j = nlohmann::json::parse(create_resp);
+      if (j.value("code", -1) != 0) {
+        Logger::Error("XfyunPptGenerate: create API error: " + create_resp.substr(0, 300));
+        std::string e; ppt_svc->UpdateRequestOutput(req_id, user_id, "", "failed", e);
+        set_progress("failed", "0", "error");
+        active_ptr->fetch_sub(1, std::memory_order_relaxed);
+        return;
+      }
+      sid = j.at("data").at("sid").get<std::string>();
+    } catch (const std::exception& ex) {
+      Logger::Error("XfyunPptGenerate: parse create response failed: " +
+                    std::string(ex.what()));
+      std::string e; ppt_svc->UpdateRequestOutput(req_id, user_id, "", "failed", e);
+      set_progress("failed", "0", "error");
+      active_ptr->fetch_sub(1, std::memory_order_relaxed);
+      return;
+    }
+
+    Logger::Info("XfyunPptGenerate: got sid=" + sid);
+    set_progress("processing", "15", "generating");
+
+    // ── Step 2：轮询进度，等到 process == 100 ───────────────────────────────
+    // 官方限流：3 秒访问一次
+    const std::string progress_url_base =
+        gen_cfg.xfyun_ppt_base_url + "/api/aippt/progress?sid=" + sid;
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(gen_cfg.xfyun_ppt_timeout_seconds > 0
+                                  ? gen_cfg.xfyun_ppt_timeout_seconds : 300);
+
+    std::string ppt_url;
+    int last_process = 0;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::seconds(3));
+
+      long poll_code = 0;
+      const std::string poll_resp = XfyunDoGet(progress_url_base,
+          gen_cfg.xfyun_app_id, gen_cfg.xfyun_api_secret, poll_code, 15);
+
+      if (poll_code < 200 || poll_code >= 300) continue;  // 网络抖动，继续等
+
+      try {
+        auto pj = nlohmann::json::parse(poll_resp);
+        if (pj.value("code", -1) != 0) {
+          const std::string err_msg = pj.value("desc", "BZ_PPT 生成失败");
+          Logger::Error("XfyunPptGenerate: poll error: " + err_msg);
+          std::string e; ppt_svc->UpdateRequestOutput(req_id, user_id, "", "failed", e);
+          set_progress("failed", "0", "error");
+          active_ptr->fetch_sub(1, std::memory_order_relaxed);
+          return;
+        }
+        const auto& data = pj.at("data");
+        int process = data.value("process", 0);
+        // 30 = 大纲完毕，70 = PPT生成，100 = PPT导出完毕
+        const int mapped_progress = (process == 100) ? 90
+            : (process == 70) ? 60 : (process == 30) ? 30 : last_process;
+        if (mapped_progress > last_process) {
+          last_process = mapped_progress;
+          const std::string stage =
+              (process >= 70) ? "rendering" : (process >= 30) ? "outline_done" : "generating";
+          set_progress("processing", std::to_string(mapped_progress), stage);
+        }
+
+        if (process == 100) {
+          ppt_url = data.value("pptUrl", "");
+          if (ppt_url.empty()) {
+            Logger::Error("XfyunPptGenerate: pptUrl is empty after process=100");
+            std::string e; ppt_svc->UpdateRequestOutput(req_id, user_id, "", "failed", e);
+            set_progress("failed", "0", "error");
+            active_ptr->fetch_sub(1, std::memory_order_relaxed);
+            return;
+          }
+          break;
+        }
+      } catch (const std::exception& ex) {
+        Logger::Warn("XfyunPptGenerate: poll parse error: " + std::string(ex.what()));
+      }
+    }
+
+    if (ppt_url.empty()) {
+      Logger::Error("XfyunPptGenerate: timed out waiting for pptUrl, req_id=" +
+                    std::to_string(req_id));
+      std::string e; ppt_svc->UpdateRequestOutput(req_id, user_id, "", "failed", e);
+      set_progress("failed", "0", "error");
+      active_ptr->fetch_sub(1, std::memory_order_relaxed);
+      return;
+    }
+
+    // ── Step 3：下载 PPT 文件 ────────────────────────────────────────────
+    set_progress("processing", "92", "downloading");
+    Logger::Info("XfyunPptGenerate: downloading pptUrl=" + ppt_url);
+
+    const std::string output_path = BuildOutputPath(gen_cfg, req_id, input.title,
+                                                     ppt_request.user_email);
+    std::string dl_error;
+    if (!DownloadToFile(ppt_url, output_path, 60, dl_error)) {
+      Logger::Error("XfyunPptGenerate: download failed: " + dl_error);
+      std::error_code remove_ec;
+      std::filesystem::remove(output_path, remove_ec);
+      std::string e; ppt_svc->UpdateRequestOutput(req_id, user_id, "", "failed", e);
+      set_progress("failed", "0", "error");
+      active_ptr->fetch_sub(1, std::memory_order_relaxed);
+      return;
+    }
+
+    // ── Step 4：清洗第三方痕迹，并以实际页数回写数据库 ───────────────────
+    int actual_slide_count = 0;
+    std::string sanitize_error;
+    if (!RunPptxSanitizer(gen_cfg, output_path, input.title, actual_slide_count, sanitize_error)) {
+      Logger::Error("XfyunPptGenerate: sanitize failed: " + sanitize_error);
+      std::error_code remove_ec;
+      std::filesystem::remove(output_path, remove_ec);
+      std::string e; ppt_svc->UpdateRequestOutput(req_id, user_id, "", "failed", e);
+      set_progress("failed", "0", "error");
+      active_ptr->fetch_sub(1, std::memory_order_relaxed);
+      return;
+    }
+
+    // ── Step 5：写数据库 + 上传 S3 ──────────────────────────────────────
+    std::string upd_err;
+    const int persisted_pages = actual_slide_count > 0 ? actual_slide_count : input.pages;
+    ppt_svc->UpdateRequestOutput(req_id, user_id, output_path, "completed", persisted_pages, upd_err);
+
+    if (s3 && s3->IsEnabled()) {
+      const auto obj_key = BuildObjectKey(gen_cfg, output_path);
+      if (!obj_key.empty()) {
+        std::string s3_err;
+        if (s3->UploadFile(output_path, obj_key, s3_err)) {
+          Logger::Info("XfyunPptGenerate: S3 upload ok key=" + obj_key);
+        } else {
+          Logger::Warn("XfyunPptGenerate: S3 upload failed: " + s3_err);
+        }
+      }
+    }
+
+    set_progress("completed", "100", "done");
+    if (redis) redis->Del("ppt:history:user:" + std::to_string(user_id));
+
+    Logger::Info("XfyunPptGenerate: done req_id=" + std::to_string(req_id));
+    active_ptr->fetch_sub(1, std::memory_order_relaxed);
+  });
+
+  return HttpResponse::Json(202, {
+      {"message", "BZ_PPT 生成已提交"},
+      {"requestId", req_id},
+      {"query", query},
+      {"status", "processing"}
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -4497,14 +5123,8 @@ HttpResponse PptController::AnalyzeStyle(const HttpRequest& request) {
         "Python 环境未配置，无法执行风格分析"));
   }
 
-  // Derive script path from template_analyzer_script (same scripts/ directory)
   std::filesystem::path script_path =
-      std::filesystem::path(generation_config_.template_analyzer_script)
-          .parent_path() / "analyze_style.py";
-  if (!std::filesystem::exists(script_path)) {
-    // Fallback: search relative to cwd
-    script_path = std::filesystem::path("scripts") / "analyze_style.py";
-  }
+      ResolveGenerationScriptPath(generation_config_, "analyze_style.py");
   if (!std::filesystem::exists(script_path)) {
     std::filesystem::remove(tmp_path, ec);
     Logger::Error("AnalyzeStyle: analyze_style.py not found at " + script_path.string());

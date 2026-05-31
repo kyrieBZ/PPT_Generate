@@ -13,6 +13,7 @@
 #include "controllers/assistant_controller.h"
 #include "controllers/ppt_controller.h"
 #include "controllers/template_controller.h"
+#include "controllers/image_material_controller.h"
 #include "controllers/material_controller.h"
 #include "controllers/model_controller.h"
 #include "controllers/announcement_controller.h"
@@ -21,6 +22,7 @@
 #include "controllers/template_manager_controller.h"
 #include "controllers/ai_search_controller.h"
 #include "controllers/officeplus_controller.h"
+#include "controllers/voice_controller.h"
 #include "database/mongo_client.h"
 #include "database/mysql_connection_pool.h"
 #include "database/redis_client.h"
@@ -32,6 +34,7 @@
 #include "services/email_service.h"
 #include "services/ppt_service.h"
 #include "services/qwen_client.h"
+#include "services/image_material_service.h"
 #include "services/material_service.h"
 #include "services/template_service.h"
 #include "services/ai_search_service.h"
@@ -49,6 +52,7 @@
 #include "utils/thread_pool.h"
 #include "utils/ppt_metrics.h"
 #include "utils/settings_reader.h"
+#include "utils/upload_debug_log.h"
 
 namespace {
 std::atomic<bool> g_should_stop{false};
@@ -72,6 +76,8 @@ int main(int argc, char* argv[]) {
   // 例如 config_path = "config/config.json"   → base_dir = "."
   const std::filesystem::path base_dir =
       std::filesystem::path(config_path).parent_path().parent_path();
+  const std::filesystem::path repo_root =
+      std::filesystem::weakly_canonical(base_dir).parent_path();
 
   std::signal(SIGINT, SignalHandler);
   std::signal(SIGTERM, SignalHandler);
@@ -80,6 +86,9 @@ int main(int argc, char* argv[]) {
 #endif
 
   try {
+    upload_debug_log::Configure(repo_root);
+    Logger::Info("Image upload debug log: " + upload_debug_log::PathString());
+
     const auto config = AppConfig::Load(config_path);
 
     auto pool = std::make_shared<MySQLConnectionPool>(config.database());
@@ -236,6 +245,47 @@ int main(int argc, char* argv[]) {
       }
     }
 
+    // ── 图片素材服务（可选，依赖 QwenClient + Qdrant）───────────────────────────
+    std::shared_ptr<ImageMaterialService> image_material_service;
+    if (config.ai_search().enabled && qwen_client) {
+      try {
+        const std::string qdrant_base_url =
+            "http://" + config.ai_search().qdrant_host + ":" +
+            std::to_string(config.ai_search().qdrant_port);
+        image_material_service = std::make_shared<ImageMaterialService>(
+            pool,
+            config.material().image_upload_dir,
+            qwen_client,
+            qdrant_base_url,
+            config.ai_search().embedding_dimension);
+        std::string img_err;
+        if (image_material_service->EnsureCollection(img_err)) {
+          Logger::Info("ImageMaterialService initialized (collection=user_images, dir=" +
+                       config.material().image_upload_dir + ")");
+          // Ensure upload directory exists
+          std::filesystem::create_directories(config.material().image_upload_dir);
+        } else {
+          Logger::Warn("ImageMaterialService: EnsureCollection failed: " + img_err);
+          image_material_service.reset();
+        }
+      } catch (const std::exception& e) {
+        Logger::Warn(std::string("ImageMaterialService init failed, disabled: ") + e.what());
+        image_material_service.reset();
+      }
+    } else if (qwen_client) {
+      // Qdrant not enabled: still create service for DB operations (no vector search)
+      image_material_service = std::make_shared<ImageMaterialService>(
+          pool, config.material().image_upload_dir, qwen_client, "", 1024);
+      std::filesystem::create_directories(config.material().image_upload_dir);
+      Logger::Info("ImageMaterialService initialized without Qdrant (no semantic search)");
+    } else {
+      // 无 Qwen / Qdrant 时也允许基础上传、列表和原图预览，仅关闭语义分析与检索。
+      image_material_service = std::make_shared<ImageMaterialService>(
+          pool, config.material().image_upload_dir, nullptr, "", 1024);
+      std::filesystem::create_directories(config.material().image_upload_dir);
+      Logger::Info("ImageMaterialService initialized in local-only mode (upload/list/preview only)");
+    }
+
     auto material_service = std::make_shared<MaterialService>(
         pool, config.material(), qwen_key, config.generation().python_binary,
         fastdfs_client, knowledge_rag_service);
@@ -261,13 +311,17 @@ int main(int argc, char* argv[]) {
 
     auto assistant_service = std::make_shared<AssistantService>(
         qwen_key, 30, mongo_client, pool,
-        ppt_service, material_service, tmpl_mgr_service, template_service,
+        ppt_service, material_service, image_material_service, tmpl_mgr_service, template_service,
         ai_search_service);
 
-    // 将 Qwen 配置注入 GenerationConfig，供 AI 原生链路使用
+    // 将 Qwen + BZ_PPT 配置注入 GenerationConfig，供各生成链路使用
     GenerationConfig gen_config = config.generation();
     gen_config.qwen_api_key = config.providers().qwen_api_key;
     gen_config.qwen_timeout_seconds = config.providers().qwen_timeout_seconds;
+    gen_config.xfyun_app_id = config.providers().xfyun_app_id;
+    gen_config.xfyun_api_secret = config.providers().xfyun_api_secret;
+    gen_config.xfyun_ppt_base_url = config.providers().xfyun_ppt_base_url;
+    gen_config.xfyun_ppt_timeout_seconds = config.providers().xfyun_ppt_timeout_seconds;
 
     Router router;
     AuthController auth_controller(auth_service, pool);
@@ -278,6 +332,10 @@ int main(int argc, char* argv[]) {
                                            config.providers().qwen_timeout_seconds,
                                            audit_service,
                                            knowledge_rag_service);
+    ImageMaterialController image_material_controller(
+        auth_service, image_material_service, thread_pool,
+        config.material().max_image_size_mb,
+        config.material().allowed_image_types);
     PptController ppt_controller(auth_service,
                                  ppt_service,
                                  model_service,
@@ -294,7 +352,8 @@ int main(int argc, char* argv[]) {
                                  pool,
                                  ai_search_service,
                                  tmpl_fastdfs_service,
-                                 knowledge_rag_service);
+                                 knowledge_rag_service,
+                                 image_material_service);
     TemplateController template_controller(template_service, tmpl_mgr_service,
                                            tmpl_fastdfs_service, tmpl_recommend_service);
     ModelController model_controller(model_service);
@@ -321,6 +380,7 @@ int main(int argc, char* argv[]) {
         tmpl_fastdfs_service);
 
     AiSearchController ai_search_controller(auth_service, ai_search_service, thread_pool);
+    VoiceController voice_controller(auth_service, config.asr());
 
     Logger::Info("PPT output directory: " + config.generation().output_dir);
 
@@ -368,6 +428,9 @@ int main(int argc, char* argv[]) {
 
     router.AddRoute("POST", "/api/ppt/generate", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.Generate(request);
+    });
+    router.AddRoute("POST", "/api/ppt/xfyun_ppt", [&ppt_controller](const HttpRequest& request) {
+      return ppt_controller.XfyunPptGenerate(request);
     });
     router.AddRoute("POST", "/api/ppt/generate-from-image", [&ppt_controller](const HttpRequest& request) {
       return ppt_controller.GenerateFromImage(request);
@@ -529,6 +592,36 @@ int main(int argc, char* argv[]) {
       return material_controller.RagStatus(request);
     });
 
+    // ── 图片素材库接口 ────────────────────────────────────────────────────────
+    router.AddRoute("POST", "/api/material/image/upload",
+        [&image_material_controller](const HttpRequest& request) {
+          return image_material_controller.Upload(request);
+        });
+    router.AddRoute("POST", "/api/material/image/batch_upload",
+        [&image_material_controller](const HttpRequest& request) {
+          return image_material_controller.BatchUpload(request);
+        });
+    router.AddRoute("GET", "/api/material/image/list",
+        [&image_material_controller](const HttpRequest& request) {
+          return image_material_controller.List(request);
+        });
+    router.AddRoute("GET", "/api/material/image/status",
+        [&image_material_controller](const HttpRequest& request) {
+          return image_material_controller.GetStatus(request);
+        });
+    router.AddRoute("GET", "/api/material/image/file",
+        [&image_material_controller](const HttpRequest& request) {
+          return image_material_controller.GetFile(request);
+        });
+    router.AddRoute("DELETE", "/api/material/image",
+        [&image_material_controller](const HttpRequest& request) {
+          return image_material_controller.Delete(request);
+        });
+    router.AddRoute("POST", "/api/material/image/batch_delete",
+        [&image_material_controller](const HttpRequest& request) {
+          return image_material_controller.BatchDelete(request);
+        });
+
     // ── 公告管理 ──────────────────────────────────────────────────────────────
     // 公开接口（需登录）
     router.AddRoute("GET", "/api/announcements", [&announcement_controller](const HttpRequest& request) {
@@ -672,6 +765,11 @@ int main(int argc, char* argv[]) {
         [&assistant_controller](const HttpRequest& request) {
           return assistant_controller.DeleteSession(request);
         });
+
+    // ── 语音识别（F05）────────────────────────────────────────────────────────
+    router.AddRoute("POST", "/api/voice/transcribe", [&voice_controller](const HttpRequest& request) {
+      return voice_controller.Transcribe(request);
+    });
 
     // ── AI 检索 ──────────────────────────────────────────────────────────────
     router.AddRoute("POST", "/api/ppt/ai_search", [&ai_search_controller](const HttpRequest& request) {

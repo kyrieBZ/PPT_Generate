@@ -37,6 +37,8 @@ struct PptRequestInput {
   std::vector<std::string> image_data;
   /** F04 图片来源：图片分析结果 JSON 字符串，用于图表绘制时的真实数据 */
   std::string image_analysis_json;
+  /** 图片素材 ID 列表：生成时优先使用用户上传的图片进行配图 */
+  std::vector<std::string> image_material_ids;
 
   static PptRequestInput FromJson(const nlohmann::json& data);
 };

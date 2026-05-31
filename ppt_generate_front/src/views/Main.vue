@@ -119,7 +119,7 @@
               <el-icon class="feature-icon"><DataAnalysis /></el-icon>
               <h4>图文表生成</h4>
               <p>智能生成文本、图片和表格</p>
-              <button class="feature-action">使用示例</button>
+              <button class="feature-action" @click="openExampleDialog">使用示例</button>
             </div>
           </div>
         </section>
@@ -135,6 +135,15 @@
               <span>Design-led</span>
               <span>Editable</span>
             </div>
+          </div>
+
+          <div v-if="assistantDraftNotice" class="assistant-draft-banner">
+            <el-icon><MagicStick /></el-icon>
+            <span>{{ assistantDraftNotice }}</span>
+          </div>
+          <div v-if="exampleDraftNotice" class="assistant-draft-banner assistant-draft-banner--example">
+            <el-icon><Star /></el-icon>
+            <span>{{ exampleDraftNotice }}</span>
           </div>
 
           <div class="generate-layout">
@@ -348,6 +357,26 @@
                         分析图片内容
                       </button>
                     </div>
+
+                    <!-- 参考素材（图片解析模式） -->
+                    <div class="img-material-selector-wrap" style="margin-top:14px">
+                      <details class="img-material-details">
+                        <summary class="img-material-summary">
+                          <el-icon style="color:#0EA5E9;margin-right:4px"><Picture /></el-icon>
+                          参考图片素材
+                          <el-tag v-if="generateForm.imageMaterialIds.length" size="small" type="primary" style="margin-left:6px">
+                            已选 {{ generateForm.imageMaterialIds.length }} 张
+                          </el-tag>
+                          <span class="img-material-hint">（生成时优先使用，不足部分 AI 补充）</span>
+                        </summary>
+                        <div class="img-material-panel-wrap">
+                          <ImageMaterialPanel
+                            :selectable="true"
+                            v-model="generateForm.imageMaterialIds"
+                          />
+                        </div>
+                      </details>
+                    </div>
                   </div>
 
                   <!-- 风格迁移区（F10）-->
@@ -475,6 +504,11 @@
                       rows="4"
                       @input="onTopicChangeForRecommend($event.target.value)"
                     ></textarea>
+                  </div>
+
+                  <div class="generate-required-note">
+                    <el-icon><InfoFilled /></el-icon>
+                    <span>AI 原生创作生成前需确认：主题、至少 1 份文档素材、至少 1 张图片素材。模板和风格仅作可选增强。</span>
                   </div>
 
                   <!-- AI 推荐提示条 -->
@@ -693,10 +727,10 @@
                         <input type="checkbox" v-model="generateForm.enableSectionSlides" />
                         启用章节页
                       </label>
-                      <label class="option-checkbox option-checkbox--rag" :title="ragStatus.available ? '使用您上传的文档作为知识库，生成内容将引用文档中的具体数据和观点' : 'RAG 知识库未启用（需配置 Qdrant + AI 检索）'">
-                        <input type="checkbox" v-model="generateForm.useKnowledge" :disabled="!ragStatus.available" />
+                      <label class="option-checkbox option-checkbox--rag" :title="ragStatus.available ? (generateForm.generateMode === 'ai_native' ? 'AI 原生创作将强制使用所选文档素材构建知识库' : '使用您上传的文档作为知识库，生成内容将引用文档中的具体数据和观点') : 'RAG 知识库未启用（需配置 Qdrant + AI 检索）'">
+                        <input type="checkbox" v-model="generateForm.useKnowledge" :disabled="!ragStatus.available || generateForm.generateMode === 'ai_native'" />
                         <span :class="{ 'text-muted': !ragStatus.available }">
-                          使用我的知识库
+                          {{ generateForm.generateMode === 'ai_native' ? '使用文档知识库（必选）' : '使用我的知识库' }}
                           <el-tag v-if="ragStatus.available && ragStatus.totalChunks > 0" size="small" type="success" style="margin-left:4px">{{ ragStatus.totalChunks }} 块</el-tag>
                           <el-tag v-else-if="!ragStatus.available" size="small" type="info" style="margin-left:4px">未启用</el-tag>
                         </span>
@@ -707,7 +741,7 @@
                     <div v-if="generateForm.useKnowledge && ragStatus.available" class="rag-materials-selector">
                       <label class="rag-label">
                         <el-icon style="color:#7C3AED;margin-right:4px"><Reading /></el-icon>
-                        选择参与检索的素材（不选则使用全部已索引素材）
+                        {{ generateForm.generateMode === 'ai_native' ? '选择参与检索的文档素材（至少选择 1 份）' : '选择参与检索的素材（不选则使用全部已索引素材）' }}
                       </label>
                       <div class="rag-material-list" v-if="materialsList.filter(m => m.status === 'completed').length">
                         <label
@@ -726,7 +760,29 @@
                           <el-tag size="small" style="margin-left:auto">{{ mat.file_type }}</el-tag>
                         </label>
                       </div>
-                      <p v-else class="rag-empty-hint">暂无提取完成的素材，请先在「我的材料」中上传并等待提取完成。</p>
+                      <p v-else class="rag-empty-hint">暂无可用文档素材，请先在「我的材料」中上传并等待提取完成。</p>
+                    </div>
+
+                    <!-- 图片素材选择（配图优先使用用户上传的图片） -->
+                    <div class="img-material-selector-wrap">
+                      <details class="img-material-details">
+                        <summary class="img-material-summary">
+                          <el-icon style="color:#0EA5E9;margin-right:4px"><Picture /></el-icon>
+                          图片素材配图
+                          <el-tag v-if="generateForm.imageMaterialIds.length" size="small" type="primary" style="margin-left:6px">
+                            已选 {{ generateForm.imageMaterialIds.length }} 张
+                          </el-tag>
+                          <span class="img-material-hint">
+                            {{ generateForm.generateMode === 'ai_native' ? '（至少选择 1 张，优先使用所选图片）' : '（优先用您上传的图片，不足部分 AI 补充生成）' }}
+                          </span>
+                        </summary>
+                        <div class="img-material-panel-wrap">
+                          <ImageMaterialPanel
+                            :selectable="true"
+                            v-model="generateForm.imageMaterialIds"
+                          />
+                        </div>
+                      </details>
                     </div>
 
                     <div v-if="generateForm.enableSectionSlides" class="form-group-inline mt-1">
@@ -1729,11 +1785,39 @@
               <h2>我的材料</h2>
               <p>上传教学材料或论文文献，AI 自动提取关键信息，一键用于 PPT 生成。</p>
             </div>
-            <button class="generate-btn" @click="showBatchUpload = !showBatchUpload">
+            <button v-if="materialActiveTab === 'text'" class="generate-btn" @click="showBatchUpload = !showBatchUpload">
               <el-icon class="btn-icon"><Plus /></el-icon>
               <span>{{ showBatchUpload ? '收起上传' : '批量上传' }}</span>
             </button>
           </div>
+
+          <!-- 素材库 Tabs -->
+          <div class="material-type-tabs">
+            <button
+              class="material-type-tab"
+              :class="{ active: materialActiveTab === 'text' }"
+              @click="materialActiveTab = 'text'"
+            >
+              <el-icon style="margin-right:4px"><Document /></el-icon>
+              文本素材
+            </button>
+            <button
+              class="material-type-tab"
+              :class="{ active: materialActiveTab === 'image' }"
+              @click="materialActiveTab = 'image'"
+            >
+              <el-icon style="margin-right:4px"><Picture /></el-icon>
+              图片素材
+            </button>
+          </div>
+
+          <!-- 图片素材面板 -->
+          <div v-if="materialActiveTab === 'image'" class="image-material-tab-content">
+            <ImageMaterialPanel />
+          </div>
+
+          <!-- 批量上传面板（仅文本素材 Tab 显示） -->
+          <template v-if="materialActiveTab === 'text'">
 
           <!-- 批量上传面板 -->
           <div v-if="showBatchUpload" class="batch-upload-panel">
@@ -1809,9 +1893,14 @@
                 </div>
               </div>
               <div class="material-card-footer">
-                <el-tag :type="materialStatusType(mat.status)" size="small">
-                  {{ materialStatusLabel(mat.status) }}
-                </el-tag>
+                <div class="material-status-pills">
+                  <el-tag :type="materialStatusType(mat.status)" size="small">
+                    提取：{{ materialStatusLabel(mat.status) }}
+                  </el-tag>
+                  <el-tag :type="materialRagStatusType(mat.ragStatus)" size="small" effect="plain">
+                    知识库：{{ materialRagStatusLabel(mat.ragStatus, mat.ragChunkCount) }}
+                  </el-tag>
+                </div>
                 <div class="material-actions">
                   <button
                     v-if="mat.status === 'completed'"
@@ -1826,7 +1915,7 @@
                     @click="triggerRagIndex(mat.id, mat.filename)"
                   >
                     <span v-if="ragIndexingId === mat.id">索引中...</span>
-                    <span v-else>加入知识库</span>
+                    <span v-else>{{ materialRagActionLabel(mat.ragStatus) }}</span>
                   </button>
                   <button
                     class="mat-btn danger"
@@ -1836,6 +1925,8 @@
               </div>
             </div>
           </div>
+
+          </template><!-- end materialActiveTab === 'text' -->
         </section>
 
         <!-- 材料详情对话框 -->
@@ -1948,6 +2039,42 @@
 
     <!-- 历史记录在线预览 Dialog -->
     <el-dialog
+      v-model="exampleDialogVisible"
+      title="使用示例"
+      width="860px"
+      class="example-dialog"
+      destroy-on-close
+    >
+      <div class="example-dialog-body">
+        <div class="example-dialog-intro">
+          <h3>先套用一个示例结构，再补充你的真实素材</h3>
+          <p>示例只会预填主题、页数和 AI 原生创作风格，不会直接开始生成。进入生成页后，仍需确认至少 1 份文档素材和 1 张图片素材。</p>
+        </div>
+        <div class="example-grid">
+          <button
+            v-for="example in generateExamples"
+            :key="example.id"
+            class="example-card"
+            @click="applyGenerateExample(example)"
+          >
+            <div class="example-card-top">
+              <div class="example-card-icon">
+                <el-icon><component :is="example.icon" /></el-icon>
+              </div>
+              <span class="example-card-pages">{{ example.pages }} 页建议</span>
+            </div>
+            <h4>{{ example.title }}</h4>
+            <p>{{ example.description }}</p>
+            <div class="example-card-tags">
+              <span v-for="tag in example.tags" :key="tag">{{ tag }}</span>
+            </div>
+            <div class="example-card-action">套用此示例</div>
+          </button>
+        </div>
+      </div>
+    </el-dialog>
+
+    <el-dialog
       v-model="historyPreviewVisible"
       :title="historyPreviewTitle"
       width="90%"
@@ -2010,7 +2137,7 @@ import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount, watch, w
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
-import { MagicStick, Download, Delete, EditPen, Search, Setting, SwitchButton, Plus, DataAnalysis, Brush, Document, DocumentChecked, Timer, Star, RefreshRight, ArrowDown, User, Lock, ArrowLeft, ArrowRight, Loading, BellFilled, Reading, Picture } from '@element-plus/icons-vue'
+import { MagicStick, Download, Delete, EditPen, Search, Setting, SwitchButton, Plus, DataAnalysis, Brush, Document, DocumentChecked, Timer, Star, RefreshRight, ArrowDown, User, Lock, ArrowLeft, ArrowRight, Loading, BellFilled, Reading, Picture, InfoFilled } from '@element-plus/icons-vue'
 import { getActiveAnnouncements } from '@/api/announcement'
 import templatesAPI from '@/api/templates'
 import pptAPI, { materialApi, templateApi } from '@/api/ppt'
@@ -2018,6 +2145,7 @@ import materialAPI from '@/api/material'
 import authAPI, { apiClient } from '@/api/auth'
 import dayjs from 'dayjs'
 import MaterialBatchUpload from '@/components/MaterialBatchUpload.vue'
+import ImageMaterialPanel from '@/components/ImageMaterialPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -2489,6 +2617,7 @@ const materialDetailId = ref('')
 const materialDetailData = ref(null)
 const materialDetailVisible = ref(false)
 const ragIndexingId = ref('')  // 当前正在 RAG 索引的素材 ID
+const materialActiveTab = ref('text')  // 'text' | 'image'
 
 // ---- 批量上传面板状态 ----
 const showBatchUpload = ref(false)
@@ -2508,12 +2637,56 @@ const onBatchQueueChange = (queueSize) => {
   if (queueSize === 0) loadMaterialsList()
 }
 
+const generateExamples = [
+  {
+    id: 'industry-research',
+    title: '行业研究汇报',
+    description: '适合论文、研报、市场分析类内容，强调逻辑结构、关键数据与趋势判断。',
+    topic: '请生成一份行业研究汇报型 PPT，要求包含行业背景、市场现状、关键数据洞察、竞争格局、趋势判断与结论建议，整体表达专业、清晰、适合正式汇报。',
+    aiStylePrompt: '理性、专业、信息密度适中，适合研究汇报与数据解读，强调图表和结论页的层次感',
+    pages: 12,
+    icon: DataAnalysis,
+    tags: ['研究型', '数据洞察', '正式汇报'],
+  },
+  {
+    id: 'product-proposal',
+    title: '产品方案宣讲',
+    description: '适合产品介绍、解决方案提案、业务汇报，强调问题-方案-价值链路。',
+    topic: '请生成一份产品方案宣讲型 PPT，要求围绕业务痛点、目标用户、核心方案、功能亮点、落地价值与实施路径展开，适合向客户或管理层讲解。',
+    aiStylePrompt: '现代、清爽、可信，适合产品方案和业务提案，页面节奏要利于讲述和说服',
+    pages: 10,
+    icon: MagicStick,
+    tags: ['方案型', '产品介绍', '商业表达'],
+  },
+  {
+    id: 'training-course',
+    title: '教学培训课件',
+    description: '适合课程讲解、内部培训、知识分享，强调章节清晰和案例辅助理解。',
+    topic: '请生成一份教学培训型 PPT，要求按照知识导入、核心概念、步骤拆解、案例说明、常见问题和总结回顾进行组织，适合课堂或培训场景。',
+    aiStylePrompt: '清晰、友好、易读，适合教学演示，重点信息突出，适当增加图示和步骤结构',
+    pages: 14,
+    icon: Reading,
+    tags: ['教学型', '培训', '知识讲解'],
+  },
+  {
+    id: 'visual-story',
+    title: '图文故事展示',
+    description: '适合品牌故事、案例回顾、活动总结，强调图片表达和情绪节奏。',
+    topic: '请生成一份图文故事展示型 PPT，要求围绕背景、关键过程、代表画面、阶段成果和最终总结展开，整体更注重画面叙事和情绪节奏。',
+    aiStylePrompt: '画面感强、节奏流畅、留白适度，适合案例展示、品牌叙事和活动回顾',
+    pages: 9,
+    icon: Picture,
+    tags: ['故事型', '图像表达', '案例展示'],
+  }
+]
+
 const generatePanels = [
   { id: 'settings', label: '生成设置', index: '01' },
   { id: 'outline', label: '大纲设计', index: '02' },
   { id: 'preview', label: '预览', index: '03' }
 ]
 const activeGeneratePanel = ref('settings')
+const exampleDialogVisible = ref(false)
 
 const resolveAbsoluteUrl = (url) => {
   if (!url) return ''
@@ -2624,6 +2797,29 @@ const setGeneratePanel = (panelId) => {
   if (generatePanels.find(panel => panel.id === panelId)) {
     activeGeneratePanel.value = panelId
   }
+}
+
+const openExampleDialog = () => {
+  exampleDialogVisible.value = true
+}
+
+const applyGenerateExample = async (example) => {
+  if (!example) return
+  exampleDialogVisible.value = false
+  activeMenu.value = 'generate'
+  await router.push({
+    path: '/main/generate',
+    query: {
+      example_demo: '1',
+      example_id: example.id,
+      title: example.title,
+      topic: example.topic,
+      pages: String(example.pages),
+      generate_mode: 'ai_native',
+      use_knowledge: '1',
+      ai_style_prompt: example.aiStylePrompt || '',
+    }
+  })
 }
 
 const goPrevPanel = () => {
@@ -2861,7 +3057,7 @@ const generateForm = ref({
   topic: '',
   pages: 10,
   style: 'business',
-  generateMode: 'template',
+  generateMode: 'ai_native',
   includeImages: true,
   includeCharts: true,
   includeNotes: false,
@@ -2872,9 +3068,12 @@ const generateForm = ref({
   templateId: '',
   materialId: '',
   aiStylePrompt: '',
-  useKnowledge: false,
-  ragMaterialIds: []
+  useKnowledge: true,
+  ragMaterialIds: [],
+  imageMaterialIds: []
 })
+const assistantDraftNotice = ref('')
+const exampleDraftNotice = ref('')
 
 // RAG 知识库状态
 const ragStatus = ref({ available: false, totalChunks: 0 })
@@ -2928,7 +3127,7 @@ const applyRecommendedTemplate = (templateId) => {
   generateForm.value.templateId = templateId
   generateForm.value.generateMode = 'template'
 }
-const fetchRagStatus = async () => {
+async function fetchRagStatus() {
   try {
     const res = await materialApi.ragStatus()
     ragStatus.value = {
@@ -2938,6 +3137,53 @@ const fetchRagStatus = async () => {
   } catch {
     ragStatus.value = { available: false, totalChunks: 0 }
   }
+}
+
+const normalizeQueryIdList = (value) => {
+  if (Array.isArray(value)) {
+    return value.map(item => String(item || '').trim()).filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    return value.split(',').map(item => item.trim()).filter(Boolean)
+  }
+  return []
+}
+
+const syncPrimaryMaterialIntoRagSelection = () => {
+  const materialId = String(generateForm.value.materialId || '').trim()
+  if (!materialId) return
+  if (!generateForm.value.ragMaterialIds.includes(materialId)) {
+    generateForm.value.ragMaterialIds = [...generateForm.value.ragMaterialIds, materialId]
+  }
+}
+
+const ensureGenerateRequirements = (showMessage = true) => {
+  syncPrimaryMaterialIntoRagSelection()
+
+  if (!generateForm.value.title.trim() || !generateForm.value.topic.trim()) {
+    if (showMessage) ElMessage.warning('请先填写标题和主题描述')
+    activeGeneratePanel.value = 'settings'
+    return false
+  }
+  if (!ragStatus.value.available) {
+    if (showMessage) ElMessage.warning('当前文档知识库未启用，无法按素材生成 PPT')
+    activeGeneratePanel.value = 'settings'
+    return false
+  }
+  if (!generateForm.value.useKnowledge) {
+    generateForm.value.useKnowledge = true
+  }
+  if (!generateForm.value.ragMaterialIds.length) {
+    if (showMessage) ElMessage.warning('请至少选择 1 份文档素材作为知识库依据')
+    activeGeneratePanel.value = 'settings'
+    return false
+  }
+  if (!generateForm.value.imageMaterialIds.length) {
+    if (showMessage) ElMessage.warning('请至少选择 1 张图片素材后再继续生成')
+    activeGeneratePanel.value = 'settings'
+    return false
+  }
+  return true
 }
 
 watch(
@@ -3072,21 +3318,13 @@ const previewCardStyle = computed(() => {
 })
 
 watch(
-  templates,
-  (list) => {
-    if (generateForm.value.generateMode === 'template' && !generateForm.value.templateId && Array.isArray(list) && list.length) {
-      generateForm.value.templateId = list[0].id
-    }
-  },
-  { immediate: true }
-)
-watch(
   () => generateForm.value.generateMode,
   (mode) => {
     if (mode === 'style') {
       generateForm.value.templateId = ''
-    } else if (mode === 'template' && templates.value.length && !generateForm.value.templateId) {
-      generateForm.value.templateId = templates.value[0].id
+    }
+    if (mode === 'ai_native') {
+      generateForm.value.useKnowledge = true
     }
   }
 )
@@ -3342,19 +3580,20 @@ const formatDate = (value) => {
 const historySourceDisplay = (item) => {
   const name = item?.templateName || item?.template_name || ''
   if (!name) return '模板: 未选择'
+  if (name === '-') return '模板: -'
   if (name.startsWith('预设主题:')) return name
   if (name.startsWith('风格:')) return '预设主题:' + name.slice(3)
   return '模板: ' + name
 }
 
 const resetGenerateForm = () => {
-  const keepTemplateId = generateForm.value.templateId || templates.value[0]?.id || ''
+  const keepTemplateId = generateForm.value.templateId || ''
   generateForm.value = {
     title: '',
     topic: '',
     pages: 10,
     style: 'business',
-    generateMode: 'template',
+    generateMode: 'ai_native',
     includeImages: true,
     includeCharts: true,
     includeNotes: false,
@@ -3364,8 +3603,13 @@ const resetGenerateForm = () => {
     modelId: selectedModel.value || 'qwen-turbo',
     templateId: keepTemplateId,
     materialId: '',
-    aiStylePrompt: ''
+    aiStylePrompt: '',
+    useKnowledge: true,
+    ragMaterialIds: [],
+    imageMaterialIds: []
   }
+  assistantDraftNotice.value = ''
+  exampleDraftNotice.value = ''
   outlineItems.value = []
   activeGeneratePanel.value = 'settings'
   generateSource.value = 'manual'
@@ -3396,10 +3640,7 @@ const openGeneratePanel = () => {
 }
 
 const handleGenerateOutline = async () => {
-  if (!generateForm.value.title.trim() || !generateForm.value.topic.trim()) {
-    ElMessage.warning('请填写标题和主题描述')
-    return
-  }
+  if (!ensureGenerateRequirements()) return
   if (generateForm.value.generateMode === 'template' && !generateForm.value.templateId) {
     ElMessage.warning('请选择模板')
     return
@@ -3429,7 +3670,9 @@ const handleGenerateOutline = async () => {
       modelId: generateForm.value.modelId || selectedModel.value,
       templateId: templateIdForOutline,
       generateMode: generateForm.value.generateMode,
-      materialId: generateForm.value.materialId || ''
+      materialId: generateForm.value.materialId || '',
+      useKnowledge: !!generateForm.value.useKnowledge,
+      ragMaterialIds: generateForm.value.useKnowledge ? (generateForm.value.ragMaterialIds || []) : [],
     }
     // 若来源是图片，将图片分析结果注入 topic 以辅助大纲生成
     if (generateSource.value === 'image' && imageAnalysisResult.value) {
@@ -3463,10 +3706,7 @@ const handleGenerateOutline = async () => {
 }
 
 const handleGenerate = async () => {
-  if (!generateForm.value.title.trim() || !generateForm.value.topic.trim()) {
-    ElMessage.warning('请填写标题和主题描述')
-    return
-  }
+  if (!ensureGenerateRequirements()) return
   if (generateForm.value.generateMode === 'template' && !generateForm.value.templateId) {
     ElMessage.warning('请选择模板')
     return
@@ -3532,6 +3772,7 @@ const handleGenerate = async () => {
       aiStylePrompt: effectiveMode === 'ai_native' ? (generateForm.value.aiStylePrompt || '').trim() : '',
       useKnowledge: !!generateForm.value.useKnowledge,
       ragMaterialIds: generateForm.value.useKnowledge ? (generateForm.value.ragMaterialIds || []) : [],
+      imageMaterialIds: generateForm.value.imageMaterialIds || [],
       ...(styleSpec.value ? { styleSpecJson: JSON.stringify(styleSpec.value) } : {}),
       // 图片来源时传递图片数据和分析结果，供后端用于产品图截取和图表绘制
       ...(generateSource.value === 'image' && imageFiles.value.length ? {
@@ -4081,6 +4322,8 @@ const useMaterialForGenerate = () => {
     generateForm.value.topic = (er.summary || '') + '\n主要章节：' + er.outline.join('；')
   }
   generateForm.value.materialId = materialCurrentId.value
+  generateForm.value.useKnowledge = true
+  generateForm.value.ragMaterialIds = materialCurrentId.value ? [materialCurrentId.value] : []
   generateSource.value = 'manual'
   ElMessage.success('已填充提取内容，请确认后继续生成')
 }
@@ -4105,6 +4348,7 @@ const triggerRagIndex = async (id, filename) => {
     const chunks = res.data?.chunks ?? 0
     ElMessage.success(`《${filename}》已加入知识库，共 ${chunks} 个知识块`)
     await fetchRagStatus()
+    await loadMaterialsList()
   } catch (e) {
     const msg = e?.response?.data?.message || e?.message || '知识库索引失败'
     ElMessage.error(msg)
@@ -4151,6 +4395,8 @@ const useMaterialFromList = (mat) => {
     generateForm.value.topic = (er.summary || '') + '\n主要章节：' + er.outline.join('；')
   }
   generateForm.value.materialId = mat.id
+  generateForm.value.useKnowledge = true
+  generateForm.value.ragMaterialIds = mat.id ? [mat.id] : []
   materialDetailVisible.value = false
   activeMenu.value = 'generate'
   router.push('/main/generate')
@@ -4176,6 +4422,35 @@ const materialStatusLabel = (status) => {
 const materialStatusType = (status) => {
   const map = { pending: 'info', extracting: 'warning', completed: 'success', failed: 'danger' }
   return map[status] || 'info'
+}
+
+const materialRagStatusLabel = (status, chunkCount = 0) => {
+  const normalized = (status || '').toLowerCase()
+  if (normalized === 'indexed') {
+    return chunkCount > 0 ? `已构建 · ${chunkCount} 块` : '已构建'
+  }
+  const map = {
+    unavailable: '服务未启用',
+    waiting_extract: '待提取完成',
+    extract_failed: '提取失败，未构建',
+    not_indexed: '未构建'
+  }
+  return map[normalized] || '未知'
+}
+
+const materialRagStatusType = (status) => {
+  const map = {
+    indexed: 'success',
+    unavailable: 'info',
+    waiting_extract: 'warning',
+    extract_failed: 'danger',
+    not_indexed: ''
+  }
+  return map[(status || '').toLowerCase()] || 'info'
+}
+
+const materialRagActionLabel = (status) => {
+  return (status || '').toLowerCase() === 'indexed' ? '重新构建' : '加入知识库'
 }
 
 // ── 管理员删除通知 ────────────────────────────────────────────────────────────
@@ -4319,11 +4594,17 @@ const ensureSession = async () => {
   // 不再根据历史自动展示预览，预览仅在用户本次新生成 PPT 后显示
 }
 
-// 从 AI 助手跳转时读取 query params 预填生成表单，并可选自动触发生成
-const applyAssistantQueryParams = async () => {
+// 从外部入口（AI 助手 / 使用示例）跳转时读取 query params 预填生成表单
+const applyGenerateEntryQueryParams = async () => {
   const q = route.query
-  const hasAssistantParams = q.topic || q.pages || q.style || q.title || q.template_id || q.generate_mode
-  if (!hasAssistantParams) return
+  const isAssistantDraft = q.assistant_draft === '1'
+  const isExampleDraft = q.example_demo === '1'
+  const hasEntryParams =
+    isAssistantDraft || isExampleDraft || q.topic || q.pages || q.style || q.title || q.template_id ||
+    q.generate_mode || q.material_id || q.rag_material_ids || q.image_material_ids || q.ai_style_prompt
+  if (!hasEntryParams) return
+
+  activeGeneratePanel.value = 'settings'
 
   // 预填表单字段
   if (q.title)  generateForm.value.title = String(q.title)
@@ -4334,21 +4615,41 @@ const applyAssistantQueryParams = async () => {
   }
   if (q.style)         generateForm.value.style        = String(q.style)
   if (q.generate_mode) generateForm.value.generateMode = String(q.generate_mode)
+  else if (isAssistantDraft || isExampleDraft) generateForm.value.generateMode = 'ai_native'
   if (q.template_id) {
-    generateForm.value.generateMode = 'template'
+    if (!isAssistantDraft && !isExampleDraft && (!q.generate_mode || String(q.generate_mode) === 'template')) {
+      generateForm.value.generateMode = 'template'
+    }
     generateForm.value.templateId   = String(q.template_id)
   }
+  if (q.material_id) {
+    generateForm.value.materialId = String(q.material_id)
+  }
+  generateForm.value.useKnowledge = q.use_knowledge === '0' ? false : true
+  generateForm.value.ragMaterialIds = normalizeQueryIdList(q.rag_material_ids)
+  generateForm.value.imageMaterialIds = normalizeQueryIdList(q.image_material_ids)
+  if (q.ai_style_prompt) {
+    generateForm.value.aiStylePrompt = String(q.ai_style_prompt)
+  }
+  syncPrimaryMaterialIntoRagSelection()
 
   // 若 title 为空则用 topic 前20字作为标题
   if (!generateForm.value.title.trim() && generateForm.value.topic) {
     generateForm.value.title = generateForm.value.topic.slice(0, 20).trim()
   }
 
+  assistantDraftNotice.value = isAssistantDraft
+    ? 'AI 助手已为你创建一份 AI 原生创作草稿。生成前必须确认主题、至少 1 份文档素材和至少 1 张图片素材；模板和风格可按需补充。'
+    : ''
+  exampleDraftNotice.value = isExampleDraft
+    ? '已套用使用示例。当前仅预填了示例主题和结构方向，继续前请至少选择 1 份文档素材和 1 张图片素材。'
+    : ''
+
   // 清除 query params 避免刷新重复填充
   router.replace({ path: route.path })
 
   // auto_generate=1：自动触发「生成大纲 → 生成PPT」完整流程
-  if (q.auto_generate === '1' && generateForm.value.topic.trim()) {
+  if (!isAssistantDraft && !isExampleDraft && q.auto_generate === '1' && generateForm.value.topic.trim() && ensureGenerateRequirements(false)) {
     await nextTick()
     autoGenerateFromAssistant()
   }
@@ -4361,6 +4662,10 @@ const autoGenerateFromAssistant = async () => {
   }
 
   try {
+    if (!ensureGenerateRequirements()) {
+      pushProgress('待补充信息', '请先确认主题、文档素材和图片素材。', 0, { failed: true })
+      return
+    }
     // ── 阶段1：生成大纲 ──
     pushProgress('生成大纲', '正在分析主题，生成PPT大纲…', 10)
     const templateIdForOutline = generateForm.value.generateMode === 'template'
@@ -4374,7 +4679,9 @@ const autoGenerateFromAssistant = async () => {
       modelId:      generateForm.value.modelId || selectedModel.value,
       templateId:   templateIdForOutline,
       generateMode: generateForm.value.generateMode,
-      materialId:   generateForm.value.materialId || ''
+      materialId:   generateForm.value.materialId || '',
+      useKnowledge: !!generateForm.value.useKnowledge,
+      ragMaterialIds: generateForm.value.useKnowledge ? (generateForm.value.ragMaterialIds || []) : [],
     }
     const outlineRes = await pptAPI.outline(outlinePayload)
     const outline = Array.isArray(outlineRes.data?.outline) ? outlineRes.data.outline : []
@@ -4409,6 +4716,7 @@ const autoGenerateFromAssistant = async () => {
       aiStylePrompt: generateForm.value.generateMode === 'ai_native' ? (generateForm.value.aiStylePrompt || '').trim() : '',
       useKnowledge: !!generateForm.value.useKnowledge,
       ragMaterialIds: generateForm.value.useKnowledge ? (generateForm.value.ragMaterialIds || []) : [],
+      imageMaterialIds: generateForm.value.imageMaterialIds || [],
       onProgress: ({ progress, stage, step }) => {
         // 将后端进度（0-100）映射到助手面板进度（25-95）
         const mapped = Math.round(25 + (progress / 100) * 70)
@@ -4461,8 +4769,9 @@ const autoGenerateFromAssistant = async () => {
 watch(
   () => route.query,
   (q) => {
-    if (activeMenu.value === 'generate' && (q.topic || q.pages || q.style || q.title || q.template_id || q.generate_mode)) {
-      applyAssistantQueryParams()
+    if (activeMenu.value === 'generate' &&
+        (q.assistant_draft || q.example_demo || q.topic || q.pages || q.style || q.title || q.template_id || q.generate_mode || q.material_id || q.rag_material_ids || q.image_material_ids || q.ai_style_prompt)) {
+      applyGenerateEntryQueryParams()
     }
   }
 )
@@ -4475,7 +4784,8 @@ onMounted(() => {
   ensureSession()
   // 处理 AI 助手传入的预填参数
   if (activeMenu.value === 'generate') {
-    applyAssistantQueryParams()
+    if (!materialsList.value.length) loadMaterialsList()
+    applyGenerateEntryQueryParams()
   }
   // 加载系统公告横幅
   loadActiveBanner()
@@ -4957,6 +5267,125 @@ h4 {
 
 .feature-action:hover {
   background: rgba(14, 165, 233, 0.12);
+}
+
+.example-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.example-dialog-intro {
+  padding: 18px 20px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.08), rgba(59, 130, 246, 0.12));
+  border: 1px solid rgba(14, 165, 233, 0.16);
+}
+
+.example-dialog-intro h3 {
+  font-size: 1.1rem;
+  color: #0f172a;
+  margin-bottom: 8px;
+}
+
+.example-dialog-intro p {
+  color: #475569;
+  line-height: 1.7;
+  font-size: 0.92rem;
+}
+
+.example-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.example-card {
+  text-align: left;
+  padding: 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background:
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.16), transparent 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.example-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 22px 46px rgba(14, 165, 233, 0.16);
+  border-color: rgba(14, 165, 233, 0.28);
+}
+
+.example-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.example-card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  color: #fff;
+  font-size: 1.2rem;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.22);
+}
+
+.example-card-pages {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.1);
+  color: #0369a1;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.example-card h4 {
+  font-size: 1rem;
+  color: #0f172a;
+  margin-bottom: 8px;
+}
+
+.example-card p {
+  font-size: 0.88rem;
+  color: #64748b;
+  line-height: 1.65;
+  margin-bottom: 14px;
+  min-height: 68px;
+}
+
+.example-card-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.example-card-tags span {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+  font-size: 0.76rem;
+}
+
+.example-card-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #0ea5e9;
 }
 
 /* =========================================================
@@ -6603,6 +7032,35 @@ h4 {
   letter-spacing: 0.04em;
 }
 
+.assistant-draft-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(14, 165, 233, 0.18);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.95), rgba(236, 254, 255, 0.92));
+  color: #0f172a;
+  font-size: 0.94rem;
+  box-shadow: 0 10px 24px rgba(14, 165, 233, 0.08);
+}
+
+.assistant-draft-banner .el-icon {
+  color: #0284c7;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.assistant-draft-banner--example {
+  border-color: rgba(245, 158, 11, 0.22);
+  background: linear-gradient(135deg, rgba(255, 251, 235, 0.98), rgba(255, 247, 237, 0.92));
+  box-shadow: 0 10px 24px rgba(245, 158, 11, 0.08);
+}
+
+.assistant-draft-banner--example .el-icon {
+  color: #d97706;
+}
+
 .generate-layout {
   display: flex;
   flex-direction: column;
@@ -8196,7 +8654,8 @@ h4 {
 @media (max-width: 768px) {
   .stats-grid,
   .features-grid,
-  .templates-grid {
+  .templates-grid,
+  .example-grid {
     grid-template-columns: 1fr;
   }
 
@@ -8246,6 +8705,10 @@ h4 {
     flex-direction: column;
     gap: 15px;
     text-align: center;
+  }
+
+  .example-card p {
+    min-height: auto;
   }
 
 }
@@ -9149,15 +9612,24 @@ h4 {
 
 .material-card-footer {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   flex-wrap: wrap;
+  gap: 10px;
+}
+
+.material-status-pills {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
 }
 
 .material-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .mat-btn {
@@ -9203,6 +9675,19 @@ h4 {
 }
 
 /* ===== F07 AI 触发提示条 ===== */
+.generate-required-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #92400e;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-top: 6px;
+}
+
 .ai-trigger-tip {
   display: flex;
   align-items: center;
@@ -9674,5 +10159,86 @@ h4 {
   white-space: pre-line;
   line-height: 1.6;
   font-size: 13px;
+}
+
+/* ===== 素材类型 Tabs ===== */
+.material-type-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #e8ecf0;
+  padding-bottom: 0;
+}
+.material-type-tab {
+  display: flex;
+  align-items: center;
+  padding: 8px 18px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: #64748b;
+  border-bottom: 2px solid transparent;
+  transition: color 0.2s, border-color 0.2s;
+  margin-bottom: -1px;
+  border-radius: 4px 4px 0 0;
+}
+.material-type-tab.active {
+  color: #4f8ef7;
+  border-bottom-color: #4f8ef7;
+}
+.material-type-tab:hover:not(.active) {
+  color: #334155;
+  background: #f1f5f9;
+}
+.image-material-tab-content {
+  padding: 4px 0;
+}
+
+/* ===== 图片素材选择器（生成表单内） ===== */
+.img-material-selector-wrap {
+  margin-top: 12px;
+}
+.img-material-details {
+  border: 1px solid #e8ecf0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fafbfc;
+}
+.img-material-summary {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  list-style: none;
+  user-select: none;
+}
+.img-material-summary::-webkit-details-marker { display: none; }
+.img-material-summary::before {
+  content: '▶';
+  font-size: 10px;
+  margin-right: 6px;
+  color: #94a3b8;
+  transition: transform 0.2s;
+}
+details[open] > .img-material-summary::before {
+  transform: rotate(90deg);
+}
+.img-material-hint {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-left: 6px;
+  font-weight: 400;
+}
+.img-material-panel-wrap {
+  padding: 12px 14px 14px;
+  border-top: 1px solid #e8ecf0;
+  background: #fff;
+  max-height: 400px;
+  overflow-y: auto;
 }
 </style>

@@ -69,10 +69,10 @@ static const SettingMeta kDefaultSettings[] = {
   },
   {
     "max_concurrent_jobs",
-    "4",
+    "16",
     "int",
     "最大并发生成任务数",
-    "系统同时处理的 PPT 生成任务上限，超出后新请求进入队列",
+    "系统同时处理的 PPT 生成任务上限；超出后新请求返回 503。填 0 表示不限制",
     "limits"
   },
   {

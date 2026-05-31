@@ -11,6 +11,7 @@
 #include "http/http_types.h"
 #include "services/ai_search_service.h"
 #include "services/auth_service.h"
+#include "services/image_material_service.h"
 #include "services/knowledge_rag_service.h"
 #include "services/material_service.h"
 #include "services/model_service.h"
@@ -40,9 +41,14 @@ class PptController {
                 std::shared_ptr<MySQLConnectionPool> pool = nullptr,
                 std::shared_ptr<AiSearchService> ai_search_service = nullptr,
                 std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service = nullptr,
-                std::shared_ptr<KnowledgeRagService> knowledge_rag_service = nullptr);
+                std::shared_ptr<KnowledgeRagService> knowledge_rag_service = nullptr,
+                std::shared_ptr<ImageMaterialService> image_material_service = nullptr);
 
   HttpResponse Generate(const HttpRequest& request);
+
+  /** POST /api/ppt/xfyun_ppt — 调用 BZ_PPT 生成接口，直接返回 .pptx 文件 */
+  HttpResponse XfyunPptGenerate(const HttpRequest& request);
+
   /** 轮询单条请求状态，用于异步生成后查询 completed/failed */
   HttpResponse GetRequestStatus(const HttpRequest& request);
   /** SSE 流式推送 PPT 生成进度，直到 completed/failed 或超时 */
@@ -99,6 +105,7 @@ class PptController {
   std::shared_ptr<AiSearchService>     ai_search_service_;
   std::shared_ptr<TemplateFastDfsService> tmpl_fastdfs_service_;
   std::shared_ptr<KnowledgeRagService> knowledge_rag_service_;
+  std::shared_ptr<ImageMaterialService> image_material_service_;
 
   /** 当前正在执行（已提交到线程池）的生成任务数 */
   mutable std::atomic<int> active_jobs_{0};

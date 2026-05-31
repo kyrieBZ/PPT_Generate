@@ -119,6 +119,13 @@ class KnowledgeRagService {
    */
   int CountUserChunks(std::uint64_t user_id, std::string& error) const;
 
+  /**
+   * 统计某一份素材在 user_knowledge collection 中的索引块数。
+   */
+  int CountMaterialChunks(const std::string& material_id,
+                          std::uint64_t user_id,
+                          std::string& error) const;
+
  private:
   /**
    * 将文本切分为若干重叠块。

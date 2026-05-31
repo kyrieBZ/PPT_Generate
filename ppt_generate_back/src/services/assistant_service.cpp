@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <iomanip>
 #include <random>
 #include <set>
@@ -18,6 +19,7 @@
 #include "models/ppt_request.h"
 #include "models/ppt_template.h"
 #include "services/ai_search_service.h"
+#include "services/image_material_service.h"
 #include "services/material_service.h"
 #include "services/ppt_service.h"
 #include "services/template_manager_service.h"
@@ -159,10 +161,22 @@ std::string NowISO() {
 }
 
 std::string MakeTitle(const std::string& message) {
-  if (message.size() <= 30) return message;
-  std::string title = message.substr(0, 30);
-  title += "...";
-  return title;
+  constexpr size_t kMaxBytes = 30;
+  if (message.size() <= kMaxBytes) return message;
+  // Walk forward through complete UTF-8 characters, stopping before kMaxBytes
+  size_t pos = 0, last_boundary = 0;
+  while (pos < message.size()) {
+    const unsigned char b = static_cast<unsigned char>(message[pos]);
+    size_t char_len = 1;
+    if      ((b & 0x80) == 0x00) char_len = 1;
+    else if ((b & 0xE0) == 0xC0) char_len = 2;
+    else if ((b & 0xF0) == 0xE0) char_len = 3;
+    else if ((b & 0xF8) == 0xF0) char_len = 4;
+    if (pos + char_len > kMaxBytes) break;
+    pos += char_len;
+    last_boundary = pos;
+  }
+  return message.substr(0, last_boundary) + "...";
 }
 
 // 截断 tool_result 防止 context 溢出
@@ -183,6 +197,7 @@ AssistantService::AssistantService(std::string api_key,
                                    std::shared_ptr<MySQLConnectionPool> pool,
                                    std::shared_ptr<PptService> ppt_service,
                                    std::shared_ptr<MaterialService> material_service,
+                                   std::shared_ptr<ImageMaterialService> image_material_service,
                                    std::shared_ptr<TemplateManagerService> tmpl_mgr_service,
                                    std::shared_ptr<TemplateService> template_service,
                                    std::shared_ptr<AiSearchService> ai_search_service)
@@ -192,6 +207,7 @@ AssistantService::AssistantService(std::string api_key,
       pool_(std::move(pool)),
       ppt_service_(std::move(ppt_service)),
       material_service_(std::move(material_service)),
+      image_material_service_(std::move(image_material_service)),
       tmpl_mgr_service_(std::move(tmpl_mgr_service)),
       template_service_(std::move(template_service)),
       ai_search_service_(std::move(ai_search_service)) {}
@@ -220,6 +236,16 @@ std::string AssistantService::BuildSystemPrompt(bool is_admin) const {
 - 用户明确说出 PPT 标题片段时（如「帮我下载 IPPTGen 和 PASS 这两个」），必须在 search_ppt_history 结果中按标题匹配，取匹配到的真实 id，不得猜测或替换为其他 PPT
 - 单次批量删除不超过 20 条，超过时分批处理并提醒用户
 - 批量操作前必须在文字回复中向用户说明将要操作的具体 PPT 标题（不是序号）
+
+【PPT 生成强制确认流程】
+- 当用户说「生成PPT」「做一份PPT」「帮我做 slides」时，默认目标是系统内置的“AI 原生创作”链路，不是 BZ_PPT 第三方一键生成
+- 只有当用户明确提到「BZ_PPT」「第三方一键生成」「直接走 BZ_PPT」时，才可以把需求引导到 BZ_PPT 入口
+- 调用 trigger_generate_ppt 之前，必须先确认 3 类必填信息已经明确：1）topic 主题；2）至少 1 份文档素材；3）至少 1 份图片素材
+- 如果缺少文档素材：优先调用 list_materials 查看用户已有文档素材；若列表为空或用户明确还没上传，再调用 show_material_upload 引导上传
+- 如果缺少图片素材：优先调用 list_image_materials 查看用户已有图片素材；若列表为空，明确告诉用户需要先上传图片素材后再继续
+- 在缺少主题或缺少任一类素材时，严禁调用 trigger_generate_ppt，只能继续追问和确认
+- 模板和风格都属于可选信息，不能把它们当作生成前的必填项
+- trigger_generate_ppt 只用于创建“AI 原生创作”的生成草稿，并把已确认的主题、文档素材、图片素材带到生成页；绝不能声称已经开始实际生成
 
 【绝对禁止幻觉 - 最高优先级，任何情况下不得违反】
 - 严禁编造任何数据：文件名、素材ID、用户ID、时间、数量、审核状态等所有具体数值，必须来自工具调用的真实返回结果
@@ -394,6 +420,19 @@ nlohmann::json AssistantService::BuildTools(bool is_admin) const {
   tools.push_back({
     {"type", "function"},
     {"function", {
+      {"name", "list_image_materials"},
+      {"description", "列出【当前用户自己】上传的图片素材。用于生成 PPT 前确认可用图片素材，或用户说「我的图片素材」「我上传的图片」时使用。"},
+      {"parameters", {
+        {"type", "object"},
+        {"properties", {}},
+        {"required", nlohmann::json::array()}
+      }}
+    }}
+  });
+
+  tools.push_back({
+    {"type", "function"},
+    {"function", {
       {"name", "delete_material"},
       {"description", "删除用户指定的素材文件。删除操作不可恢复，必须在 confirm_text 中说明后果。"},
       {"parameters", {
@@ -480,19 +519,33 @@ nlohmann::json AssistantService::BuildTools(bool is_admin) const {
     {"type", "function"},
     {"function", {
       {"name", "trigger_generate_ppt"},
-      {"description", "跳转到PPT生成页面并自动开始生成流程。用户说「帮我生成」「创建一个PPT」「生成一份关于XX的PPT」时使用。\n若用户给出了主题/标题/页数等信息，请一并传入，系统会自动完成大纲生成和PPT生成，无需用户手动操作。"},
+      {"description", "创建一份“AI 原生创作”PPT 生成草稿，并跳转到生成页面预填信息。用户说「帮我生成」「创建一个PPT」「生成一份关于XX的PPT」且主题、文档素材、图片素材都已确认后使用。\n重要：这个工具只负责带用户进入生成页并预填主题/标题/页数/素材等草稿信息，用户还需要在页面上最终确认后，手动点击生成。严禁将其当作直接调用第三方接口自动生成 PPT 的工具。"},
       {"parameters", {
         {"type", "object"},
         {"properties", {
           {"topic",         {{"type", "string"},  {"description", "PPT主题描述，必填，尽量详细"}}},
           {"title",         {{"type", "string"},  {"description", "PPT标题，若用户未指定则根据主题生成一个简洁标题"}}},
           {"page_count",    {{"type", "integer"}, {"description", "页数，默认10，范围5-30"}}},
-          {"style",         {{"type", "string"},  {"description", "风格ID，可选值：business/tech/creative/education，可为空"}}},
-          {"template_id",   {{"type", "string"},  {"description", "模板ID，若用户指定了模板则填入，否则为空"}}},
-          {"generate_mode", {{"type", "string"},  {"description", "生成模式：template（模板）/ style（风格）/ ai_native（AI自由发挥），默认template"}}},
-          {"auto_generate", {{"type", "boolean"}, {"description", "是否自动触发生成流程，通常为true，只有用户明确说「我自己来」时才传false"}}}
+          {"style",         {{"type", "string"},  {"description", "风格偏好，可选"}}},
+          {"template_id",   {{"type", "string"},  {"description", "可选模板ID；若用户明确指定模板，可一并带到生成页供后续手动切换使用"}}},
+          {"material_id",   {{"type", "string"},  {"description", "主参考文档素材 ID；若用户明确指定某份文档作为主要参考，可传入"}}},
+          {"rag_material_ids", {
+            {"type", "array"},
+            {"description", "已确认用于 RAG 知识库检索的文档素材 ID 列表，必须来自 list_materials 的真实返回结果"},
+            {"minItems", 1},
+            {"items", {{"type", "string"}}}
+          }},
+          {"image_material_ids", {
+            {"type", "array"},
+            {"description", "已确认用于配图的图片素材 ID 列表，必须来自 list_image_materials 的真实返回结果"},
+            {"minItems", 1},
+            {"items", {{"type", "string"}}}
+          }},
+          {"ai_style_prompt", {{"type", "string"}, {"description", "AI 原生创作的自然语言风格描述，可选"}}},
+          {"generate_mode", {{"type", "string"},  {"description", "固定传 ai_native，不要传 template 或 style"}}},
+          {"auto_generate", {{"type", "boolean"}, {"description", "固定传 false。该工具不应自动开始生成，只创建草稿并引导用户确认"}}}
         }},
-        {"required", {"topic"}}
+        {"required", {"topic", "rag_material_ids", "image_material_ids"}}
       }}
     }}
   });
@@ -1109,6 +1162,28 @@ nlohmann::json AssistantService::ExecuteServerTool(const std::string& tool_name,
       });
     }
     return {{"card_type", "my_materials"}, {"data", items}, {"total", static_cast<int>(items.size())}};
+  }
+
+  // ── list_image_materials ──────────────────────────────────────────────────
+  if (tool_name == "list_image_materials") {
+    if (!image_material_service_ || !image_material_service_->IsAvailable()) {
+      return {{"card_type", "text"}, {"data", "图片素材服务暂不可用"}};
+    }
+    std::string err;
+    auto images = image_material_service_->List(user_id, err);
+
+    nlohmann::json items = nlohmann::json::array();
+    for (const auto& img : images) {
+      items.push_back({
+          {"id", img.id},
+          {"filename", img.filename},
+          {"original_filename", img.original_filename},
+          {"description", img.description},
+          {"status", img.status},
+          {"created_at", img.created_at}
+      });
+    }
+    return {{"card_type", "my_image_materials"}, {"data", items}, {"total", static_cast<int>(items.size())}};
   }
 
   // ── delete_material ───────────────────────────────────────────────────────
@@ -1914,6 +1989,7 @@ bool AssistantService::ParseLLMResponse(const std::string& llm_text,
     return true;
   }
 
+
   try {
     const std::string json_str = ExtractJsonFromText(llm_text);
     auto j = nlohmann::json::parse(json_str);
@@ -1987,6 +2063,7 @@ bool AssistantService::Chat(const std::string& message,
                              const std::vector<ChatMessage>& history,
                              AssistantResponse& out_response,
                              std::string& error_message) const {
+
   if (!IsEnabled()) {
     out_response.reply = "AI 助手暂未配置，请联系管理员。";
     out_response.has_action = false;
@@ -2208,13 +2285,16 @@ bool AssistantService::ChatInSession(const std::string& session_id,
                                       const std::string& context_json,
                                       AssistantResponse& out_response,
                                       std::string& error_message) {
+
   if (!IsEnabled()) {
     out_response.reply = "AI 助手暂未配置，请联系管理员。";
     return true;
   }
 
   // 1. 验证会话
-  if (!ValidateSession(session_id, user_id, error_message)) return false;
+  if (!ValidateSession(session_id, user_id, error_message)) {
+    return false;
+  }
 
   // 2. 保存用户消息
   SaveMessage(session_id, user_id, "user", user_message);

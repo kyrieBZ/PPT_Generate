@@ -889,6 +889,15 @@ bool PptService::UpdateRequestOutput(std::uint64_t request_id,
                                      const std::string& output_path,
                                      const std::string& status,
                                      std::string& error) {
+  return UpdateRequestOutput(request_id, user_id, output_path, status, -1, error);
+}
+
+bool PptService::UpdateRequestOutput(std::uint64_t request_id,
+                                     std::uint64_t user_id,
+                                     const std::string& output_path,
+                                     const std::string& status,
+                                     int pages,
+                                     std::string& error) {
   auto connection = pool_->GetConnection();
   MYSQL* conn = connection.Get();
   if (!conn) {
@@ -896,8 +905,11 @@ bool PptService::UpdateRequestOutput(std::uint64_t request_id,
     return false;
   }
 
-  const std::string sql =
-        "UPDATE ppt_requests SET output_path = ?, status = ?, updated_at = CURRENT_TIMESTAMP "
+  const bool update_pages = pages > 0;
+  const std::string sql = update_pages
+      ? "UPDATE ppt_requests SET output_path = ?, status = ?, pages = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE id = ? AND user_id = ?"
+      : "UPDATE ppt_requests SET output_path = ?, status = ?, updated_at = CURRENT_TIMESTAMP "
         "WHERE id = ? AND user_id = ?";
 
   MYSQL_STMT* stmt = mysql_stmt_init(conn);
@@ -912,7 +924,7 @@ bool PptService::UpdateRequestOutput(std::uint64_t request_id,
     return false;
   }
 
-  MYSQL_BIND params[4];
+  MYSQL_BIND params[5];
   memset(params, 0, sizeof(params));
 
   params[0].buffer_type = MYSQL_TYPE_STRING;
@@ -923,15 +935,24 @@ bool PptService::UpdateRequestOutput(std::uint64_t request_id,
   params[1].buffer = const_cast<char*>(status.c_str());
   params[1].buffer_length = status.length();
 
+  std::size_t bind_index = 2;
+  int pages_val = pages;
+  if (update_pages) {
+    params[bind_index].buffer_type = MYSQL_TYPE_LONG;
+    params[bind_index].buffer = &pages_val;
+    ++bind_index;
+  }
+
   unsigned long long request_id_val = static_cast<unsigned long long>(request_id);
-  params[2].buffer_type = MYSQL_TYPE_LONGLONG;
-  params[2].buffer = &request_id_val;
-  params[2].is_unsigned = 1;
+  params[bind_index].buffer_type = MYSQL_TYPE_LONGLONG;
+  params[bind_index].buffer = &request_id_val;
+  params[bind_index].is_unsigned = 1;
+  ++bind_index;
 
   unsigned long long user_id_val = static_cast<unsigned long long>(user_id);
-  params[3].buffer_type = MYSQL_TYPE_LONGLONG;
-  params[3].buffer = &user_id_val;
-  params[3].is_unsigned = 1;
+  params[bind_index].buffer_type = MYSQL_TYPE_LONGLONG;
+  params[bind_index].buffer = &user_id_val;
+  params[bind_index].is_unsigned = 1;
 
   if (mysql_stmt_bind_param(stmt, params) != 0) {
     mysql_stmt_close(stmt);
@@ -1059,11 +1080,11 @@ bool PptService::GetAdminMetrics(const std::string& range, AdminMetrics& out, st
                    unique_users))
     return false;
   if (!query_count("SELECT COUNT(DISTINCT template_name) FROM ppt_requests" + where_clause +
-                       " AND template_name <> ''",
+                       " AND template_name NOT IN ('', '-')",
                    template_count))
     return false;
   if (!query_count("SELECT COUNT(*) FROM ppt_requests" + where_clause +
-                       " AND template_name <> ''",
+                       " AND template_name NOT IN ('', '-')",
                    template_requests))
     return false;
   if (!query_count("SELECT COUNT(*) FROM ppt_requests" + where_clause +
@@ -1176,7 +1197,7 @@ bool PptService::GetAdminMetrics(const std::string& range, AdminMetrics& out, st
   std::vector<int> generation_template(5, 0);
   const std::string gen_sql =
       "SELECT HOUR(created_at) AS hour, COUNT(*) AS total, "
-      "SUM(CASE WHEN template_name <> '' THEN 1 ELSE 0 END) AS tpl "
+      "SUM(CASE WHEN template_name NOT IN ('', '-') THEN 1 ELSE 0 END) AS tpl "
       "FROM ppt_requests" +
       where_clause + " GROUP BY hour";
   if (mysql_query(conn, gen_sql.c_str()) != 0) {
@@ -1215,7 +1236,7 @@ bool PptService::GetAdminMetrics(const std::string& range, AdminMetrics& out, st
   out.template_labels.clear();
   out.template_values.clear();
   const std::string template_sql =
-      "SELECT IF(template_name = '', '默认模板', template_name) AS name, COUNT(*) AS cnt "
+      "SELECT IF(template_name IN ('', '-'), '未使用模板', template_name) AS name, COUNT(*) AS cnt "
       "FROM ppt_requests" +
       where_clause + " GROUP BY name ORDER BY cnt DESC LIMIT 5";
   if (mysql_query(conn, template_sql.c_str()) != 0) {
@@ -1555,4 +1576,3 @@ bool PptService::GetAllTopics(std::vector<std::string>& out_topics, int max_coun
   mysql_free_result(res);
   return true;
 }
-

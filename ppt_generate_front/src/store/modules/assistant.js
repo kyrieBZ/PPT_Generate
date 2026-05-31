@@ -10,6 +10,16 @@ import pptApi from '@/api/ppt'
 
 const MAX_MESSAGES = 100
 
+function normalizeIdList(value) {
+  if (Array.isArray(value)) {
+    return value.map(item => String(item || '').trim()).filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    return value.split(',').map(item => item.trim()).filter(Boolean)
+  }
+  return []
+}
+
 // ── 操作历史：工具名 → 人类可读标签 ─────────────────────────────────────────
 function buildOperationLabel(tool, params) {
   switch (tool) {
@@ -21,7 +31,7 @@ function buildOperationLabel(tool, params) {
       return `跳转到「${pageNames[params.page] || params.page}」`
     }
     case 'trigger_generate_ppt':
-      return `生成 PPT：${params.topic || params.title || '（未命名）'}`
+      return `创建 AI 原生 PPT 草稿：${params.topic || params.title || params.query || '（未命名）'}`
     case 'open_ppt_editor':
       return `打开 PPT 编辑器（ID: ${params.ppt_id}）`
     case 'download_ppt':
@@ -76,19 +86,45 @@ async function executeClientTool(tool, params, store, router) {
     }
 
     case 'trigger_generate_ppt': {
-      // 通过 URL query params 传参，Main.vue 检测后预填并自动触发生成流程
-      const query = {}
-      if (params.topic)         query.topic         = params.topic
-      if (params.title)         query.title         = params.title
-      if (params.page_count)    query.pages         = String(params.page_count)
-      if (params.style)         query.style         = params.style
-      if (params.template_id)   query.template_id   = params.template_id
-      if (params.generate_mode) query.generate_mode = params.generate_mode
-      // auto_generate 默认 true，只有明确传 false 才不自动触发
-      if (params.auto_generate !== false) query.auto_generate = '1'
+      // 仅创建 AI 原生创作草稿并跳转到主生成页，让用户最终确认后手动生成
+      const topic = (params.topic || params.title || params.query || '').trim()
+      const rawPageCount = Number.parseInt(params.page_count, 10)
+      const pageCount = Number.isFinite(rawPageCount) ? Math.max(1, Math.min(rawPageCount, 30)) : 0
+      const ragMaterialIds = normalizeIdList(params.rag_material_ids)
+      const imageMaterialIds = normalizeIdList(params.image_material_ids)
+
+      const missing = []
+      if (!topic) missing.push('主题')
+      if (ragMaterialIds.length === 0) missing.push('文档素材')
+      if (imageMaterialIds.length === 0) missing.push('图片素材')
+      if (missing.length > 0) {
+        store.commit('addMessage', {
+          role: 'assistant',
+          content: `当前还不能创建 PPT 草稿，缺少：${missing.join('、')}。请先在对话里补充完整后，四夕再继续。`
+        })
+        break
+      }
+
+      const query = {
+        assistant_draft: '1',
+        topic,
+        title: (params.title || '').trim() || topic.slice(0, 20),
+        generate_mode: 'ai_native',
+        use_knowledge: '1',
+        rag_material_ids: ragMaterialIds.join(','),
+        image_material_ids: imageMaterialIds.join(','),
+      }
+      if (pageCount > 0) query.pages = String(pageCount)
+      if (params.style) query.style = String(params.style).trim()
+      if (params.template_id) query.template_id = String(params.template_id).trim()
+      if (params.material_id) query.material_id = String(params.material_id).trim()
+      if (params.ai_style_prompt) query.ai_style_prompt = String(params.ai_style_prompt).trim()
+
+      store.commit('setAssistantGenProgress', null, { root: true })
       if (router) {
         await router.push({ path: '/main/generate', query })
       }
+
       break
     }
 

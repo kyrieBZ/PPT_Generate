@@ -158,6 +158,8 @@ nlohmann::json MaterialToJson(const Material& m) {
   j["createdAt"]   = m.created_at;
   j["updatedAt"]   = m.updated_at;
   j["storageType"] = m.storage_type.empty() ? "local" : m.storage_type;
+  j["ragStatus"]   = m.rag_status.empty() ? "unknown" : m.rag_status;
+  j["ragChunkCount"] = m.rag_chunk_count;
   if (!m.fastdfs_url.empty()) {
     j["accessUrl"] = m.fastdfs_url;
   }

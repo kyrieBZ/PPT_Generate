@@ -291,11 +291,17 @@
             <p class="welcome-title">你好，我是 <strong>四夕</strong></p>
             <p class="welcome-sub">四夕为你服务，做你的 PPT 智能小助手</p>
             <div class="welcome-chips">
-              <button class="chip" @click="sendExample('帮我生成一个关于人工智能的PPT，共10页')">
+              <button class="chip" @click="startGenerateConversation">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="16" height="16">
                   <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
                 </svg>
                 生成 PPT
+              </button>
+              <button class="chip chip-xfyun" @click="showXfyunForm = !showXfyunForm">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="16" height="16">
+                  <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                </svg>
+                BZ_PPT
               </button>
               <button class="chip" @click="sendExample('查看我的PPT历史记录')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="16" height="16">
@@ -316,6 +322,62 @@
                 浏览模板
               </button>
             </div>
+
+            <!-- BZ_PPT 表单 -->
+            <Transition name="xfyun-slide">
+              <div v-if="showXfyunForm" class="xfyun-form-panel">
+                <div class="xfyun-form-title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                  BZ_PPT 一键生成 PPT
+                </div>
+                <textarea
+                  v-model="xfyunQuery"
+                  class="xfyun-textarea"
+                  placeholder="描述你的PPT主题，例如：介绍量子计算的基本原理和应用场景，面向大学生"
+                  rows="3"
+                  maxlength="500"
+                ></textarea>
+                <div class="xfyun-row">
+                  <label class="xfyun-label">主题风格</label>
+                  <select v-model="xfyunTheme" class="xfyun-select">
+                    <option value="auto">自动（随机）</option>
+                    <option value="purple">紫影幽蓝</option>
+                    <option value="green">幻翠奇旅</option>
+                    <option value="lightblue">清逸天蓝</option>
+                    <option value="taupe">质感之境</option>
+                    <option value="blue">星光夜影</option>
+                    <option value="telecomRed">炽热暖阳</option>
+                    <option value="telecomGreen">幻翠奇旅</option>
+                  </select>
+                </div>
+                <div class="xfyun-row">
+                  <label class="xfyun-label">输出语言</label>
+                  <select v-model="xfyunLanguage" class="xfyun-select">
+                    <option value="cn">中文</option>
+                    <option value="en">English</option>
+                    <option value="ja">日本語</option>
+                    <option value="ko">한국어</option>
+                    <option value="fr">Français</option>
+                    <option value="de">Deutsch</option>
+                  </select>
+                </div>
+                <div class="xfyun-row xfyun-checks">
+                  <label class="xfyun-check">
+                    <input type="checkbox" v-model="xfyunCardNote" />
+                    <span>生成演讲备注</span>
+                  </label>
+                  <label class="xfyun-check">
+                    <input type="checkbox" v-model="xfyunFigure" />
+                    <span>自动配图</span>
+                  </label>
+                </div>
+                <button class="xfyun-btn" :disabled="xfyunGenerating || !xfyunQuery.trim()" @click="handleXfyunGenerate">
+                  <svg v-if="xfyunGenerating" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" class="spin-icon"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                  {{ xfyunGenerating ? '生成中…' : '开始生成' }}
+                </button>
+              </div>
+            </Transition>
           </div>
         </Transition>
 
@@ -535,6 +597,46 @@
                       </div>
                       <div class="tool-card-item-actions">
                         <button class="card-btn card-btn-danger" @click="askDeleteMaterial(mat)">删除</button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <template v-if="msg.toolCards.some(c => c.card_type === 'my_image_materials')">
+                  <div
+                    v-for="card in msg.toolCards.filter(c => c.card_type === 'my_image_materials')"
+                    :key="'myimg-' + msg.id"
+                    class="tool-card"
+                  >
+                    <div class="tool-card-hd">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="13" height="13"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                      我的图片素材
+                      <span class="tool-card-count">{{ card.total || (Array.isArray(card.data) ? card.data.length : 0) }} 个</span>
+                    </div>
+                    <div v-if="!Array.isArray(card.data) || card.data.length === 0" class="tool-card-empty">
+                      暂无图片素材，请先去素材页上传图片
+                    </div>
+                    <div
+                      v-for="img in (Array.isArray(card.data) ? card.data : [])"
+                      :key="img.id"
+                      class="tool-card-item tool-card-item--image"
+                    >
+                      <img
+                        class="tool-card-image-thumb"
+                        :src="imageMaterialFileUrl(img.id)"
+                        :alt="img.original_filename || img.filename || img.id"
+                      />
+                      <div class="tool-card-image-body">
+                        <div class="tool-card-item-row">
+                          <div class="tool-card-item-title">{{ img.original_filename || img.filename }}</div>
+                          <span class="tool-card-badge" :class="img.status === 'ready' ? 'badge-active' : 'badge-pending'">
+                            {{ imageStatusLabel(img.status) }}
+                          </span>
+                        </div>
+                        <div v-if="img.description" class="tool-card-item-desc">{{ img.description }}</div>
+                        <div class="tool-card-item-meta">
+                          <span>ID: {{ img.id }}</span>
+                          <span v-if="img.created_at"> · {{ formatCardTime(img.created_at) }}</span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -933,9 +1035,12 @@
               <div class="msg-bubble gen-progress-card">
                 <div class="gen-progress-hd">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" class="spin-icon"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-                  正在生成PPT…
-                  <!-- SSE 实时标记 -->
-                  <span class="gen-sse-badge">
+                  {{ genProgress.isXfyun ? 'BZ_PPT 生成 PPT…' : '正在生成PPT…' }}
+                  <span v-if="genProgress.isXfyun" class="gen-xfyun-badge">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                    BZ_PPT
+                  </span>
+                  <span v-else class="gen-sse-badge">
                     <span class="gen-sse-dot"></span>实时
                   </span>
                 </div>
@@ -1036,23 +1141,57 @@
 
       <!-- 输入区 -->
       <div class="panel-footer">
-        <div class="input-wrapper" :class="{ 'is-focused': inputFocused, 'is-disabled': isLoading }">
+        <div class="input-wrapper" :class="{ 'is-focused': inputFocused, 'is-disabled': isLoading || isTranscribing }">
           <textarea
             ref="inputRef"
             v-model="inputText"
             class="chat-input"
-            placeholder="输入指令，Enter 发送…"
+            :placeholder="isRecording ? '录音中，松开按钮结束…' : isTranscribing ? '正在识别语音…' : '输入指令，Enter 发送…'"
             rows="1"
-            :disabled="isLoading"
+            :disabled="isLoading || isRecording || isTranscribing"
             @keydown.enter.exact.prevent="sendMessage"
             @input="autoResize"
             @focus="inputFocused = true"
             @blur="inputFocused = false"
           ></textarea>
+          <!-- 麦克风按钮（按住录音，松开识别） -->
+          <button
+            class="mic-btn"
+            :class="{
+              'mic-btn--recording': isRecording,
+              'mic-btn--transcribing': isTranscribing,
+            }"
+            :title="isRecording ? '松开结束录音' : isTranscribing ? '识别中…' : '按住说话'"
+            :disabled="isLoading"
+            @mousedown.prevent="startRecording"
+            @mouseup.prevent="stopRecording"
+            @mouseleave="isRecording && stopRecording()"
+            @touchstart.prevent="startRecording"
+            @touchend.prevent="stopRecording"
+          >
+            <!-- 录音中：波形动画 -->
+            <svg v-if="isRecording" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="18" height="18">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+            <!-- 识别中：旋转 -->
+            <svg v-else-if="isTranscribing" class="spin-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+              <path d="M21 12a9 9 0 11-6.22-8.57"/>
+            </svg>
+            <!-- 默认：麦克风图标 -->
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="18" height="18">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </button>
           <button
             class="send-btn"
-            :class="{ 'can-send': inputText.trim() && !isLoading }"
-            :disabled="!inputText.trim() || isLoading"
+            :class="{ 'can-send': inputText.trim() && !isLoading && !isRecording && !isTranscribing }"
+            :disabled="!inputText.trim() || isLoading || isRecording || isTranscribing"
             @click="sendMessage"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
@@ -1061,7 +1200,7 @@
             </svg>
           </button>
         </div>
-        <div class="footer-hint">Shift+Enter 换行</div>
+        <div class="footer-hint">Shift+Enter 换行 &nbsp;·&nbsp; 按住麦克风说话</div>
       </div>
     </div>
   </Transition>
@@ -1188,12 +1327,14 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useStore } from 'vuex'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { transcribeAudio } from '@/api/assistant'
+import pptApi from '@/api/ppt'
 
 // 配置 marked：安全且轻量
 marked.setOptions({
@@ -1225,6 +1366,22 @@ const showHistory  = ref(false)     // P4.6 操作历史面板
 const confirmCode       = ref('')   // 高危操作：用户输入的 CONFIRM 字符串
 const confirmCodeError  = ref('')   // 高危确认码错误提示
 
+// BZ_PPT 快捷入口
+const showXfyunForm    = ref(false)
+const xfyunQuery       = ref('')
+const xfyunTheme       = ref('auto')
+const xfyunLanguage    = ref('cn')
+const xfyunCardNote    = ref(false)
+const xfyunFigure      = ref(false)
+const xfyunGenerating  = ref(false)
+
+// ── 语音录入状态（F05）────────────────────────────────
+const isRecording      = ref(false)   // 是否正在录音
+const isTranscribing   = ref(false)   // 是否正在识别（上传中）
+let mediaRecorder      = null         // MediaRecorder 实例
+let audioChunks        = []           // 录音数据块
+let recordingStream    = null         // MediaStream（释放时停止轨道）
+
 // 拖拽
 const isDragging = ref(false)
 const hasDragged = ref(false)
@@ -1244,15 +1401,26 @@ const isAdmin            = computed(() => !!store.getters['currentUser']?.isAdmi
 const genProgress        = computed(() => store.state.assistantGenProgress)
 const operationHistory   = computed(() => store.getters['assistant/operationHistory'])
 
-// 生成阶段步骤（用于进度卡片的步骤指示器）
-const genSteps = [
-  { key: 'outline',   label: '生成大纲', threshold: 15 },
-  { key: 'layout',    label: '分析版式', threshold: 30 },
-  { key: 'content',   label: '生成内容', threshold: 45 },
-  { key: 'images',    label: '配图生成', threshold: 60 },
-  { key: 'rendering', label: '渲染文件', threshold: 80 },
-  { key: 'done',      label: '完成',     threshold: 95 },
-]
+// 生成阶段步骤（computed，区分 BZ_PPT 与标准流程）
+const genSteps = computed(() => {
+  if (genProgress.value?.isXfyun) {
+    return [
+      { key: 'submit',   label: '提交任务', threshold: 5  },
+      { key: 'outline',  label: '生成大纲', threshold: 30 },
+      { key: 'generate', label: '生成PPT',  threshold: 60 },
+      { key: 'export',   label: '导出文件', threshold: 88 },
+      { key: 'done',     label: '完成',     threshold: 95 },
+    ]
+  }
+  return [
+    { key: 'outline',   label: '生成大纲', threshold: 15 },
+    { key: 'layout',    label: '分析版式', threshold: 30 },
+    { key: 'content',   label: '生成内容', threshold: 45 },
+    { key: 'images',    label: '配图生成', threshold: 60 },
+    { key: 'rendering', label: '渲染文件', threshold: 80 },
+    { key: 'done',      label: '完成',     threshold: 95 },
+  ]
+})
 
 // ── 高危弹窗判断（需输入 CONFIRM 字符串）────────────────
 const isHighDangerConfirm = computed(() => !!pendingAction.value?.requireConfirmCode)
@@ -1267,7 +1435,7 @@ const confirmDialogTitle = computed(() => {
       delete_ppt:             '确认删除 PPT',
       batch_delete_ppt:       `确认批量删除 ${Array.isArray(action.params?.ppt_list) ? action.params.ppt_list.length + ' 个 ' : ''}PPT`,
       delete_material:        '确认删除素材',
-      trigger_generate_ppt:   '确认生成 PPT',
+      trigger_generate_ppt:   '确认创建 PPT 草稿',
       open_ppt_editor:        '打开 PPT 编辑器',
       download_ppt:           '确认下载 PPT',
       fill_login_form:        '跳转登录',
@@ -1279,7 +1447,7 @@ const confirmDialogTitle = computed(() => {
   const intentMap = {
     VIEW_PPT:      '打开 PPT 编辑器',
     DELETE_PPT:    '确认删除 PPT',
-    GENERATE_PPT:  '确认生成 PPT',
+    GENERATE_PPT:  '确认创建 PPT 草稿',
     NAVIGATE:      '确认跳转',
     DOWNLOAD_PPT:  '确认下载 PPT',
     LIST_TEMPLATES:'查看模板'
@@ -1387,13 +1555,22 @@ function onDragStart(e) {
   document.addEventListener('mouseup',   onUp)
 }
 
-function onTriggerClick() {
+async function onTriggerClick() {
   if (hasDragged.value) { hasDragged.value = false; return }
   store.dispatch('assistant/toggle')
-  if (!panelVisible.value) {
+  if (panelVisible.value) {
     nextTick(() => inputRef.value?.focus())
-    // 打开时拉取会话列表
-    store.dispatch('assistant/fetchSessions')
+    // 打开时拉取会话列表，并自动恢复或新建会话
+    await store.dispatch('assistant/fetchSessions')
+    if (!currentSessionId.value && persistenceEnabled.value) {
+      if (sessions.value.length > 0) {
+        // 自动恢复最近一条会话（不加载消息历史，保持轻量打开）
+        store.dispatch('assistant/switchSession', sessions.value[0].session_id)
+      } else {
+        // 无历史会话则自动新建
+        store.dispatch('assistant/newSession')
+      }
+    }
   }
 }
 
@@ -1485,6 +1662,17 @@ async function sendMessage() {
 
 function sendExample(text) { inputText.value = text; sendMessage() }
 
+function startGenerateConversation() {
+  showXfyunForm.value = false
+  inputText.value = ''
+  nextTick(() => { if (inputRef.value) inputRef.value.style.height = 'auto' })
+  store.commit('assistant/addMessage', {
+    role: 'assistant',
+    content: '请先告诉我你要生成的 PPT 信息，例如主题、目标页数、受众、风格，以及是否需要套用模板或使用素材。你发送明确指令后，我再开始执行。'
+  })
+  nextTick(() => inputRef.value?.focus())
+}
+
 function autoResize(e) {
   const el = e.target
   el.style.height = 'auto'
@@ -1557,6 +1745,21 @@ function statusLabel(status) {
   return map[status] || status || ''
 }
 
+function imageStatusLabel(status) {
+  const map = {
+    ready: '就绪',
+    pending: '等待分析',
+    indexing: '分析中',
+    failed: '失败',
+  }
+  return map[status] || status || ''
+}
+
+function imageMaterialFileUrl(id) {
+  const token = localStorage.getItem('token') || sessionStorage.getItem('token') || ''
+  return `/api/material/image/file?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`
+}
+
 // PPT 缩略图根据 style 字段显示不同背景色
 function pptThumbClass(ppt) {
   const styleMap = {
@@ -1569,6 +1772,86 @@ function pptThumbClass(ppt) {
     dark:       'ppt-thumb-dark',
   }
   return styleMap[ppt.style] || 'ppt-thumb-blue'
+}
+
+// ── BZ_PPT 一键生成 PPT ───────────────────────────────────────────────
+async function handleXfyunGenerate() {
+  if (!xfyunQuery.value.trim() || xfyunGenerating.value) return
+  xfyunGenerating.value = true
+  showXfyunForm.value   = false
+
+  store.commit('setAssistantGenProgress', {
+    stage:    'BZ_PPT生成中',
+    step:     '已提交，正在生成PPT大纲…',
+    progress: 5,
+    isXfyun:  true,
+  })
+  await nextTick(); scrollToBottom()
+
+  try {
+    const res = await pptApi.xfyunPptGenerate({
+      query:        xfyunQuery.value.trim(),
+      theme:        xfyunTheme.value,
+      language:     xfyunLanguage.value,
+      is_card_note: xfyunCardNote.value,
+      is_figure:    xfyunFigure.value,
+    })
+    const reqId = res.data?.requestId
+    if (!reqId) throw new Error('未获取到生成任务ID')
+
+    store.commit('setAssistantGenProgress', {
+      stage: 'BZ_PPT生成中', step: '大纲生成中…', progress: 15, isXfyun: true,
+    })
+
+    // 轮询进度（每3秒，与当前服务限流一致）
+    const maxPolls = 120  // 最多等 360 秒
+    let polls = 0
+    while (polls < maxPolls) {
+      await new Promise(r => setTimeout(r, 3000))
+      polls++
+      try {
+        const statusRes = await pptApi.getRequest(reqId)
+        const req       = statusRes.data?.request
+        if (!req) continue
+
+        if (req.status === 'completed') {
+          store.commit('setAssistantGenProgress', {
+            done: true, isXfyun: true,
+            title:  req.title  || xfyunQuery.value.slice(0, 40),
+            pptId:  req.id,
+          })
+          xfyunGenerating.value = false
+          xfyunQuery.value      = ''
+          return
+        }
+        if (req.status === 'failed') {
+          store.commit('setAssistantGenProgress', {
+            failed: true, isXfyun: true,
+            step: 'BZ_PPT 生成失败，请稍后重试',
+          })
+          xfyunGenerating.value = false
+          return
+        }
+        // 仍在进行中，更新进度显示
+        const prog = req.progress ?? 15
+        const stage = prog >= 88 ? '导出文件中' : prog >= 60 ? 'PPT生成中' : prog >= 30 ? '大纲已完成' : '大纲生成中'
+        store.commit('setAssistantGenProgress', {
+          stage, step: '', progress: Math.min(prog, 92), isXfyun: true,
+        })
+      } catch (_) { /* 单次轮询失败忽略 */ }
+    }
+    // 超时
+    store.commit('setAssistantGenProgress', {
+      failed: true, isXfyun: true, step: '生成超时，请稍后在历史记录中查看结果',
+    })
+  } catch (err) {
+    store.commit('setAssistantGenProgress', {
+      failed: true, isXfyun: true,
+      step: err.message || 'BZ_PPT 生成失败',
+    })
+  } finally {
+    xfyunGenerating.value = false
+  }
 }
 
 // 带 token 下载 PPT 文件
@@ -1638,6 +1921,93 @@ async function askAdminDeleteMaterial(mat) {
   inputText.value = text
   await sendMessage()
 }
+
+// ── 语音录入（F05）────────────────────────────────────
+async function startRecording() {
+  if (isRecording.value || isTranscribing.value) return
+  if (!navigator.mediaDevices?.getUserMedia) {
+    ElMessage.error('您的浏览器不支持麦克风录音')
+    return
+  }
+  try {
+    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  } catch (err) {
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      ElMessage.error('麦克风权限被拒绝，请在浏览器设置中允许访问麦克风')
+    } else {
+      ElMessage.error('无法启动录音：' + (err.message || err.name))
+    }
+    return
+  }
+
+  audioChunks = []
+
+  // 选择最兼容的 MIME 类型
+  const mimeType = (() => {
+    const types = ['audio/wav', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
+    return types.find(t => MediaRecorder.isTypeSupported(t)) || ''
+  })()
+
+  mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : {})
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) audioChunks.push(e.data)
+  }
+  mediaRecorder.onstop = onRecordingStop
+  mediaRecorder.start(100) // 每 100ms 生成一个 chunk
+
+  isRecording.value = true
+}
+
+async function stopRecording() {
+  if (!isRecording.value || !mediaRecorder) return
+  mediaRecorder.stop()
+  isRecording.value = false
+  // 停止所有轨道，释放麦克风
+  if (recordingStream) {
+    recordingStream.getTracks().forEach(t => t.stop())
+    recordingStream = null
+  }
+}
+
+async function onRecordingStop() {
+  if (audioChunks.length === 0) {
+    ElMessage.warning('未录到声音，请重试')
+    return
+  }
+  const mimeType = mediaRecorder?.mimeType || 'audio/wav'
+  const audioBlob = new Blob(audioChunks, { type: mimeType })
+  audioChunks = []
+  mediaRecorder = null
+
+  isTranscribing.value = true
+  try {
+    const resp = await transcribeAudio(audioBlob)
+    const text = resp?.data?.text || ''
+    if (!text.trim()) {
+      ElMessage.warning('未识别到语音内容，请重试')
+      return
+    }
+    // 将识别结果填入输入框并立即发送
+    inputText.value = text.trim()
+    ElMessage.success('语音识别成功，正在发送…')
+    await nextTick()
+    await sendMessage()
+  } catch (err) {
+    const msg = err?.response?.data?.message || err?.message || '语音识别失败，请重试'
+    ElMessage.error(msg)
+  } finally {
+    isTranscribing.value = false
+  }
+}
+
+/** 组件卸载时确保释放麦克风 */
+onBeforeUnmount(() => {
+  if (isRecording.value) stopRecording()
+  if (recordingStream) {
+    recordingStream.getTracks().forEach(t => t.stop())
+    recordingStream = null
+  }
+})
 </script>
 
 <style scoped>
@@ -2271,6 +2641,137 @@ async function askAdminDeleteMaterial(mat) {
 
 .chip:active { transform: translateY(0); }
 
+/* BZ_PPT chip 专属颜色 */
+.chip-xfyun {
+  border-color: #4F7FFF;
+  color: #4F7FFF;
+}
+.chip-xfyun:hover {
+  background: #EEF3FF;
+  border-color: #3366EE;
+  color: #3366EE;
+}
+
+/* BZ_PPT 表单面板 */
+.xfyun-form-panel {
+  background: #F8FAFF;
+  border: 1px solid #D0DCFF;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+.xfyun-form-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #3366EE;
+}
+.xfyun-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #C8D8FF;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #171717;
+  background: #fff;
+  resize: vertical;
+  min-height: 72px;
+  outline: none;
+  transition: border-color 0.2s;
+  font-family: inherit;
+}
+.xfyun-textarea:focus { border-color: #4F7FFF; }
+.xfyun-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.xfyun-label {
+  font-size: 12px;
+  color: #666;
+  white-space: nowrap;
+  min-width: 50px;
+}
+.xfyun-select {
+  flex: 1;
+  border: 1px solid #C8D8FF;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: #171717;
+  background: #fff;
+  outline: none;
+  cursor: pointer;
+}
+.xfyun-checks {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.xfyun-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #444;
+  cursor: pointer;
+  user-select: none;
+}
+.xfyun-check input[type=checkbox] { cursor: pointer; }
+.xfyun-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: #4F7FFF;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 0;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s;
+}
+.xfyun-btn:hover:not(:disabled) { background: #3366EE; transform: translateY(-1px); }
+.xfyun-btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
+/* BZ_PPT 进度卡片角标 */
+.gen-xfyun-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: #4F7FFF;
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  letter-spacing: 0.5px;
+}
+
+/* BZ_PPT 表单动画 */
+.xfyun-slide-enter-active, .xfyun-slide-leave-active {
+  transition: all 0.25s ease;
+  overflow: hidden;
+}
+.xfyun-slide-enter-from, .xfyun-slide-leave-to {
+  opacity: 0;
+  max-height: 0;
+  transform: translateY(-6px);
+}
+.xfyun-slide-enter-to, .xfyun-slide-leave-from {
+  opacity: 1;
+  max-height: 500px;
+  transform: translateY(0);
+}
+
 /* 消息列表 */
 .msg-list {
   display: flex;
@@ -2553,6 +3054,50 @@ async function askAdminDeleteMaterial(mat) {
 
 .send-btn.can-send:active { transform: translateY(0); }
 
+/* ── 麦克风按钮（F05 语音录入）────────────────────── */
+.mic-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: #F5F5F5;
+  color: #737373;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.mic-btn:hover:not(:disabled) {
+  background: #E5E5E5;
+  color: #404040;
+}
+
+.mic-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mic-btn--recording {
+  background: #EF4444 !important;
+  color: #FFFFFF !important;
+  animation: mic-pulse 1s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+}
+
+.mic-btn--transcribing {
+  background: #F59E0B !important;
+  color: #FFFFFF !important;
+}
+
+@keyframes mic-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+  70%  { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
 .footer-hint {
   font-size: 11px;
   color: #A3A3A3;
@@ -2724,6 +3269,27 @@ async function askAdminDeleteMaterial(mat) {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.tool-card-item--image {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.tool-card-image-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid #E5E7EB;
+  background: #F5F5F5;
+  flex-shrink: 0;
+}
+
+.tool-card-image-body {
+  min-width: 0;
+  flex: 1;
 }
 
 .mat-review-reason {

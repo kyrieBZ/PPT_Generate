@@ -62,6 +62,19 @@ export default {
   },
 
   /**
+   * BZ_PPT 智能生成（调用第三方 PPT 接口，直接返回 .pptx 文件）
+   * @param {Object}  payload
+   * @param {string}  payload.query         PPT主题/要求（最多8000字）
+   * @param {string}  [payload.theme]       主题（auto/purple/green/lightblue/blue/taupe/telecomRed/telecomGreen）
+   * @param {string}  [payload.language]    语言（cn/en/ja/ko...）
+   * @param {boolean} [payload.is_card_note] 是否生成演讲备注
+   * @param {boolean} [payload.is_figure]   是否自动配图
+   */
+  xfyunPptGenerate(payload) {
+    return apiClient.post('/ppt/xfyun_ppt', payload, { timeout: 15000 })
+  },
+
+  /**
    * 仅分析图片内容，返回结构化结果（topic/slides/data_items），不触发 PPT 生成
    * @param {Object}   payload
    * @param {string[]} payload.images  Base64 编码的图片数组

@@ -149,6 +149,19 @@ ProviderConfig ParseProviders(const nlohmann::json& json) {
   if (cfg.wanx_timeout_seconds == 0) {
     cfg.wanx_timeout_seconds = 120;
   }
+  // BZ_PPT / 第三方 PPT 生成
+  if (auto it = json.find("xfyun_app_id"); it != json.end() && it->is_string()) {
+    cfg.xfyun_app_id = *it;
+  }
+  if (auto it = json.find("xfyun_api_secret"); it != json.end() && it->is_string()) {
+    cfg.xfyun_api_secret = *it;
+  }
+  if (auto it = json.find("xfyun_ppt_base_url"); it != json.end() && it->is_string()) {
+    cfg.xfyun_ppt_base_url = *it;
+  }
+  if (auto it = json.find("xfyun_ppt_timeout_seconds"); it != json.end() && it->is_number_unsigned()) {
+    cfg.xfyun_ppt_timeout_seconds = it->get<std::uint32_t>();
+  }
   return cfg;
 }
 
@@ -268,6 +281,20 @@ MaterialConfig ParseMaterial(const nlohmann::json& json, const std::filesystem::
   if (auto it = json.find("extract_script"); it != json.end() && it->is_string()) {
     cfg.extract_script = *it;
   }
+  if (auto it = json.find("image_upload_dir"); it != json.end() && it->is_string()) {
+    cfg.image_upload_dir = *it;
+  }
+  if (auto it = json.find("max_image_size_mb"); it != json.end() && it->is_number_unsigned()) {
+    cfg.max_image_size_mb = it->get<std::uint64_t>();
+  }
+  if (auto it = json.find("allowed_image_types"); it != json.end() && it->is_array()) {
+    cfg.allowed_image_types.clear();
+    for (const auto& item : *it) {
+      if (item.is_string()) {
+        cfg.allowed_image_types.push_back(item.get<std::string>());
+      }
+    }
+  }
   auto make_absolute = [&](const std::string& value) {
     if (value.empty()) return value;
     std::filesystem::path path(value);
@@ -278,6 +305,7 @@ MaterialConfig ParseMaterial(const nlohmann::json& json, const std::filesystem::
   };
   cfg.upload_dir = make_absolute(cfg.upload_dir);
   cfg.extract_script = make_absolute(cfg.extract_script);
+  cfg.image_upload_dir = make_absolute(cfg.image_upload_dir);
   return cfg;
 }
 
@@ -414,6 +442,40 @@ FastDfsConfig ParseFastDfs(const nlohmann::json& json) {
   }
   return cfg;
 }
+AsrConfig ParseAsr(const nlohmann::json& json) {
+  AsrConfig cfg;
+  if (auto it = json.find("enabled"); it != json.end() && it->is_boolean()) {
+    cfg.enabled = it->get<bool>();
+  }
+  if (auto it = json.find("endpoint"); it != json.end() && it->is_string()) {
+    cfg.endpoint = *it;
+  }
+  if (auto it = json.find("access_key_id"); it != json.end() && it->is_string()) {
+    cfg.access_key_id = *it;
+  }
+  if (auto it = json.find("access_key_secret"); it != json.end() && it->is_string()) {
+    cfg.access_key_secret = *it;
+  }
+  if (auto it = json.find("app_key"); it != json.end() && it->is_string()) {
+    cfg.app_key = *it;
+  }
+  if (auto it = json.find("language"); it != json.end() && it->is_string()) {
+    cfg.language = *it;
+  }
+  if (auto it = json.find("format"); it != json.end() && it->is_string()) {
+    cfg.format = *it;
+  }
+  if (auto it = json.find("sample_rate"); it != json.end() && it->is_number_integer()) {
+    cfg.sample_rate = it->get<int>();
+  }
+  if (auto it = json.find("timeout_seconds"); it != json.end() && it->is_number_unsigned()) {
+    cfg.timeout_seconds = it->get<std::uint32_t>();
+  }
+  if (cfg.sample_rate <= 0) cfg.sample_rate = 16000;
+  if (cfg.timeout_seconds == 0) cfg.timeout_seconds = 30;
+  return cfg;
+}
+
 }  // namespace
 
 AppConfig AppConfig::Load(const std::string& path) {
@@ -518,6 +580,10 @@ AppConfig AppConfig::Load(const std::string& path) {
     if (auto jt = j.find("rerank_model"); jt != j.end() && jt->is_string()) {
       config.ai_search_.rerank_model = *jt;
     }
+  }
+
+  if (auto it = data.find("asr"); it != data.end()) {
+    config.asr_ = ParseAsr(*it);
   }
 
   // auth.token_ttl_minutes 优先于 redis.ttl.auth_token（保持一致）

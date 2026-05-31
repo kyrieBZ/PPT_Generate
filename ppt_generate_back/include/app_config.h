@@ -55,6 +55,16 @@ struct ProviderConfig {
   std::string wanx_image_model = "wan2.6-image";
   /** 通义万象轮询超时（秒），含创建+轮询总时间 */
   std::uint32_t wanx_timeout_seconds = 120;
+
+  // ── BZ_PPT / 第三方 PPT 生成接口 ─────────────────────────────
+  /** 第三方 PPT 平台 AppID */
+  std::string xfyun_app_id;
+  /** 第三方 PPT 平台 API Secret */
+  std::string xfyun_api_secret;
+  /** 第三方 PPT 接口域名，默认官方地址 */
+  std::string xfyun_ppt_base_url = "https://zwapi.xfyun.cn";
+  /** 接口总超时（秒），含创建+轮询+下载，建议 300 */
+  std::uint32_t xfyun_ppt_timeout_seconds = 300;
 };
 
 struct EmailConfig {
@@ -85,6 +95,12 @@ struct GenerationConfig {
   // 由 main.cpp 在构造 PptController 前填充，不从 config.json 读取
   std::string qwen_api_key;
   std::uint32_t qwen_timeout_seconds = 60;
+
+  // ── BZ_PPT / 第三方 PPT 生成配置（由 main.cpp 从 providers 填充） ───
+  std::string xfyun_app_id;
+  std::string xfyun_api_secret;
+  std::string xfyun_ppt_base_url = "https://zwapi.xfyun.cn";
+  std::uint32_t xfyun_ppt_timeout_seconds = 300;
 };
 
 struct MaterialConfig {
@@ -92,6 +108,12 @@ struct MaterialConfig {
   std::uint64_t max_file_size_mb = 20;
   std::vector<std::string> allowed_types = {"pdf", "docx", "txt"};
   std::string extract_script = "scripts/extract_material.py";
+  /** 图片素材上传目录 */
+  std::string image_upload_dir = "assets/image_materials";
+  /** 图片素材允许的文件类型 */
+  std::vector<std::string> allowed_image_types = {"jpg", "jpeg", "png", "webp", "gif"};
+  /** 图片素材单文件大小上限（MB） */
+  std::uint64_t max_image_size_mb = 20;
 };
 
 struct MongoConfig {
@@ -114,6 +136,26 @@ struct RedisConfig {
   int ttl_auth_token           = 86400;   // 与 auth.token_ttl_minutes 同步
   int ttl_ppt_status           = 7200;    // PPT 生成状态
   int ttl_ppt_history          = 300;     // 用户历史列表快照
+};
+
+struct AsrConfig {
+  bool enabled              = false;
+  /** 阿里云语音识别 HTTP API 端点（NLS 批次版） */
+  std::string endpoint      = "https://nls-gateway-cn-shanghai.aliyuncs.com/stream/v1/asr";
+  /** AccessKey ID */
+  std::string access_key_id;
+  /** AccessKey Secret */
+  std::string access_key_secret;
+  /** AppKey（NLS 应用标识，在 NLS 控制台创建） */
+  std::string app_key;
+  /** 识别语言，默认中文 */
+  std::string language      = "zh-cn";
+  /** 音频格式，默认 wav */
+  std::string format        = "wav";
+  /** 采样率，默认 16000 */
+  int sample_rate           = 16000;
+  /** HTTP 请求超时（秒） */
+  std::uint32_t timeout_seconds = 30;
 };
 
 struct AiSearchConfig {
@@ -187,6 +229,7 @@ class AppConfig {
   const MongoConfig& mongodb() const { return mongodb_; }
   const RedisConfig& redis() const { return redis_; }
   const AiSearchConfig& ai_search() const { return ai_search_; }
+  const AsrConfig& asr() const { return asr_; }
 
  private:
   ServerConfig server_{};
@@ -204,4 +247,5 @@ class AppConfig {
   MongoConfig mongodb_{};
   RedisConfig redis_{};
   AiSearchConfig ai_search_{};
+  AsrConfig asr_{};
 };

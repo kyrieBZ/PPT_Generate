@@ -169,6 +169,8 @@ class MaterialService {
                          const std::string& fastdfs_file_id,
                          const std::string& fastdfs_url,
                          const std::string& storage_type);
+  void DecorateRagStatus(Material& material) const;
+  void DecorateRagStatus(std::vector<Material>& materials) const;
 
   std::shared_ptr<MySQLConnectionPool> pool_;
   MaterialConfig material_config_;

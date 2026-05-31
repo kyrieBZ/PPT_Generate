@@ -402,6 +402,39 @@ int KnowledgeRagService::CountUserChunks(std::uint64_t user_id,
   }
 }
 
+int KnowledgeRagService::CountMaterialChunks(const std::string& material_id,
+                                             std::uint64_t user_id,
+                                             std::string& error) const {
+  if (!IsAvailable()) {
+    error = "KnowledgeRagService not available";
+    return -1;
+  }
+
+  nlohmann::json body = {
+    {"filter", {
+      {"must", nlohmann::json::array({
+        {{"key", "user_id"}, {"match", {{"value", user_id}}}},
+        {{"key", "material_id"}, {"match", {{"value", material_id}}}}
+      })}
+    }}
+  };
+
+  int code = 0;
+  const std::string path = "/collections/" + std::string(kCollectionName) + "/points/count";
+  const std::string resp = DoQdrantRequest("POST", path, body.dump(), code);
+  if (code != 200) {
+    error = "CountMaterialChunks failed, HTTP " + std::to_string(code);
+    return -1;
+  }
+  try {
+    auto j = nlohmann::json::parse(resp);
+    return j.at("result").value("count", 0);
+  } catch (const std::exception& ex) {
+    error = std::string("CountMaterialChunks parse error: ") + ex.what();
+    return -1;
+  }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 std::vector<std::string> KnowledgeRagService::SplitIntoChunks(

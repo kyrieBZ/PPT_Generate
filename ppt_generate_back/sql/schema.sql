@@ -121,3 +121,25 @@ CREATE TABLE IF NOT EXISTS announcements (
   PRIMARY KEY (id),
   INDEX idx_announcements_active (starts_at, expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统公告';
+
+-- Migration: image_materials table
+-- 图片素材库：存储用户上传的图片文件元数据，配合 Qdrant user_images collection 实现语义检索
+
+CREATE TABLE IF NOT EXISTS image_materials (
+  id VARCHAR(64) NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  filename VARCHAR(255) NOT NULL,
+  original_filename VARCHAR(255) DEFAULT NULL,
+  storage_path TEXT NOT NULL,
+  description TEXT DEFAULT NULL COMMENT 'Qwen-VL 自动生成的图片描述，用于向量化',
+  tags VARCHAR(512) DEFAULT NULL COMMENT '用户手动添加的标签，逗号分隔',
+  status ENUM('pending','indexing','ready','failed') NOT NULL DEFAULT 'pending',
+  error_msg TEXT DEFAULT NULL,
+  file_size BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  created_at BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  updated_at BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  INDEX idx_im_user_id (user_id),
+  INDEX idx_im_status (status),
+  INDEX idx_im_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户图片素材库';

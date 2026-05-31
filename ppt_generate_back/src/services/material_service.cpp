@@ -81,6 +81,44 @@ MaterialService::MaterialService(std::shared_ptr<MySQLConnectionPool> pool,
       fastdfs_client_(std::move(fastdfs_client)),
       knowledge_rag_service_(std::move(knowledge_rag_service)) {}
 
+void MaterialService::DecorateRagStatus(Material& material) const {
+  material.rag_chunk_count = 0;
+
+  if (!knowledge_rag_service_ || !knowledge_rag_service_->IsAvailable()) {
+    material.rag_status = "unavailable";
+    return;
+  }
+
+  if (material.status == "failed") {
+    material.rag_status = "extract_failed";
+    return;
+  }
+
+  if (material.status != "completed" || material.extract_result.empty()) {
+    material.rag_status = "waiting_extract";
+    return;
+  }
+
+  std::string rag_error;
+  const int chunk_count = knowledge_rag_service_->CountMaterialChunks(
+      material.id, material.user_id, rag_error);
+  if (chunk_count < 0) {
+    Logger::Warn("MaterialService::DecorateRagStatus: count failed for " +
+                 material.id + ": " + rag_error);
+    material.rag_status = "not_indexed";
+    return;
+  }
+
+  material.rag_chunk_count = chunk_count;
+  material.rag_status = chunk_count > 0 ? "indexed" : "not_indexed";
+}
+
+void MaterialService::DecorateRagStatus(std::vector<Material>& materials) const {
+  for (auto& material : materials) {
+    DecorateRagStatus(material);
+  }
+}
+
 bool MaterialService::CreateMaterial(std::uint64_t user_id,
                                      const std::string& filename,
                                      const std::string& file_type,
@@ -172,6 +210,11 @@ bool MaterialService::CreateMaterial(std::uint64_t user_id,
   out_material.status       = status;
   out_material.created_at   = now;
   out_material.updated_at   = now;
+  out_material.rag_status   =
+      (knowledge_rag_service_ && knowledge_rag_service_->IsAvailable())
+          ? "waiting_extract"
+          : "unavailable";
+  out_material.rag_chunk_count = 0;
   return true;
 }
 
@@ -207,6 +250,7 @@ bool MaterialService::GetMaterial(const std::string& material_id,
   unsigned long* lengths = mysql_fetch_lengths(res);
   out_material = RowToMaterial(row, lengths);
   mysql_free_result(res);
+  DecorateRagStatus(out_material);
   return true;
 }
 
@@ -236,6 +280,7 @@ std::vector<Material> MaterialService::ListMaterials(std::uint64_t user_id, std:
     result.push_back(RowToMaterial(row, lengths));
   }
   mysql_free_result(res);
+  DecorateRagStatus(result);
   return result;
 }
 
@@ -684,6 +729,7 @@ std::vector<Material> MaterialService::AdminListMaterials(const AdminMaterialFil
     result.push_back(m);
   }
   mysql_free_result(res);
+  DecorateRagStatus(result);
   return result;
 }
 
@@ -908,6 +954,7 @@ bool MaterialService::AdminGetMaterial(const std::string& material_id,
   unsigned long* lengths = mysql_fetch_lengths(res);
   out_material = RowToMaterial(row, lengths);
   mysql_free_result(res);
+  DecorateRagStatus(out_material);
   return true;
 }
 

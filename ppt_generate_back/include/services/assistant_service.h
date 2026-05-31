@@ -13,6 +13,7 @@
 // 前向声明，避免循环依赖
 class PptService;
 class MaterialService;
+class ImageMaterialService;
 class TemplateManagerService;
 class TemplateService;
 class AiSearchService;
@@ -95,6 +96,7 @@ class AssistantService {
                    std::shared_ptr<MySQLConnectionPool> pool = nullptr,
                    std::shared_ptr<PptService> ppt_service = nullptr,
                    std::shared_ptr<MaterialService> material_service = nullptr,
+                   std::shared_ptr<ImageMaterialService> image_material_service = nullptr,
                    std::shared_ptr<TemplateManagerService> tmpl_mgr_service = nullptr,
                    std::shared_ptr<TemplateService> template_service = nullptr,
                    std::shared_ptr<AiSearchService> ai_search_service = nullptr);
@@ -234,6 +236,7 @@ class AssistantService {
   std::shared_ptr<MySQLConnectionPool> pool_;
   std::shared_ptr<PptService> ppt_service_;
   std::shared_ptr<MaterialService> material_service_;
+  std::shared_ptr<ImageMaterialService> image_material_service_;
   std::shared_ptr<TemplateManagerService> tmpl_mgr_service_;
   std::shared_ptr<TemplateService> template_service_;
   std::shared_ptr<AiSearchService> ai_search_service_;

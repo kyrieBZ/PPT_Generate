@@ -87,3 +87,70 @@ export default {
     return apiClient.post('/material/notices/read', { ids })
   }
 }
+
+/**
+ * 图片素材库 API
+ */
+export const imageMaterialApi = {
+  /**
+   * 上传图片素材（multipart/form-data，字段名 "file"）
+   * @param {File} file
+   * @param {Function} onProgress — (percent: number) => void
+   */
+  upload(file, onProgress) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return apiClient.post('/material/image/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress(e) {
+        if (onProgress && e.total) {
+          onProgress(Math.round((e.loaded * 100) / e.total))
+        }
+      }
+    })
+  },
+
+  /**
+   * 批量上传图片素材（multipart/form-data，字段名 "files[]"）
+   * @param {File[]} files
+   * @param {Function} onProgress — (percent: number) => void
+   */
+  batchUpload(files, onProgress) {
+    const formData = new FormData()
+    files.forEach((file) => formData.append('files[]', file))
+    return apiClient.post('/material/image/batch_upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress(e) {
+        if (onProgress && e.total) {
+          onProgress(Math.round((e.loaded * 100) / e.total))
+        }
+      }
+    })
+  },
+
+  /** 获取当前用户图片素材列表 */
+  list() {
+    return apiClient.get('/material/image/list')
+  },
+
+  /** 查询单条图片状态 */
+  getStatus(id) {
+    return apiClient.get('/material/image/status', { params: { id } })
+  },
+
+  /** 获取图片文件 URL（用于 <img> 预览） */
+  fileUrl(id) {
+    const token = localStorage.getItem('token') || sessionStorage.getItem('token') || ''
+    return `/api/material/image/file?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`
+  },
+
+  /** 删除图片素材 */
+  remove(id) {
+    return apiClient.delete('/material/image', { params: { id } })
+  },
+
+  /** 批量删除图片素材 */
+  batchDelete(ids) {
+    return apiClient.post('/material/image/batch_delete', { ids })
+  }
+}

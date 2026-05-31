@@ -161,6 +161,17 @@ PptRequestInput PptRequestInput::FromJson(const nlohmann::json& data) {
       break;
     }
   }
+  // image_material_ids: 用户上传的图片素材 ID 列表（配图时优先使用）
+  for (const char* key : {"imageMaterialIds", "image_material_ids"}) {
+    if (const auto it = data.find(key); it != data.end() && it->is_array()) {
+      for (const auto& elem : *it) {
+        if (elem.is_string()) {
+          input.image_material_ids.push_back(elem.get<std::string>());
+        }
+      }
+      break;
+    }
+  }
   input.pages = std::clamp(input.pages, 1, 50);
   return input;
 }

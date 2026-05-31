@@ -20,4 +20,6 @@ struct Material {
   std::string fastdfs_file_id;  // 如 group1/M00/00/00/xxx.pdf
   std::string fastdfs_url;      // HTTP 访问 URL
   std::string storage_type = "local";  // local | fastdfs
+  std::string rag_status = "unknown";  // unavailable | waiting_extract | extract_failed | not_indexed | indexed
+  int rag_chunk_count = 0;
 };

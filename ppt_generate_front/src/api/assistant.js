@@ -56,3 +56,19 @@ export function chatInSession(sessionId, message, context = {}) {
 export function deleteSession(sessionId) {
   return apiClient.delete(`/assistant/sessions/${sessionId}`)
 }
+
+// ── 语音识别 ──────────────────────────────────────────────────────────────────
+
+/**
+ * 上传音频 Blob，调用后端阿里云 ASR 接口，返回识别文字
+ * @param {Blob} audioBlob  - 录音数据（wav / webm/opus）
+ * @returns {Promise<{ text: string }>}
+ */
+export function transcribeAudio(audioBlob) {
+  const form = new FormData()
+  form.append('audio', audioBlob, 'recording.wav')
+  return apiClient.post('/voice/transcribe', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 35000,
+  })
+}

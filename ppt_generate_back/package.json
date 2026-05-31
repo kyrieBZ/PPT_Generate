@@ -1,0 +1,12 @@
+{
+  "name": "ppt_generate_back",
+  "version": "1.0.0",
+  "description": "PPT generation backend scripts",
+  "private": true,
+  "scripts": {
+    "build-pptx": "node scripts/pptxgen_builder.js"
+  },
+  "dependencies": {
+    "pptxgenjs": "^3.12.0"
+  }
+}

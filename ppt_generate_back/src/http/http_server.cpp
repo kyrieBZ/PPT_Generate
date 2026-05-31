@@ -155,9 +155,6 @@ bool HttpServer::ParseRequest(int client_fd, HttpRequest& request) {
       return false;
     }
     if (bytes_read == 0) {
-      // #region agent log
-      {auto f=std::fopen("/home/bz/LinuxProject/ppt_generate/.cursor/debug.log","a");if(f){std::fprintf(f,"{\"hypothesisId\":\"F\",\"location\":\"http_server.cpp:149\",\"message\":\"recv returned 0 (connection closed)\",\"data\":{\"raw_data_size\":%zu,\"header_end\":%zu,\"content_length\":%zu},\"timestamp\":%ld}\n",raw_data.size(),header_end,content_length,(long)std::time(nullptr));std::fclose(f);}}
-      // #endregion
       break;
     }
 
